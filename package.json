@@ -1,0 +1,79 @@
+{
+  "name": "@atomicqueues/core",
+  "version": "1.0.0",
+  "description": "A plug-and-play NestJS library for atomic process handling per entity with BullMQ, Redis distributed locking, and dynamic worker management",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "**/*.js",
+    "**/*.d.ts",
+    "**/*.js.map",
+    "**/*.d.ts.map"
+  ],
+  "scripts": {
+    "build": "rimraf dist && tsc",
+    "dev": "tsc --watch",
+    "copy-package": "node -e \"const p=require('./package.json'); p.main='index.js'; p.types='index.d.ts'; p.files=['**/*.js','**/*.d.ts','**/*.js.map','**/*.d.ts.map']; require('fs').writeFileSync('./dist/package.json', JSON.stringify(p, null, 2));\"",
+    "publish": "cd dist && npm publish --ignore-scripts",
+    "print:local:instructions": "FOLDER=$(echo \"$PWD\"/atomicqueues-core*.tgz) && echo 'Reinstall with -> npm uninstall @atomicqueues/core && npm i file:'\"$FOLDER\"",
+    "pack": "npm run build && npm run copy-package && cd dist && npm pack --ignore-scripts && npm run print:local:instructions",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "lint": "eslint src/**/*.ts"
+  },
+  "keywords": [
+    "nestjs",
+    "queue",
+    "bullmq",
+    "redis",
+    "atomic",
+    "distributed-lock",
+    "worker-management",
+    "cqrs"
+  ],
+  "author": "",
+  "license": "MIT",
+  "peerDependencies": {
+    "@nestjs/bullmq": ">=10.0.0",
+    "@nestjs/common": ">=10.0.0",
+    "@nestjs/core": ">=10.0.0",
+    "@nestjs/cqrs": ">=10.0.0",
+    "bullmq": ">=5.0.0",
+    "ioredis": ">=5.0.0",
+    "reflect-metadata": ">=0.1.13",
+    "rxjs": ">=7.0.0"
+  },
+  "devDependencies": {
+    "@nestjs/bullmq": "^10.2.0",
+    "@nestjs/common": "^10.3.0",
+    "@nestjs/core": "^10.3.0",
+    "@nestjs/cqrs": "^10.2.0",
+    "@types/jest": "^29.5.0",
+    "@types/node": "^20.0.0",
+    "@types/uuid": "^10.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "bullmq": "^5.1.0",
+    "eslint": "^8.0.0",
+    "ioredis": "^5.3.0",
+    "jest": "^29.5.0",
+    "reflect-metadata": "^0.1.13",
+    "rimraf": "^6.1.2",
+    "rxjs": "^7.8.0",
+    "shx": "^0.4.0",
+    "ts-jest": "^29.1.0",
+    "typescript": "^5.3.0",
+    "uuid": "^9.0.0"
+  },
+  "dependencies": {
+    "class-transformer": "^0.5.1",
+    "uuid": "^9.0.0"
+  },
+  "files": [
+    "dist/**/*"
+  ],
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}
