@@ -1,14 +1,11 @@
 {
   "name": "@atomicqueues/core",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A plug-and-play NestJS library for atomic process handling per entity with BullMQ, Redis distributed locking, and dynamic worker management",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
-    "**/*.js",
-    "**/*.d.ts",
-    "**/*.js.map",
-    "**/*.d.ts.map"
+    "dist/**/*"
   ],
   "scripts": {
     "build": "rimraf dist && tsc",
@@ -69,9 +66,6 @@
     "class-transformer": "^0.5.1",
     "uuid": "^9.0.0"
   },
-  "files": [
-    "dist/**/*"
-  ],
   "repository": {
     "type": "git",
     "url": ""
