@@ -1,4 +1,4 @@
-import { Injectable, Logger, Inject } from '@nestjs/common';
+import { Injectable, Logger, Inject, Optional } from '@nestjs/common';
 import { CommandBus, QueryBus } from '@nestjs/cqrs';
 import { plainToInstance } from 'class-transformer';
 import { Job } from 'bullmq';
@@ -101,8 +101,8 @@ export class DynamicExecutorService implements IDynamicExecutor {
   private readonly cachedQueryClasses: Map<string, Constructor> = new Map();
 
   constructor(
-    private readonly commandBus: CommandBus,
-    private readonly queryBus: QueryBus,
+    @Optional() private readonly commandBus: CommandBus,
+    @Optional() private readonly queryBus: QueryBus,
   ) {}
 
   /**

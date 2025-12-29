@@ -5,7 +5,6 @@ import {
   Provider,
   Type,
 } from '@nestjs/common';
-import { CqrsModule } from '@nestjs/cqrs';
 import Redis from 'ioredis';
 import { IAtomicQueuesModuleConfig, DeepPartial } from '../domain';
 import {
@@ -115,7 +114,8 @@ export class AtomicQueuesModule {
 
     return {
       module: AtomicQueuesModule,
-      imports: [CqrsModule],
+      // Note: CqrsModule should be imported by the consuming app, not here
+      // to avoid duplicate CommandBus/QueryBus instances
       providers: [
         {
           provide: ATOMIC_QUEUES_CONFIG,
@@ -141,7 +141,9 @@ export class AtomicQueuesModule {
 
     return {
       module: AtomicQueuesModule,
-      imports: [...(options.imports || []), CqrsModule],
+      // Note: CqrsModule should be imported by the consuming app, not here
+      // to avoid duplicate CommandBus/QueryBus instances
+      imports: [...(options.imports || [])],
       providers: [configProvider, redisProvider, ...CORE_SERVICES],
       exports: [
         ATOMIC_QUEUES_CONFIG,
