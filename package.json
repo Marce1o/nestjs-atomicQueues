@@ -1,5 +1,5 @@
 {
-  "name": "@atomicqueues/core",
+  "name": "@nestjs/atomic-queues",
   "version": "1.0.1",
   "description": "A plug-and-play NestJS library for atomic process handling per entity with BullMQ, Redis distributed locking, and dynamic worker management",
   "main": "dist/index.js",
