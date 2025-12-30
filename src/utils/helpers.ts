@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import { IAtomicJobData, IJobOptions } from '../domain';
 
 /**
@@ -26,7 +26,7 @@ export function createAtomicJobData<T = unknown>(options: {
   metadata?: Record<string, unknown>;
 }): IAtomicJobData<T> {
   return {
-    uuid: uuidv4(),
+    uuid: randomUUID(),
     entityId: options.entityId,
     entityType: options.entityType,
     type: options.type,
@@ -181,7 +181,7 @@ export function createSigtermPayload<T = unknown>(
   entityId: string,
 ): IAtomicJobData<T> {
   return {
-    uuid: uuidv4(),
+    uuid: randomUUID(),
     entityId,
     entityType,
     type: 'custom',

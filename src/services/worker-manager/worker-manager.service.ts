@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { Worker, Job } from 'bullmq';
 import Redis from 'ioredis';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import {
   IWorkerManager,
   IWorkerState,
@@ -114,7 +114,7 @@ export class WorkerManagerService
 
     // Initialize worker state
     const state: IWorkerState = {
-      workerId: uuidv4(),
+      workerId: randomUUID(),
       workerName,
       nodeId: this.nodeId,
       status: 'starting',
@@ -320,13 +320,15 @@ export class WorkerManagerService
   /**
    * Graceful shutdown on application termination.
    */
-  async onApplicationShutdown(): Promise<void> {
-    this.logger.warn(`Application shutting down, closing workers on node ${this.nodeId}`);
+  async onApplicationShutdown(signal?: string): Promise<void> {
+    this.logger.warn(`=== GRACEFUL SHUTDOWN STARTED (signal: ${signal || 'unknown'}) ===`);
+    this.logger.warn(`Node ${this.nodeId} - Closing ${this.workers.size} workers...`);
 
     // Clear all heartbeat intervals
     for (const [workerName, interval] of this.heartbeatIntervals) {
       clearInterval(interval);
       this.heartbeatIntervals.delete(workerName);
+      this.logger.log(`Stopped heartbeat for worker: ${workerName}`);
     }
 
     // Signal all workers to close
@@ -335,6 +337,7 @@ export class WorkerManagerService
     // Wait for workers to close
     try {
       await this.waitForWorkersToClose(30000);
+      this.logger.warn(`=== ALL WORKERS CLOSED SUCCESSFULLY ===`);
     } catch (error) {
       this.logger.warn(`Some workers did not close gracefully: ${error}`);
     }
@@ -342,7 +345,10 @@ export class WorkerManagerService
     // Close subscriber client
     if (this.subscriberClient) {
       await this.subscriberClient.quit();
+      this.logger.log(`Subscriber client closed`);
     }
+    
+    this.logger.warn(`=== GRACEFUL SHUTDOWN COMPLETED ===`);
   }
 
   // =========================================================================
@@ -353,7 +359,7 @@ export class WorkerManagerService
    * Generate a unique node ID for this instance.
    */
   private generateNodeId(): string {
-    return uuidv4();
+    return randomUUID();
   }
 
   /**
@@ -444,11 +450,14 @@ export class WorkerManagerService
    * Close a worker and clean up resources.
    */
   private async closeWorker(workerName: string, worker: Worker): Promise<void> {
+    this.logger.log(`[${workerName}] Starting graceful close...`);
+    
     // Clear heartbeat interval
     const interval = this.heartbeatIntervals.get(workerName);
     if (interval) {
       clearInterval(interval);
       this.heartbeatIntervals.delete(workerName);
+      this.logger.debug(`[${workerName}] Heartbeat stopped`);
     }
 
     // Unsubscribe from shutdown channel
@@ -456,19 +465,22 @@ export class WorkerManagerService
     if (cleanup) {
       cleanup();
       this.shutdownSubscriptions.delete(workerName);
+      this.logger.debug(`[${workerName}] Unsubscribed from shutdown channel`);
     }
 
     // Remove heartbeat
     await this.removeWorkerHeartbeat(workerName);
 
-    // Close worker
+    // Close worker - THIS WAITS FOR RUNNING JOBS TO COMPLETE
+    this.logger.log(`[${workerName}] Waiting for running jobs to complete...`);
     await worker.close();
+    this.logger.log(`[${workerName}] Worker closed (all jobs completed)`);
 
     // Remove from maps
     this.workers.delete(workerName);
     this.workerStates.delete(workerName);
 
-    this.logger.log(`Worker ${workerName} closed and cleaned up.`);
+    this.logger.log(`[${workerName}] Worker deregistered and cleaned up.`);
   }
 
   /**
