@@ -19,6 +19,8 @@ import {
   AtomicJobProcessor,
   CronManagerService,
   IndexManagerService,
+  ServiceQueueManager,
+  ShutdownStateService,
 } from '../services';
 
 /**
@@ -60,6 +62,8 @@ const CORE_SERVICES: Provider[] = [
   DynamicExecutorService,
   AtomicJobProcessor,
   CronManagerService,
+  ServiceQueueManager,
+  ShutdownStateService,
 ];
 
 /**

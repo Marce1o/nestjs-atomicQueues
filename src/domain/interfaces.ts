@@ -88,6 +88,18 @@ export interface IJobOptions {
 }
 
 /**
+ * Service queue configuration for global singleton operations
+ */
+export interface IServiceQueueConfig {
+  /** Whether to enable the service queue (default: true) */
+  enabled?: boolean;
+  /** Custom queue name (default: {keyPrefix}-service-queue) */
+  queueName?: string;
+  /** Custom worker name (default: {keyPrefix}-service-worker) */
+  workerName?: string;
+}
+
+/**
  * Main module configuration
  */
 export interface IAtomicQueuesModuleConfig {
@@ -103,6 +115,8 @@ export interface IAtomicQueuesModuleConfig {
   cronInterval?: number;
   /** Prefix for all Redis keys */
   keyPrefix?: string;
+  /** Service queue configuration for global atomic operations */
+  serviceQueue?: IServiceQueueConfig;
 }
 
 // =============================================================================

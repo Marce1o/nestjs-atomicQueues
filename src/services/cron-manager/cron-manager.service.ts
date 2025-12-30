@@ -1,4 +1,4 @@
-import { Injectable, Logger, Inject, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, Inject, OnModuleDestroy, Optional } from '@nestjs/common';
 import Redis from 'ioredis';
 import {
   ICronManager,
@@ -9,6 +9,7 @@ import {
 import { ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG } from '../constants';
 import { WorkerManagerService } from '../worker-manager';
 import { IndexManagerService } from '../index-manager';
+import { ServiceQueueManager, ServiceQueueJobNames } from '../service-queue';
 
 /**
  * CronManagerService
@@ -60,6 +61,8 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
   private cronInterval: NodeJS.Timeout | null = null;
   private running = false;
   private readonly keyPrefix: string;
+  private readonly useServiceQueue: boolean;
+  private scalingHandlerRegistered = false;
 
   constructor(
     @Inject(ATOMIC_QUEUES_REDIS) private readonly redis: Redis,
@@ -67,8 +70,40 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
     private readonly config: IAtomicQueuesModuleConfig,
     private readonly workerManager: WorkerManagerService,
     private readonly indexManager: IndexManagerService,
+    @Optional() private readonly serviceQueueManager?: ServiceQueueManager,
   ) {
     this.keyPrefix = config.keyPrefix || 'aq';
+    // Use service queue for atomic operations if enabled
+    this.useServiceQueue = config.serviceQueue?.enabled !== false;
+    
+    // Register the scaling cycle handler with the service queue
+    this.registerScalingHandler();
+  }
+
+  /**
+   * Register the scaling cycle handler with ServiceQueueManager.
+   * This ensures scaling cycles are processed atomically by the service worker.
+   */
+  private registerScalingHandler(): void {
+    if (this.scalingHandlerRegistered || !this.serviceQueueManager) {
+      return;
+    }
+
+    this.serviceQueueManager.registerScalingCycleHandler(
+      async (entityType: string) => {
+        const config = this.entityConfigs.get(entityType);
+        if (!config) {
+          this.logger.warn(`No config registered for entity type: ${entityType}`);
+          return { decisions: [] };
+        }
+
+        const decisions = await this.runEntityScalingCycleInternal(entityType, config);
+        return { decisions };
+      },
+    );
+
+    this.scalingHandlerRegistered = true;
+    this.logger.debug('Scaling cycle handler registered with ServiceQueueManager');
   }
 
   /**
@@ -90,6 +125,13 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
   /**
    * Run a scaling cycle for all registered entity types.
    *
+   * When service queue is enabled, this triggers scaling cycles through the
+   * service queue to ensure atomic processing by the single service worker.
+   * This prevents race conditions in distributed deployments.
+   *
+   * IMPORTANT: Only the service worker owner node triggers scaling cycles.
+   * Other nodes skip the trigger to prevent duplicate jobs.
+   *
    * This is the main logic that:
    * 1. Gets entities with queued jobs
    * 2. Gets entities with running workers
@@ -99,11 +141,45 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
    * 6. Cleans up empty queues
    */
   async runScalingCycle(): Promise<IScalingDecision[]> {
+    // If service queue is enabled, only the service worker owner should trigger
+    if (this.useServiceQueue && this.serviceQueueManager) {
+      // Only trigger if we're the service worker owner
+      if (this.serviceQueueManager.isServiceWorkerOwner()) {
+        await this.triggerScalingCyclesThroughServiceQueue();
+      }
+      // Return empty - actual decisions are processed by service worker
+      return [];
+    }
+
+    // Fallback to direct processing (single instance mode)
+    return this.runScalingCycleDirectly();
+  }
+
+  /**
+   * Trigger scaling cycles through the service queue.
+   * This ensures only the service worker processes scaling decisions.
+   */
+  private async triggerScalingCyclesThroughServiceQueue(): Promise<void> {
+    for (const entityType of this.entityConfigs.keys()) {
+      try {
+        await this.serviceQueueManager!.triggerScalingCycle(entityType);
+      } catch (error) {
+        this.logger.error(
+          `Failed to trigger scaling cycle for ${entityType}: ${(error as Error).message}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Run scaling cycles directly (single instance or fallback mode).
+   */
+  private async runScalingCycleDirectly(): Promise<IScalingDecision[]> {
     const decisions: IScalingDecision[] = [];
 
     for (const [entityType, config] of this.entityConfigs) {
       try {
-        const entityDecisions = await this.runEntityScalingCycle(
+        const entityDecisions = await this.runEntityScalingCycleInternal(
           entityType,
           config,
         );
@@ -212,36 +288,33 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
 
   /**
    * Run scaling cycle for a specific entity type.
+   * This is the internal implementation called either directly or via service queue.
    */
-  private async runEntityScalingCycle(
+  private async runEntityScalingCycleInternal(
     entityType: string,
     config: IEntityScalingConfig,
   ): Promise<IScalingDecision[]> {
     const decisions: IScalingDecision[] = [];
 
-    // Get entities with queued jobs
-    const entitiesWithJobs = await this.indexManager.getEntitiesWithJobs(entityType);
-    const entityIdsWithJobs = new Set(Object.keys(entitiesWithJobs));
-
+    // Get active entities from the config's getActiveEntityIds (primary source)
+    const activeEntityIds = await config.getActiveEntityIds();
+    
     // Get entities with running workers
     const entitiesWithWorkers = await this.getEntitiesWithWorkers(entityType);
 
-    // Get entities with active queues
-    const entitiesWithQueues = await this.indexManager.getEntitiesWithQueues(entityType);
-
-    // Spawn missing workers for entities with jobs
-    for (const entityId of entityIdsWithJobs) {
+    // Spawn missing workers for active entities
+    for (const entityId of activeEntityIds) {
       const decision = await this.handleEntitySpawning(
         entityType,
         entityId,
         config,
-        entitiesWithJobs[entityId],
+        1, // At least 1 job assumed for active entities
       );
       if (decision) decisions.push(decision);
     }
 
-    // Handle excess workers
-    for (const entityId of entityIdsWithJobs) {
+    // Handle excess workers for active entities
+    for (const entityId of activeEntityIds) {
       const decision = await this.handleExcessWorkers(
         entityType,
         entityId,
@@ -250,29 +323,19 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
       if (decision) decisions.push(decision);
     }
 
-    // Close workers for entities with no jobs but workers running
-    const entitiesWithWorkersNoJobs = Array.from(entitiesWithWorkers).filter(
-      (entityId) => !entityIdsWithJobs.has(entityId),
+    // Close workers for entities with workers but no longer active
+    const activeEntitySet = new Set(activeEntityIds);
+    const entitiesWithWorkersNoLongerActive = Array.from(entitiesWithWorkers).filter(
+      (entityId) => !activeEntitySet.has(entityId),
     );
 
-    for (const entityId of entitiesWithWorkersNoJobs) {
+    for (const entityId of entitiesWithWorkersNoLongerActive) {
       const decision = await this.handleWorkerClosure(
         entityType,
         entityId,
         config,
       );
       if (decision) decisions.push(decision);
-    }
-
-    // Clean up empty queues (no jobs, no workers)
-    const emptyQueueEntities = entitiesWithQueues.filter(
-      (entityId) =>
-        !entityIdsWithJobs.has(entityId) &&
-        !entitiesWithWorkers.has(entityId),
-    );
-
-    for (const entityId of emptyQueueEntities) {
-      await this.handleQueueCleanup(entityType, entityId);
     }
 
     return decisions;
@@ -379,6 +442,7 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
 
   /**
    * Handle worker closure for entities with no jobs.
+   * Only terminates workers if the entity's queue is truly empty (no waiting or active jobs).
    */
   private async handleWorkerClosure(
     entityType: string,
@@ -388,6 +452,18 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
     const workers = await this.workerManager.getEntityWorkers(entityType, entityId);
 
     if (workers.length === 0) {
+      return null;
+    }
+
+    // Check if there are pending or active jobs in the queue
+    // Don't terminate workers that might still be processing jobs
+    const queueName = `${entityId}-queue`;
+    const hasActiveJobs = await this.checkQueueHasJobs(queueName);
+    
+    if (hasActiveJobs) {
+      this.logger.debug(
+        `Skipping worker closure for ${entityType}/${entityId} - queue has active jobs`,
+      );
       return null;
     }
 
@@ -412,6 +488,34 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
       action: 'terminate',
       count: workers.length,
     };
+  }
+
+  /**
+   * Check if a queue has any waiting or active jobs.
+   */
+  private async checkQueueHasJobs(queueName: string): Promise<boolean> {
+    try {
+      // Check waiting list
+      const waitingKey = `bull:${queueName}:waiting`;
+      const waitingCount = await this.redis.llen(waitingKey);
+      if (waitingCount > 0) return true;
+
+      // Check active list
+      const activeKey = `bull:${queueName}:active`;
+      const activeCount = await this.redis.llen(activeKey);
+      if (activeCount > 0) return true;
+
+      // Check delayed set
+      const delayedKey = `bull:${queueName}:delayed`;
+      const delayedCount = await this.redis.zcard(delayedKey);
+      if (delayedCount > 0) return true;
+
+      return false;
+    } catch (error) {
+      this.logger.warn(`Error checking queue ${queueName} for jobs: ${(error as Error).message}`);
+      // If we can't check, don't terminate (safer)
+      return true;
+    }
   }
 
   /**
@@ -456,11 +560,14 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
 
   /**
    * Get the number of workers for an entity.
+   * Uses the worker heartbeat TTL keys as the single source of truth.
+   * This is a direct Redis query - no service queue needed since we're just reading keys.
    */
   private async getEntityWorkerCount(
     entityType: string,
     entityId: string,
   ): Promise<number> {
+    // Direct query to worker heartbeat TTL keys - the single source of truth
     const workers = await this.workerManager.getEntityWorkers(
       entityType,
       entityId,
@@ -470,16 +577,24 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
 
   /**
    * Get all entities with workers.
+   * Uses the worker heartbeat TTL keys as the single source of truth.
+   * Worker names follow pattern: {entityId}-worker
    */
   private async getEntitiesWithWorkers(entityType: string): Promise<Set<string>> {
-    const pattern = `${this.keyPrefix}:entity-worker:${entityType}:*:*`;
+    // Worker heartbeat keys follow pattern: {prefix}:worker:{nodeId}:{entityId}-worker
+    const pattern = `${this.keyPrefix}:worker:*:*-worker`;
     const keys = await this.scanKeys(pattern);
     const entities = new Set<string>();
 
     for (const key of keys) {
       const parts = key.split(':');
       if (parts.length >= 4) {
-        entities.add(parts[3]); // entityId is at index 3
+        // workerName is last part, extract entityId by removing '-worker' suffix
+        const workerName = parts[parts.length - 1];
+        if (workerName.endsWith('-worker')) {
+          const entityId = workerName.slice(0, -7); // Remove '-worker' suffix
+          entities.add(entityId);
+        }
       }
     }
 

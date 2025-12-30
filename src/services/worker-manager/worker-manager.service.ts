@@ -164,12 +164,17 @@ export class WorkerManagerService
 
   /**
    * Get all workers for a specific entity.
+   * Uses the worker heartbeat TTL keys as the single source of truth.
+   * Worker names follow the pattern: {entityId}-worker
    */
   async getEntityWorkers(
     entityType: string,
     entityId: string,
   ): Promise<string[]> {
-    const pattern = `${this.keyPrefix}:entity-worker:${entityType}:${entityId}:*`;
+    // Worker heartbeat keys follow pattern: {prefix}:worker:{nodeId}:{workerName}
+    // Worker names follow pattern: {entityId}-worker
+    const workerName = `${entityId}-worker`;
+    const pattern = `${this.keyPrefix}:worker:*:${workerName}`;
     const keys = await this.redis.keys(pattern);
     return keys.map((key) => key.split(':').pop()!);
   }
