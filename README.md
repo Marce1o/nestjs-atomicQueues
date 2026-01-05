@@ -1,10 +1,10 @@
-# @nestjs/atomic-queues
+# atomic-queues
 
 A plug-and-play NestJS library for atomic process handling per entity with BullMQ, Redis distributed locking, and dynamic worker management.
 
 ## Overview
 
-`@nestjs/atomic-queues` provides a unified architecture for handling atomic, sequential processing of jobs on a per-entity basis. It abstracts the complexity of managing dynamic queues, workers, and distributed locking into a simple, declarative API.
+`atomic-queues` provides a unified architecture for handling atomic, sequential processing of jobs on a per-entity basis. It abstracts the complexity of managing dynamic queues, workers, and distributed locking into a simple, declarative API.
 
 ### Problem It Solves
 
@@ -39,7 +39,7 @@ Customer B places Order 3 → [validate] → [pay] → [reserve] → [ship]
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                @nestjs/atomic-queues ARCHITECTURE                           │
+│                                   atomic-queues ARCHITECTURE                                │
 └─────────────────────────────────────────────────────────────────────────────────────────────┘
 
                                     ┌─────────────────────┐
@@ -314,7 +314,7 @@ Customer B places Order 3 → [validate] → [pay] → [reserve] → [ship]
 ## Installation
 
 ```bash
-npm install @nestjs/atomic-queues bullmq ioredis
+npm install atomic-queues bullmq ioredis
 ```
 
 ---
@@ -325,7 +325,7 @@ npm install @nestjs/atomic-queues bullmq ioredis
 
 ```typescript
 import { Module } from '@nestjs/common';
-import { AtomicQueuesModule } from '@nestjs/atomic-queues';
+import { AtomicQueuesModule } from 'atomic-queues';
 
 @Module({
   imports: [
@@ -348,7 +348,7 @@ export class AppModule {}
 ```typescript
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { AtomicQueuesModule } from '@nestjs/atomic-queues';
+import { AtomicQueuesModule } from 'atomic-queues';
 
 @Module({
   imports: [
@@ -375,7 +375,7 @@ export class AppModule {}
 
 ```typescript
 import { Injectable } from '@nestjs/common';
-import { JobProcessor, JobProcessorRegistry } from '@nestjs/atomic-queues';
+import { JobProcessor, JobProcessorRegistry } from 'atomic-queues';
 import { CommandBus } from '@nestjs/cqrs';
 
 @Injectable()
@@ -405,7 +405,7 @@ export class ProcessPaymentProcessor {
 
 ```typescript
 import { Injectable } from '@nestjs/common';
-import { QueueManagerService, IndexManagerService } from '@nestjs/atomic-queues';
+import { QueueManagerService, IndexManagerService } from 'atomic-queues';
 
 @Injectable()
 export class OrderService {
@@ -435,7 +435,7 @@ export class OrderService {
 
 ```typescript
 import { Injectable } from '@nestjs/common';
-import { WorkerManagerService, JobProcessorRegistry } from '@nestjs/atomic-queues';
+import { WorkerManagerService, JobProcessorRegistry } from 'atomic-queues';
 
 @Injectable()
 export class OrderWorkerService {
