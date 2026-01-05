@@ -22,7 +22,7 @@
     "build": "rimraf dist && tsc",
     "dev": "tsc --watch",
     "copy-package": "node -e \"const p=require('./package.json'); p.main='index.js'; p.types='index.d.ts'; p.files=['**/*.js','**/*.d.ts','**/*.js.map','**/*.d.ts.map']; require('fs').writeFileSync('./dist/package.json', JSON.stringify(p, null, 2));\"",
-    "publish": "cd dist && npm publish --ignore-scripts",
+    "publish:local": "cd dist && npm publish --ignore-scripts",
     "print:local:instructions": "FOLDER=$(echo \"$PWD\"/atomicqueues-core*.tgz) && echo 'Reinstall with -> npm uninstall @atomicqueues/core && npm i file:'\"$FOLDER\"",
     "pack": "npm run build && npm run copy-package && cd dist && npm pack --ignore-scripts && npm run print:local:instructions",
     "test": "jest",
