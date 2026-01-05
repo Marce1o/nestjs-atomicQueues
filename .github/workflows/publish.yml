@@ -10,15 +10,12 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       id-token: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -35,35 +32,6 @@ jobs:
       - name: Run tests
         run: npm test
         continue-on-error: true
-
-      - name: Configure Git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Bump version and create tag
-        id: version
-        run: |
-          # Get the commit message
-          COMMIT_MSG=$(git log -1 --pretty=%B)
-          
-          # Determine version bump type from commit message
-          if [[ "$COMMIT_MSG" == *"[major]"* ]] || [[ "$COMMIT_MSG" == *"BREAKING CHANGE"* ]]; then
-            VERSION_TYPE="major"
-          elif [[ "$COMMIT_MSG" == *"[minor]"* ]] || [[ "$COMMIT_MSG" == *"feat:"* ]]; then
-            VERSION_TYPE="minor"
-          else
-            VERSION_TYPE="patch"
-          fi
-          
-          echo "Bumping $VERSION_TYPE version..."
-          
-          # Bump version (this also creates a commit and tag)
-          NEW_VERSION=$(npm version $VERSION_TYPE -m "chore(release): %s [skip ci]")
-          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          
-          # Push the version commit and tag
-          git push --follow-tags
 
       - name: Publish to npm
         run: npm publish --provenance --access public
