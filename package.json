@@ -9,11 +9,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/Marce1o/atomic-queues.git"
+    "url": "https://github.com/Marce1o/nestjs-atomicQueues.git"
   },
-  "homepage": "https://github.com/Marce1o/atomic-queues#readme",
+  "homepage": "https://github.com/Marce1o/nestjs-atomicQueues#readme",
   "bugs": {
-    "url": "https://github.com/Marce1o/atomic-queues/issues"
+    "url": "https://github.com/Marce1o/nestjs-atomicQueues/issues"
   },
   "publishConfig": {
     "access": "public"
