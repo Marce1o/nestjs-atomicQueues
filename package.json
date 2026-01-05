@@ -1,5 +1,5 @@
 {
-  "name": "@nestjs/atomic-queues",
+  "name": "atomic-queues",
   "version": "1.0.9",
   "description": "A plug-and-play NestJS library for atomic process handling per entity with BullMQ, Redis distributed locking, and dynamic worker management",
   "main": "dist/index.js",
@@ -7,6 +7,17 @@
   "files": [
     "dist/**/*"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Marce1o/atomic-queues.git"
+  },
+  "homepage": "https://github.com/Marce1o/atomic-queues#readme",
+  "bugs": {
+    "url": "https://github.com/Marce1o/atomic-queues/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "rimraf dist && tsc",
     "dev": "tsc --watch",
@@ -65,9 +76,5 @@
   "dependencies": {
     "class-transformer": "^0.5.1",
     "uuid": "^9.0.0"
-  },
-  "repository": {
-    "type": "git",
-    "url": ""
   }
 }

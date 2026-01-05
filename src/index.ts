@@ -17,7 +17,7 @@
  *
  * @example
  * ```typescript
- * import { AtomicQueuesModule, QueueManagerService, WorkerManagerService } from '@atomicqueues/core';
+ * import { AtomicQueuesModule, QueueManagerService, WorkerManagerService } from 'atomic-queues';
  *
  * @Module({
  *   imports: [
