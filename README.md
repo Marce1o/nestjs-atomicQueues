@@ -1,45 +1,221 @@
 # atomic-queues
 
-A NestJS library for atomic, sequential job processing per entity with BullMQ and Redis.
+A NestJS library for atomic, sequential job processing per entity using BullMQ and Redis.
 
-## What It Does
+---
+
+## Overview
+
+**atomic-queues** solves the fundamental concurrency problem in distributed systems: ensuring that operations on the same logical entity execute sequentially, even when requests arrive simultaneously across multiple service instances.
+
+Rather than relying on distributed locks—which introduce contention, latency degradation, and complex failure modes—this library implements a **per-entity queue architecture** where each entity (user account, game table, order, document) has its own dedicated processing queue and worker.
+
+---
+
+## The Concurrency Problem
+
+### Race Condition Scenario
+
+Consider a financial system where a user with a $100 balance submits two concurrent $80 withdrawal requests:
 
 ```
-╔═══════════════════════════════════════════════════════════════════════════════╗
-║                              THE PROBLEM                                       ║
-╠═══════════════════════════════════════════════════════════════════════════════╣
-║                                                                                ║
-║   User has $100 balance. Two $80 withdrawals arrive at the same time:          ║
-║                                                                                ║
-║       Withdraw $80 ──┐                                                         ║
-║          (API 1)     │    ┌────────────────────┐                               ║
-║                      ├───▶│  Balance: $100     │                               ║
-║       Withdraw $80 ──┘    │  Both read $100    │                               ║
-║          (API 2)          │  Both approve      │                               ║
-║                           │  Final: -$60 💥    │                               ║
-║                           └────────────────────┘                               ║
-║                                                                                ║
-║   Race condition: Both transactions see $100, both succeed, balance goes -$60  ║
-║                                                                                ║
-╚═══════════════════════════════════════════════════════════════════════════════╝
-
-╔═══════════════════════════════════════════════════════════════════════════════╗
-║                              THE SOLUTION                                      ║
-╠═══════════════════════════════════════════════════════════════════════════════╣
-║                                                                                ║
-║   atomic-queues processes one transaction at a time per account:               ║
-║                                                                                ║
-║       Withdraw $80 ──┐     ┌─────────────┐     ┌─────────────────────────────┐ ║
-║          (API 1)     │     │             │     │ Worker processes queue:     │ ║
-║                      ├────▶│ Redis Queue │────▶│                             │ ║
-║       Withdraw $80 ──┘     │  [W1] [W2]  │     │  W1: $100 - $80 = $20 ✓     │ ║
-║          (API 2)           │             │     │  W2: $20 < $80 = REJECTED ✓ │ ║
-║                            └─────────────┘     └─────────────────────────────┘ ║
-║                                                                                ║
-║   Sequential processing: W1 completes first, W2 sees updated balance           ║
-║                                                                                ║
-╚═══════════════════════════════════════════════════════════════════════════════╝
+Time    Request A                    Request B                    Database State
+─────────────────────────────────────────────────────────────────────────────────
+T₀      SELECT balance → $100        SELECT balance → $100        balance = $100
+T₁      CHECK: $100 >= $80 ✓         CHECK: $100 >= $80 ✓              
+T₂      UPDATE: balance = $20        UPDATE: balance = $20        balance = $20
+T₃                                   UPDATE: balance = -$60       balance = -$60
+─────────────────────────────────────────────────────────────────────────────────
+Result: Both withdrawals succeed. Balance becomes -$60. Integrity violated.
 ```
+
+This occurs because both transactions read the balance before either writes, a classic **lost update anomaly**.
+
+### Traditional Solutions and Their Limitations
+
+| Approach | Mechanism | Failure Mode |
+|----------|-----------|--------------|
+| **Distributed Locks (Redlock)** | Acquire lock before operation, release after | Lock contention storms under high throughput; exponential latency degradation; lock holder failure requires TTL expiration |
+| **Database Row Locks** | `SELECT ... FOR UPDATE` | Connection pool exhaustion; deadlock risk in multi-entity transactions; database becomes bottleneck |
+| **Optimistic Concurrency Control** | Version numbers with conditional updates | Retry storms under contention; unbounded retries on hot entities; wasted compute cycles |
+| **Application Semaphores** | In-memory mutex/semaphore | Single-process only; ineffective in horizontally scaled deployments |
+
+**Fundamental limitation**: These approaches attempt to serialize access at the *moment of execution*. Under high contention, this creates a thundering herd where N requests compete for the same resource simultaneously.
+
+---
+
+## The Per-Entity Queue Architecture
+
+### Design Principle
+
+Instead of serializing at execution time, **serialize at ingestion time**:
+
+```
+                                    ┌─────────────────────────────────────────┐
+   Request A ─┐                     │         Per-Entity Queue                │
+              │                     │  ┌─────┐ ┌─────┐ ┌─────┐               │
+   Request B ─┼──▶ [Entity Router] ─┼─▶│ Op₁ │→│ Op₂ │→│ Op₃ │→ [Worker] ─┐ │
+              │                     │  └─────┘ └─────┘ └─────┘             │ │
+   Request C ─┘                     │                                      │ │
+                                    │      Sequential Processing ◄─────────┘ │
+                                    └─────────────────────────────────────────┘
+```
+
+Operations targeting the same entity are immediately routed to that entity's queue. A dedicated worker processes operations one at a time, guaranteeing:
+
+1. **Serialized Execution**: Operations execute in FIFO order
+2. **Consistent State Visibility**: Each operation sees the result of all prior operations
+3. **Isolation**: No interleaving of concurrent modifications
+
+### Correctness Under Load
+
+```
+Time    Queue State                 Worker Execution              Database State
+───────────────────────────────────────────────────────────────────────────────────
+T₀      [Withdraw $80, Withdraw $80]                              balance = $100
+T₁      [Withdraw $80]              Process Op₁: $100 - $80       balance = $20
+T₂      []                          Process Op₂: $20 < $80 → REJECT   balance = $20
+───────────────────────────────────────────────────────────────────────────────────
+Result: First withdrawal succeeds. Second is rejected. Integrity preserved.
+```
+
+---
+
+## Comparative Analysis
+
+### Behavioral Characteristics
+
+| Characteristic            | Distributed Locks                     | Per-Entity Queues                               |
+|-------------------------  |-------------------------------------- |-------------------                              |
+| **Request Handling**      | Block until lock acquired             | Queue immediately, return                       |
+| **Latency Distribution**  | Bimodal (fast if uncontested)         | Predictable (queue depth × avg processing time) |
+| **Throughput Ceiling**    | Limited by lock contention            | Limited only by worker processing rate          |
+| **Failure Recovery**      | Stuck locks until TTL expiration      | Failed jobs retry or move to dead-letter queue  |
+| **Ordering Guarantees**   | Non-deterministic (race to acquire)   | Deterministic FIFO                              |
+| **Observability**         | Lock wait times difficult to measure  | Queue depth, throughput directly observable     |
+
+### Scalability Profile
+
+```
+Throughput
+    ▲
+    │                                    ╭──── Per-Entity Queues
+    │                                ╭───╯     (linear scaling)
+    │                            ╭───╯
+    │                        ╭───╯
+    │                    ╭───╯
+    │                ╭───╯         ╭────── Distributed Locks
+    │            ╭───╯         ╭───╯       (contention ceiling)
+    │        ╭───╯         ╭───╯
+    │    ╭───╯     ╭───────╯
+    │╭───╯ ╭───────╯
+    ├──────╯
+    └──────────────────────────────────────────────▶ Concurrent Requests
+
+    Lock-based systems hit a contention ceiling where adding more 
+    requests increases wait time faster than throughput.
+    
+    Queue-based systems scale linearly: each entity's queue is 
+    independent, so Entity A's load doesn't affect Entity B.
+```
+
+---
+
+## Architecture
+
+### Horizontal Scaling Model
+
+Workers are distributed across service instances via Redis-based coordination:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              REDIS CLUSTER                                       │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │  Entity Queues                                                             │ │
+│  │  ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐              │ │
+│  │  │ account:ACC-001 │ │ account:ACC-002 │ │ account:ACC-003 │  ...         │ │
+│  │  │ [op₁][op₂][op₃] │ │ [op₁]           │ │ [op₁][op₂]      │              │ │
+│  │  └────────┬────────┘ └────────┬────────┘ └────────┬────────┘              │ │
+│  │           │                   │                   │                        │ │
+│  │  ┌────────┴───────────────────┴───────────────────┴────────┐              │ │
+│  │  │              Worker Heartbeat Registry                   │              │ │
+│  │  │  ACC-001 → node-1 | ACC-002 → node-2 | ACC-003 → node-1  │              │ │
+│  │  └──────────────────────────────────────────────────────────┘              │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────────┘
+           │                        │                        │
+           ▼                        ▼                        ▼
+┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐
+│   Service Node 1    │  │   Service Node 2    │  │   Service Node 3    │
+│                     │  │                     │  │                     │
+│  ┌───────────────┐  │  │  ┌───────────────┐  │  │  ┌───────────────┐  │
+│  │ Worker ACC-001│  │  │  │ Worker ACC-002│  │  │  │ Worker ACC-004│  │
+│  │ Worker ACC-003│  │  │  │ Worker ACC-005│  │  │  │ Worker ACC-006│  │
+│  └───────────────┘  │  │  └───────────────┘  │  │  └───────────────┘  │
+└─────────────────────┘  └─────────────────────┘  └─────────────────────┘
+```
+
+**Properties:**
+- Each entity has exactly one active worker at any time (enforced via heartbeat TTL)
+- Workers spawn on-demand when jobs arrive for an entity
+- Workers terminate after configurable idle period
+- Node failure → heartbeat expires → worker respawns on healthy node
+
+### Dynamic Worker Lifecycle
+
+```
+                    Job Arrives for Entity X
+                              │
+                              ▼
+                    ┌─────────────────────┐
+                    │ Worker exists for X? │
+                    └──────────┬──────────┘
+                               │
+              ┌────────────────┴────────────────┐
+              │ NO                              │ YES
+              ▼                                 ▼
+    ┌─────────────────────┐           ┌─────────────────────┐
+    │ Spawn worker for X  │           │ Job added to queue  │
+    │ Register heartbeat  │           │ Worker will process │
+    └─────────────────────┘           └─────────────────────┘
+              │
+              ▼
+    ┌─────────────────────┐
+    │ Process jobs until  │◄─────── Idle Timeout
+    │ queue empty + idle  │         (configurable)
+    └──────────┬──────────┘
+               │
+               ▼
+    ┌─────────────────────┐
+    │ Worker terminates   │
+    │ Heartbeat expires   │
+    └─────────────────────┘
+```
+
+**Resource Efficiency**: A system with 1 million registered accounts but 10,000 active accounts maintains only 10,000 workers.
+
+---
+
+## Use Cases
+
+### Recommended Applications
+
+| Domain            | Entity Type     | Operations                                          |
+|-------------------|-----------------|-----------------------------------------------------|
+| **Finance**       | Account, Wallet | Deposits, withdrawals, transfers, balance queries   |
+| **Gaming**        | Game, Match     | Player actions, state transitions, bet processing   |
+| **E-Commerce**    | Order, Cart     | Add/remove items, apply discounts, checkout         |
+| **Collaboration** | Document        | Edits, comments, permission changes                 |
+| **IoT**           | Device          | Command dispatch, state synchronization             |
+
+### When to Use Alternative Approaches
+
+- **Read-heavy workloads**: Use caching layers (Redis, Memcached) or read replicas
+- **Parallelizable operations**: Use standard job queues (BullMQ, SQS) without entity affinity
+- **Fire-and-forget notifications**: Use pub/sub (Redis Pub/Sub, Kafka) without ordering guarantees
+- **Short critical sections (<10ms)**: Distributed locks may suffice if contention is low
+
+---
 
 ## Installation
 
