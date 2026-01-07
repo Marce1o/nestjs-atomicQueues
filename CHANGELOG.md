@@ -10,12 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **QueueBus** - A CQRS-style bus for adding commands/queries to queues
-  - `QueueBus.execute(pattern, command, options)` - Adds command instance to a queue
+  - `QueueBus.forProcessor(Processor).enqueue(command)` - Fluent API for enqueueing commands
   - `QueueBus.registerCommands(...classes)` - Static registration of command classes
   - `QueueBus.registerQueries(...classes)` - Static registration of query classes
-  - Queue patterns with `{entityId}` placeholder: `'bji:table:{entityId}:queue'`
-  - Job name automatically derived from class name (e.g., `MakeBetCommand` → `'MakeBetCommand'`)
+  - Queue name derived from `@WorkerProcessor` decorator - no manual patterns needed
+  - Job name automatically derived from class name (e.g., `MyCommand` → `'MyCommand'`)
   - Full integration with `ProcessorDiscoveryService` for worker-side routing
+
+- **QueueTarget** - Fluent builder returned by `forProcessor()`
+  - `.enqueue(command, options?)` - Add single command to queue
+  - `.enqueueAndWait(command, options?)` - Add and wait for result
+  - `.enqueueBulk(commands[], options?)` - Add multiple commands
 
 - **QueueManagerService.getQueueEvents(name)** - Get `QueueEvents` instance for a queue
 
@@ -30,35 +35,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 With QueueBus, you no longer need `@JobCommand` decorators OR job name enums:
 
-**Before (v1.2.0) - Decorators required:**
+**Before (v1.2.0) - Manual queue patterns:**
 ```typescript
-@JobCommand('make-bet')
-export class MakeBetCommand { ... }
-
-// Enum still needed for adding jobs
-enum JobNames { MakeBet = 'make-bet' }
-queue.add(JobNames.MakeBet, { bets, player });
+await queueBus.execute(
+  'entity:{entityId}:queue',
+  new MyCommand(entityId, data),
+  { entityId }
+);
 ```
 
-**After (v1.3.0) - Pure classes, no decorators:**
+**After (v1.3.0) - Fluent API with processor reference:**
 ```typescript
-// command.ts - Just a class, no decorator
-export class MakeBetCommand {
-  constructor(
-    public readonly tableId: string,
-    public readonly bets: any[],
-    public readonly player: any,
-  ) {}
-}
-
-// registration.ts - Register once at startup
-QueueBus.registerCommands(MakeBetCommand, DealCommand, ...);
-
-// usage - Pass command instance to QueueBus
-queueBus.execute('table:{entityId}:queue', 
-  new MakeBetCommand(tableId, bets, player),
-  { entityId: tableId }
-);
+// Queue config pulled from @WorkerProcessor decorator
+await queueBus
+  .forProcessor(MyProcessor)
+  .enqueue(new MyCommand(entityId, data));
+// entityId auto-extracted from command properties
 ```
 
 ## [1.2.0] - 2026-01-06
@@ -68,7 +60,7 @@ queueBus.execute('table:{entityId}:queue',
 - **Zero-boilerplate CQRS integration** with `@JobCommand` and `@JobQuery` decorators
   - `@JobCommand('job-name')` - Class decorator to route jobs directly to command classes
   - `@JobQuery('job-name')` - Class decorator to route jobs directly to query classes
-  - Auto-derives job names from class names (e.g., `MakeBetCommand` → `'make-bet'`)
+  - Auto-derives job names from class names (e.g., `MySuperCommand` → `'my-super'`)
   - Supports explicit job names and entity type scoping
   - Constructor parameter extraction for automatic command instantiation
 
@@ -94,10 +86,10 @@ Commands decorated with `@JobCommand` no longer need explicit `@JobHandler` meth
 **Before (v1.1.0):**
 ```typescript
 // In processor file - BOILERPLATE
-@JobHandler('make-bet')
-async handleMakeBet(job: Job, tableId: string) {
+@JobHandler('process-order')
+async handleProcessOrder(job: Job, entityId: string) {
   return this.commandBus.execute(
-    new MakeBetCommand(tableId, job.data.bets, job.data.player)
+    new ProcessOrderCommand(entityId, job.data.items, job.data.user)
   );
 }
 ```
@@ -105,18 +97,18 @@ async handleMakeBet(job: Job, tableId: string) {
 **After (v1.2.0):**
 ```typescript
 // In command file - just add decorator
-@JobCommand('make-bet')
-export class MakeBetCommand {
+@JobCommand('process-order')
+export class ProcessOrderCommand {
   constructor(
-    public readonly tableId: string,  // ← entityId (auto-injected)
-    public readonly bets: any[],      // ← from job.data.bets
-    public readonly player: any,      // ← from job.data.player
+    public readonly entityId: string,  // ← entityId (auto-injected)
+    public readonly items: any[],      // ← from job.data.items
+    public readonly user: any,         // ← from job.data.user
   ) {}
 }
 
 // Processor becomes nearly empty - just configuration
-@WorkerProcessor({ entityType: 'table', ... })
-export class TableProcessor {
+@WorkerProcessor({ entityType: 'order', ... })
+export class OrderProcessor {
   @JobHandler('*')
   handleUnmapped(job: Job) { /* fallback */ }
 }
