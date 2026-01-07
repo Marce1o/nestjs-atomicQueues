@@ -29,6 +29,7 @@ import { WorkerManagerService } from '../worker-manager';
 import { QueueManagerService } from '../queue-manager';
 import { CronManagerService } from '../cron-manager';
 import { CommandDiscoveryService } from '../command-discovery';
+import { ServiceQueueManager } from '../service-queue';
 import { QueueBus } from '../queue-bus';
 import { ATOMIC_QUEUES_CONFIG } from '../constants';
 import { IAtomicQueuesModuleConfig } from '../../domain';
@@ -118,6 +119,7 @@ export class ProcessorDiscoveryService implements OnModuleInit {
     private readonly queueManager: QueueManagerService,
     @Optional() private readonly cronManager: CronManagerService,
     @Optional() private readonly commandDiscovery: CommandDiscoveryService,
+    @Optional() private readonly serviceQueueManager: ServiceQueueManager,
     @Inject(ATOMIC_QUEUES_CONFIG)
     private readonly config: IAtomicQueuesModuleConfig,
   ) {}
@@ -155,11 +157,31 @@ export class ProcessorDiscoveryService implements OnModuleInit {
     await this.discoverProcessors();
     await this.discoverScalers();
     await this.registerScalersWithCronManager();
+    await this.registerSpawnWorkerHandler();
     
     // Auto-register commands from CQRS handlers (default: true)
     if (this.config.autoRegisterCommands !== false) {
       this.autoRegisterCommandsFromCqrs();
     }
+  }
+  
+  /**
+   * Register spawn worker handler with ServiceQueueManager
+   * This allows workers to be spawned on-demand via the service queue
+   */
+  private async registerSpawnWorkerHandler(): Promise<void> {
+    if (!this.serviceQueueManager) {
+      this.logger.debug('ServiceQueueManager not available, skipping spawn handler registration');
+      return;
+    }
+    
+    this.serviceQueueManager.registerSpawnWorkerHandler(
+      async (entityType: string, entityId: string) => {
+        await this.createWorkerForEntity(entityType, entityId);
+      },
+    );
+    
+    this.logger.debug('Spawn worker handler registered with ServiceQueueManager');
   }
   
   /**
