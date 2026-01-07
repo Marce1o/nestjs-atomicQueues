@@ -4,7 +4,7 @@ A plug-and-play NestJS library for atomic process handling per entity with BullM
 
 ## Overview
 
-`atomic-queues` provides a unified architecture for handling atomic, sequential processing of jobs on a per-entity basis. It abstracts the complexity of managing dynamic queues, workers, and distributed locking into a simple, declarative API.
+`atomic-queues` provides a unified architecture for handling atomic, sequential processing of jobs on a per-entity basis. It abstracts the complexity of managing dynamic queues, workers, and distributed locking into a simple, **declarative decorator-based API**.
 
 ### Problem It Solves
 
@@ -18,18 +18,359 @@ This library solves all of these with a single, cohesive module.
 
 ---
 
-## Example Scenario: Order Processing System
+## Features
 
-Imagine an e-commerce platform where each customer can place multiple orders. Each order goes through several stages: validation, payment, inventory reservation, and shipping. These stages **must happen in sequence** for each order, but different orders can be processed in parallel.
+- **Decorator-based API**: Use `@WorkerProcessor` and `@JobHandler` for declarative job routing
+- **Auto-discovery**: Processors and scalers are automatically discovered and registered
+- **Dynamic Per-Entity Queues**: Automatically create and manage queues for each entity
+- **Worker Lifecycle Management**: Heartbeat-based worker tracking with TTL expiration
+- **Distributed Resource Locking**: Atomic lock acquisition
+- **Graceful Shutdown**: Coordinated shutdown via Redis pub/sub across cluster nodes
+- **Cron-based Scaling**: Automatic worker spawning and termination based on demand
 
+---
+
+## Installation
+
+```bash
+npm install atomic-queues bullmq ioredis
 ```
-Customer A places Order 1 → [validate] → [pay] → [reserve] → [ship]
-Customer A places Order 2 → [validate] → [pay] → [reserve] → [ship]
-Customer B places Order 3 → [validate] → [pay] → [reserve] → [ship]
+
+---
+
+## Quick Start (Decorator-based API) ✨
+
+The recommended way to use `atomic-queues` is with the decorator-based API for clean, declarative code.
+
+### 1. Import the Module
+
+```typescript
+import { Module } from '@nestjs/common';
+import { AtomicQueuesModule } from 'atomic-queues';
+
+@Module({
+  imports: [
+    AtomicQueuesModule.forRootAsync({
+      imports: [ConfigModule],
+      useFactory: (configService: ConfigService) => ({
+        redis: {
+          url: configService.get('REDIS_URL'),
+        },
+        keyPrefix: 'myapp',
+        enableCronManager: true,
+        workerDefaults: {
+          concurrency: 1,
+          heartbeatTTL: 3,
+        },
+      }),
+      inject: [ConfigService],
+    }),
+  ],
+})
+export class AppModule {}
 ```
 
-**Without atomic queues**: Race conditions, duplicate payments, inventory overselling.
-**With atomic queues**: Each order gets its own queue and worker, ensuring sequential processing.
+### 2. Create a Worker Processor
+
+Use `@WorkerProcessor` to define a processor class and `@JobHandler` to route jobs to methods:
+
+```typescript
+import { Injectable } from '@nestjs/common';
+import { CommandBus } from '@nestjs/cqrs';
+import { Job } from 'bullmq';
+import { WorkerProcessor, JobHandler } from 'atomic-queues';
+
+@WorkerProcessor({
+  entityType: 'order',
+  queueName: (orderId) => `order-${orderId}-queue`,
+  workerName: (orderId) => `order-${orderId}-worker`,
+  workerConfig: {
+    concurrency: 1,
+    heartbeatTTL: 3,
+  },
+})
+@Injectable()
+export class OrderWorkerProcessor {
+  constructor(private readonly commandBus: CommandBus) {}
+
+  @JobHandler('validate')
+  async handleValidate(job: Job, orderId: string) {
+    const { items } = job.data;
+    return this.commandBus.execute(new ValidateOrderCommand(orderId, items));
+  }
+
+  @JobHandler('process-payment')
+  async handlePayment(job: Job, orderId: string) {
+    const { amount } = job.data;
+    return this.commandBus.execute(new ProcessPaymentCommand(orderId, amount));
+  }
+
+  @JobHandler('ship')
+  async handleShip(job: Job, orderId: string) {
+    return this.commandBus.execute(new ShipOrderCommand(orderId));
+  }
+
+  // Wildcard handler for any unmatched job names
+  @JobHandler('*')
+  async handleOther(job: Job, orderId: string) {
+    console.log(`Unknown job type: ${job.name} for order ${orderId}`);
+  }
+}
+```
+
+### 3. Create an Entity Scaler
+
+Use `@EntityScaler` to define scaling logic with decorated methods:
+
+```typescript
+import { Injectable } from '@nestjs/common';
+import { EntityScaler, GetActiveEntities, GetDesiredWorkerCount } from 'atomic-queues';
+
+@EntityScaler({
+  entityType: 'order',
+  maxWorkersPerEntity: 1,
+})
+@Injectable()
+export class OrderEntityScaler {
+  constructor(private readonly orderRepository: OrderRepository) {}
+
+  @GetActiveEntities()
+  async getActiveOrders(): Promise<string[]> {
+    // Return order IDs that have pending work
+    return this.orderRepository.findPendingOrderIds();
+  }
+
+  @GetDesiredWorkerCount()
+  async getWorkerCount(orderId: string): Promise<number> {
+    // Each order gets exactly 1 worker
+    return 1;
+  }
+}
+```
+
+### 4. Register in Your Module
+
+```typescript
+@Module({
+  imports: [AtomicQueuesModule.forRootAsync({ ... })],
+  providers: [
+    OrderWorkerProcessor,  // Auto-discovered by @WorkerProcessor
+    OrderEntityScaler,     // Auto-discovered by @EntityScaler
+  ],
+})
+export class OrderModule {}
+```
+
+### 5. Queue Jobs
+
+```typescript
+import { Injectable } from '@nestjs/common';
+import { QueueManagerService } from 'atomic-queues';
+
+@Injectable()
+export class OrderService {
+  constructor(private readonly queueManager: QueueManagerService) {}
+
+  async createOrder(orderId: string, items: any[], amount: number) {
+    const queue = this.queueManager.getOrCreateQueue(`order-${orderId}-queue`);
+    
+    // Jobs are processed in order (FIFO) by the worker
+    await queue.add('validate', { items });
+    await queue.add('process-payment', { amount });
+    await queue.add('ship', {});
+    
+    return orderId;
+  }
+}
+```
+
+That's it! The library will:
+1. **Auto-discover** your `OrderWorkerProcessor` and `OrderEntityScaler`
+2. **Create workers** for active jobs via `CronManagerService`
+3. **Route jobs** to the correct `@JobHandler` method
+4. **Clean up** workers when jobs are complete
+
+---
+
+## Decorators Reference
+
+### @WorkerProcessor(options)
+
+Class decorator that marks a service as a worker processor for an entity type.
+
+```typescript
+@WorkerProcessor({
+  entityType: string;                              // Required: Entity type (e.g., 'order', 'user')
+  queueName?: string | ((entityId: string) => string);   // Queue name or function
+  workerName?: string | ((entityId: string) => string);  // Worker name or function
+  workerConfig?: {
+    concurrency?: number;       // Default: 1
+    stalledInterval?: number;   // Default: 1000ms
+    lockDuration?: number;      // Default: 30000ms
+    heartbeatTTL?: number;      // Default: 3 seconds
+    heartbeatInterval?: number; // Default: 1000ms
+  };
+})
+```
+
+### @JobHandler(jobName)
+
+Method decorator that routes jobs with a specific name to this handler.
+
+```typescript
+@JobHandler('validate')           // Handles jobs named 'validate'
+async handleValidate(job: Job, entityId: string) { ... }
+
+@JobHandler('*')                  // Wildcard: handles any unmatched job
+async handleOther(job: Job, entityId: string) { ... }
+```
+
+### @EntityScaler(options)
+
+Class decorator for entity scaling configuration.
+
+```typescript
+@EntityScaler({
+  entityType: string;           // Required: Entity type to scale
+  maxWorkersPerEntity?: number; // Default: 1
+})
+```
+
+### @GetActiveEntities()
+
+Method decorator marking the method that returns active entity IDs.
+
+```typescript
+@GetActiveEntities()
+async getActiveOrders(): Promise<string[]> {
+  return ['order-1', 'order-2'];
+}
+```
+
+### @GetDesiredWorkerCount()
+
+Method decorator for desired worker count calculation.
+
+```typescript
+@GetDesiredWorkerCount()
+async getWorkerCount(entityId: string): Promise<number> {
+  return 1;
+}
+```
+
+### @OnSpawnWorker() / @OnTerminateWorker()
+
+Optional method decorators for custom spawn/terminate logic.
+
+```typescript
+@OnSpawnWorker()
+async customSpawn(entityId: string): Promise<void> {
+  console.log(`Spawning worker for ${entityId}`);
+}
+
+@OnTerminateWorker()
+async customTerminate(entityId: string, workerId: string): Promise<void> {
+  console.log(`Terminating worker ${workerId} for ${entityId}`);
+}
+```
+
+---
+
+## Migration Guide
+
+### Migrating from Manual Registration to Decorators
+
+**Before (Manual Registration):**
+
+```typescript
+// order-job.processor.ts (one file per job type)
+@Injectable()
+@JobProcessor('validate-order')
+export class ValidateOrderProcessor {
+  async process(job: Job) {
+    // validation logic
+  }
+}
+
+// order-worker.service.ts (manual worker creation)
+@Injectable()
+export class OrderWorkerService {
+  constructor(
+    private workerManager: WorkerManagerService,
+    private jobRegistry: JobProcessorRegistry,
+  ) {}
+
+  async createOrderWorker(orderId: string) {
+    await this.workerManager.createWorker({
+      workerName: `order-${orderId}-worker`,
+      queueName: `order-${orderId}-queue`,
+      processor: async (job) => {
+        const processor = this.jobRegistry.getProcessor(job.name);
+        await processor.process(job);
+      },
+    });
+  }
+}
+
+// app.module.ts (manual entity type registration)
+cronManager.registerEntityType({
+  entityType: 'order',
+  getActiveEntityIds: async () => [...],
+  getDesiredWorkerCount: async (id) => 1,
+  onSpawnWorker: async (id) => orderWorkerService.createOrderWorker(id),
+});
+```
+
+**After (Decorator-based):**
+
+```typescript
+// table-worker.processor.ts (single file with all handlers)
+@WorkerProcessor({
+  entityType: 'order',
+  queueName: (id) => `order-${id}-queue`,
+  workerName: (id) => `order-${id}-worker`,
+})
+@Injectable()
+export class OrderWorkerProcessor {
+  @JobHandler('validate-order')
+  async handleValidate(job: Job, orderId: string) {
+    // validation logic
+  }
+  
+  @JobHandler('process-payment')
+  async handlePayment(job: Job, orderId: string) {
+    // payment logic
+  }
+}
+
+// table-entity.scaler.ts (scaling config in one place)
+@EntityScaler({ entityType: 'order', maxWorkersPerEntity: 1 })
+@Injectable()
+export class OrderEntityScaler {
+  @GetActiveEntities()
+  async getActiveOrders(): Promise<string[]> { return [...]; }
+  
+  @GetDesiredWorkerCount()
+  async getWorkerCount(id: string): Promise<number> { return 1; }
+}
+
+// app.module.ts (just provide the classes, auto-discovery handles the rest)
+@Module({
+  providers: [OrderWorkerProcessor, OrderEntityScaler],
+})
+export class OrderModule {}
+```
+
+### Key Benefits of Migration
+
+| Aspect | Manual API | Decorator API |
+|--------|-----------|---------------|
+| **Job routing** | Manual switch/case or registry lookup | Automatic via `@JobHandler` |
+| **Worker creation** | Explicit service method | Auto-generated by library |
+| **Scaling config** | Imperative `registerEntityType()` call | Declarative `@EntityScaler` class |
+| **Entity ID access** | Manual parsing from job data | Injected as method parameter |
+| **Code organization** | Multiple files and services | Single processor class per entity type |
+| **Registration** | Manual in `onModuleInit` | Auto-discovered at startup |
 
 ---
 
@@ -299,29 +640,11 @@ Customer B places Order 3 → [validate] → [pay] → [reserve] → [ship]
 
 ---
 
-## Features
+## Manual API (Legacy)
 
-- **Dynamic Per-Entity Queues**: Automatically create and manage queues for each entity (user, order, session, etc.)
-- **Worker Lifecycle Management**: Heartbeat-based worker tracking with TTL expiration
-- **Distributed Resource Locking**: Atomic lock acquisition using Lua scripts
-- **Graceful Shutdown**: Coordinated shutdown via Redis pub/sub across cluster nodes
-- **Cron-based Scaling**: Automatic worker spawning and termination based on demand
-- **Job Processor Registry**: Decorator-based job handler registration
-- **Index Tracking**: Track jobs, workers, and queue states across entities
+The manual API is still available for advanced use cases or gradual migration. **For most use cases, prefer the decorator-based API above.**
 
----
-
-## Installation
-
-```bash
-npm install atomic-queues bullmq ioredis
-```
-
----
-
-## Quick Start
-
-### 1. Import the Module
+### 1. Module Configuration
 
 ```typescript
 import { Module } from '@nestjs/common';
@@ -343,35 +666,7 @@ import { AtomicQueuesModule } from 'atomic-queues';
 export class AppModule {}
 ```
 
-### 2. Async Configuration
-
-```typescript
-import { Module } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
-import { AtomicQueuesModule } from 'atomic-queues';
-
-@Module({
-  imports: [
-    AtomicQueuesModule.forRootAsync({
-      imports: [ConfigModule],
-      useFactory: (configService: ConfigService) => ({
-        redis: {
-          url: configService.get('REDIS_URL'),
-        },
-        enableCronManager: true,
-        workerDefaults: {
-          concurrency: 1,
-          heartbeatTTL: 3,
-        },
-      }),
-      inject: [ConfigService],
-    }),
-  ],
-})
-export class AppModule {}
-```
-
-### 3. Register Job Processors
+### 2. Register Job Processors Manually
 
 ```typescript
 import { Injectable } from '@nestjs/common';
@@ -388,20 +683,9 @@ export class ValidateOrderProcessor {
     await this.commandBus.execute(new ValidateOrderCommand(orderId, items));
   }
 }
-
-@Injectable()
-@JobProcessor('process-payment')
-export class ProcessPaymentProcessor {
-  constructor(private readonly commandBus: CommandBus) {}
-
-  async process(job: Job) {
-    const { orderId, amount } = job.data;
-    await this.commandBus.execute(new ProcessPaymentCommand(orderId, amount));
-  }
-}
 ```
 
-### 4. Queue Jobs
+### 3. Queue Jobs Manually
 
 ```typescript
 import { Injectable } from '@nestjs/common';
@@ -431,7 +715,7 @@ export class OrderService {
 }
 ```
 
-### 5. Create Workers
+### 4. Create Workers Manually
 
 ```typescript
 import { Injectable } from '@nestjs/common';
@@ -555,6 +839,24 @@ const available = await lockService.getAvailableResource(
 ### CronManagerService
 
 Automatic worker scaling based on demand.
+
+**Recommended: Use `@EntityScaler` decorator (see Quick Start section above)**
+
+The decorator-based approach is preferred as it's cleaner and auto-discovered:
+
+```typescript
+@EntityScaler({ entityType: 'order', maxWorkersPerEntity: 1 })
+@Injectable()
+export class OrderEntityScaler {
+  @GetActiveEntities()
+  async getActiveOrders(): Promise<string[]> { ... }
+  
+  @GetDesiredWorkerCount()
+  async getWorkerCount(orderId: string): Promise<number> { return 1; }
+}
+```
+
+**Legacy API (Manual Registration):**
 
 ```typescript
 // Register entity type for automatic scaling

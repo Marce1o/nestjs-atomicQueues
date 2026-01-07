@@ -5,6 +5,7 @@ import {
   Provider,
   Type,
 } from '@nestjs/common';
+import { DiscoveryModule, DiscoveryService, MetadataScanner } from '@nestjs/core';
 import Redis from 'ioredis';
 import { IAtomicQueuesModuleConfig, DeepPartial } from '../domain';
 import {
@@ -21,6 +22,7 @@ import {
   IndexManagerService,
   ServiceQueueManager,
   ShutdownStateService,
+  ProcessorDiscoveryService,
 } from '../services';
 
 /**
@@ -64,6 +66,7 @@ const CORE_SERVICES: Provider[] = [
   CronManagerService,
   ServiceQueueManager,
   ShutdownStateService,
+  ProcessorDiscoveryService,
 ];
 
 /**
@@ -120,12 +123,15 @@ export class AtomicQueuesModule {
       module: AtomicQueuesModule,
       // Note: CqrsModule should be imported by the consuming app, not here
       // to avoid duplicate CommandBus/QueryBus instances
+      imports: [DiscoveryModule],
       providers: [
         {
           provide: ATOMIC_QUEUES_CONFIG,
           useValue: config,
         },
         redisProvider,
+        DiscoveryService,
+        MetadataScanner,
         ...CORE_SERVICES,
       ],
       exports: [
@@ -147,8 +153,14 @@ export class AtomicQueuesModule {
       module: AtomicQueuesModule,
       // Note: CqrsModule should be imported by the consuming app, not here
       // to avoid duplicate CommandBus/QueryBus instances
-      imports: [...(options.imports || [])],
-      providers: [configProvider, redisProvider, ...CORE_SERVICES],
+      imports: [DiscoveryModule, ...(options.imports || [])],
+      providers: [
+        configProvider,
+        redisProvider,
+        DiscoveryService,
+        MetadataScanner,
+        ...CORE_SERVICES,
+      ],
       exports: [
         ATOMIC_QUEUES_CONFIG,
         ATOMIC_QUEUES_REDIS,
