@@ -367,15 +367,9 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
       `Spawning ${toSpawn} workers for ${entityType}/${entityId}`,
     );
 
-    // Track worker creation requests to avoid over-spawning
-    const pendingCreations = await this.getPendingWorkerCreations(
-      entityType,
-      entityId,
-    );
-    const actualToSpawn = Math.max(0, toSpawn - pendingCreations);
-
-    for (let i = 0; i < actualToSpawn; i++) {
-      await this.incrementWorkerCreationRequest(entityType, entityId);
+    // Spawn workers - workerExists check in createWorkerForEntity prevents duplicates
+    // Service queue atomicity handles distributed coordination
+    for (let i = 0; i < toSpawn; i++) {
       if (config.onSpawnWorker) {
         try {
           await config.onSpawnWorker(entityId);
@@ -383,7 +377,6 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
           this.logger.error(
             `Failed to spawn worker for ${entityType}/${entityId}: ${(error as Error).message}`,
           );
-          await this.decrementWorkerCreationRequest(entityType, entityId);
         }
       }
     }
@@ -394,7 +387,7 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
       currentWorkers,
       desiredWorkers: targetWorkers,
       action: 'spawn',
-      count: actualToSpawn,
+      count: toSpawn,
     };
   }
 
@@ -599,45 +592,6 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
     }
 
     return entities;
-  }
-
-  /**
-   * Get pending worker creation requests count.
-   */
-  private async getPendingWorkerCreations(
-    entityType: string,
-    entityId: string,
-  ): Promise<number> {
-    const key = `${this.keyPrefix}:worker-creation:${entityType}:${entityId}`;
-    const count = await this.redis.get(key);
-    return count ? parseInt(count, 10) : 0;
-  }
-
-  /**
-   * Increment worker creation request counter.
-   */
-  private async incrementWorkerCreationRequest(
-    entityType: string,
-    entityId: string,
-  ): Promise<void> {
-    const key = `${this.keyPrefix}:worker-creation:${entityType}:${entityId}`;
-    await this.redis.incr(key);
-    await this.redis.expire(key, 60); // TTL for cleanup
-  }
-
-  /**
-   * Decrement worker creation request counter.
-   */
-  async decrementWorkerCreationRequest(
-    entityType: string,
-    entityId: string,
-  ): Promise<void> {
-    const key = `${this.keyPrefix}:worker-creation:${entityType}:${entityId}`;
-    const current = await this.redis.get(key);
-
-    if (current && parseInt(current, 10) > 0) {
-      await this.redis.decr(key);
-    }
   }
 
   /**
