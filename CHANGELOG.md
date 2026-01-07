@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-01-06
+
+### Added
+
+- **QueueBus** - A CQRS-style bus for adding commands/queries to queues
+  - `QueueBus.execute(pattern, command, options)` - Adds command instance to a queue
+  - `QueueBus.registerCommands(...classes)` - Static registration of command classes
+  - `QueueBus.registerQueries(...classes)` - Static registration of query classes
+  - Queue patterns with `{entityId}` placeholder: `'bji:table:{entityId}:queue'`
+  - Job name automatically derived from class name (e.g., `MakeBetCommand` → `'MakeBetCommand'`)
+  - Full integration with `ProcessorDiscoveryService` for worker-side routing
+
+- **QueueManagerService.getQueueEvents(name)** - Get `QueueEvents` instance for a queue
+
+### Changed
+
+- **ProcessorDiscoveryService** now supports QueueBus registry as additional routing option
+  - Job processing priority: `@JobHandler` → `@JobCommand`/`@JobQuery` → QueueBus registry → wildcard
+  - Commands in QueueBus registry are instantiated with entityId + job.data
+  - `setCommandBus()` / `setQueryBus()` methods for CQRS integration
+
+### Migration
+
+With QueueBus, you no longer need `@JobCommand` decorators OR job name enums:
+
+**Before (v1.2.0) - Decorators required:**
+```typescript
+@JobCommand('make-bet')
+export class MakeBetCommand { ... }
+
+// Enum still needed for adding jobs
+enum JobNames { MakeBet = 'make-bet' }
+queue.add(JobNames.MakeBet, { bets, player });
+```
+
+**After (v1.3.0) - Pure classes, no decorators:**
+```typescript
+// command.ts - Just a class, no decorator
+export class MakeBetCommand {
+  constructor(
+    public readonly tableId: string,
+    public readonly bets: any[],
+    public readonly player: any,
+  ) {}
+}
+
+// registration.ts - Register once at startup
+QueueBus.registerCommands(MakeBetCommand, DealCommand, ...);
+
+// usage - Pass command instance to QueueBus
+queueBus.execute('table:{entityId}:queue', 
+  new MakeBetCommand(tableId, bets, player),
+  { entityId: tableId }
+);
+```
+
 ## [1.2.0] - 2026-01-06
 
 ### Added
