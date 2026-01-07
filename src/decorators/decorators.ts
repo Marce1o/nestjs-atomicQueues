@@ -18,6 +18,8 @@ export const GET_ACTIVE_ENTITIES_METADATA = 'atomic:get-active-entities';
 export const GET_DESIRED_WORKER_COUNT_METADATA = 'atomic:get-desired-worker-count';
 export const ON_SPAWN_WORKER_METADATA = 'atomic:on-spawn-worker';
 export const ON_TERMINATE_WORKER_METADATA = 'atomic:on-terminate-worker';
+export const JOB_COMMAND_METADATA = 'atomic:job-command';
+export const JOB_QUERY_METADATA = 'atomic:job-query';
 
 // =============================================================================
 // DECORATOR OPTION INTERFACES
@@ -45,6 +47,52 @@ export interface EntityScalerOptions {
   entityType: string;
   /** Maximum workers per entity */
   maxWorkersPerEntity?: number;
+}
+
+/**
+ * Options for @JobCommand decorator
+ */
+export interface JobCommandOptions {
+  /** Job name (defaults to kebab-case of class name without 'Command' suffix) */
+  name?: string;
+  /** Entity type this command belongs to (optional, for scoped routing) */
+  entityType?: string;
+  /** Which constructor parameter is the entityId (default: 0 = first param) */
+  entityIdParam?: number | string;
+}
+
+/**
+ * Options for @JobQuery decorator
+ */
+export interface JobQueryOptions {
+  /** Job name (defaults to kebab-case of class name without 'Query' suffix) */
+  name?: string;
+  /** Entity type this query belongs to (optional, for scoped routing) */
+  entityType?: string;
+  /** Which constructor parameter is the entityId (default: 0 = first param) */
+  entityIdParam?: number | string;
+}
+
+/**
+ * Stored job command metadata
+ */
+export interface JobCommandMetadata {
+  jobName: string;
+  entityType?: string;
+  entityIdParam: number | string;
+  targetClass: Function;
+  paramNames: string[];
+}
+
+/**
+ * Stored job query metadata
+ */
+export interface JobQueryMetadata {
+  jobName: string;
+  entityType?: string;
+  entityIdParam: number | string;
+  targetClass: Function;
+  paramNames: string[];
 }
 
 /**
@@ -391,6 +439,177 @@ export function OnTerminateWorker(): MethodDecorator {
     );
     return descriptor;
   };
+}
+
+// =============================================================================
+// JOB COMMAND/QUERY DECORATORS - Zero-Boilerplate CQRS Integration
+// =============================================================================
+
+/**
+ * Helper to convert class name to kebab-case job name
+ * MakeBetCommand -> make-bet
+ * ProcessPaymentCommand -> process-payment
+ */
+function deriveJobName(className: string, suffix: string): string {
+  return className
+    .replace(new RegExp(`${suffix}$`), '')
+    .replace(/([a-z])([A-Z])/g, '$1-$2')
+    .toLowerCase();
+}
+
+/**
+ * Helper to extract constructor parameter names using reflection
+ */
+function getConstructorParamNames(target: Function): string[] {
+  const paramTypes = Reflect.getMetadata('design:paramtypes', target) || [];
+  
+  // Try to extract parameter names from the constructor string
+  const constructorStr = target.toString();
+  const match = constructorStr.match(/constructor\s*\(([^)]*)\)/);
+  
+  if (match && match[1]) {
+    return match[1]
+      .split(',')
+      .map((param) => {
+        // Handle various patterns: 
+        // "public readonly tableId: string" -> "tableId"
+        // "tableId" -> "tableId"
+        // "private tableId: string" -> "tableId"
+        const cleaned = param.trim();
+        const nameMatch = cleaned.match(/(?:public\s+)?(?:private\s+)?(?:protected\s+)?(?:readonly\s+)?(\w+)/);
+        return nameMatch ? nameMatch[1] : cleaned;
+      })
+      .filter((name) => name.length > 0);
+  }
+  
+  // Fallback: generate param0, param1, etc.
+  return paramTypes.map((_: any, i: number) => `param${i}`);
+}
+
+/**
+ * @JobCommand class decorator
+ *
+ * Marks a command class for automatic job routing. When a job with the
+ * specified name arrives, the library will automatically instantiate
+ * the command with entityId + job.data and execute it via CommandBus.
+ *
+ * This eliminates the need for @JobHandler boilerplate in processors.
+ *
+ * @example
+ * ```typescript
+ * // Option 1: Explicit job name
+ * @JobCommand('make-bet')
+ * export class MakeBetCommand {
+ *   constructor(
+ *     public readonly tableId: string,    // entityId (first param)
+ *     public readonly playerId: string,
+ *     public readonly amount: number,
+ *   ) {}
+ * }
+ *
+ * // Option 2: Auto-derived job name (MakeBetCommand -> 'make-bet')
+ * @JobCommand()
+ * export class MakeBetCommand { ... }
+ *
+ * // Option 3: With options
+ * @JobCommand({
+ *   name: 'place-bet',
+ *   entityType: 'table',
+ *   entityIdParam: 'tableId',  // or 0 for first param
+ * })
+ * export class PlaceBetCommand { ... }
+ * ```
+ */
+export function JobCommand(options?: string | JobCommandOptions): ClassDecorator {
+  return (target: Function) => {
+    const opts: JobCommandOptions = typeof options === 'string' 
+      ? { name: options } 
+      : (options || {});
+    
+    const jobName = opts.name || deriveJobName(target.name, 'Command');
+    const paramNames = getConstructorParamNames(target);
+    
+    const metadata: JobCommandMetadata = {
+      jobName,
+      entityType: opts.entityType,
+      entityIdParam: opts.entityIdParam ?? 0,
+      targetClass: target,
+      paramNames,
+    };
+    
+    Reflect.defineMetadata(JOB_COMMAND_METADATA, metadata, target);
+  };
+}
+
+/**
+ * @JobQuery class decorator
+ *
+ * Marks a query class for automatic job routing. When a job with the
+ * specified name arrives, the library will automatically instantiate
+ * the query with entityId + job.data and execute it via QueryBus.
+ *
+ * @example
+ * ```typescript
+ * @JobQuery('get-score')
+ * export class GetScoreQuery {
+ *   constructor(
+ *     public readonly tableId: string,
+ *     public readonly seatIndex: number,
+ *   ) {}
+ * }
+ *
+ * // Auto-derived: GetTableStateQuery -> 'get-table-state'
+ * @JobQuery()
+ * export class GetTableStateQuery { ... }
+ * ```
+ */
+export function JobQuery(options?: string | JobQueryOptions): ClassDecorator {
+  return (target: Function) => {
+    const opts: JobQueryOptions = typeof options === 'string' 
+      ? { name: options } 
+      : (options || {});
+    
+    const jobName = opts.name || deriveJobName(target.name, 'Query');
+    const paramNames = getConstructorParamNames(target);
+    
+    const metadata: JobQueryMetadata = {
+      jobName,
+      entityType: opts.entityType,
+      entityIdParam: opts.entityIdParam ?? 0,
+      targetClass: target,
+      paramNames,
+    };
+    
+    Reflect.defineMetadata(JOB_QUERY_METADATA, metadata, target);
+  };
+}
+
+/**
+ * Get JobCommand metadata from a class
+ */
+export function getJobCommandMetadata(target: Function): JobCommandMetadata | undefined {
+  return Reflect.getMetadata(JOB_COMMAND_METADATA, target);
+}
+
+/**
+ * Get JobQuery metadata from a class
+ */
+export function getJobQueryMetadata(target: Function): JobQueryMetadata | undefined {
+  return Reflect.getMetadata(JOB_QUERY_METADATA, target);
+}
+
+/**
+ * Check if a class is a JobCommand
+ */
+export function isJobCommand(target: Function): boolean {
+  return Reflect.hasMetadata(JOB_COMMAND_METADATA, target);
+}
+
+/**
+ * Check if a class is a JobQuery
+ */
+export function isJobQuery(target: Function): boolean {
+  return Reflect.hasMetadata(JOB_QUERY_METADATA, target);
 }
 
 // =============================================================================

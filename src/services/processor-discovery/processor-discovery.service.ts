@@ -28,6 +28,7 @@ import { IWorkerConfig, IEntityScalingConfig } from '../../domain';
 import { WorkerManagerService } from '../worker-manager';
 import { QueueManagerService } from '../queue-manager';
 import { CronManagerService } from '../cron-manager';
+import { CommandDiscoveryService } from '../command-discovery';
 import { ATOMIC_QUEUES_CONFIG } from '../constants';
 import { IAtomicQueuesModuleConfig } from '../../domain';
 
@@ -103,6 +104,7 @@ export class ProcessorDiscoveryService implements OnModuleInit {
     private readonly workerManager: WorkerManagerService,
     private readonly queueManager: QueueManagerService,
     @Optional() private readonly cronManager: CronManagerService,
+    @Optional() private readonly commandDiscovery: CommandDiscoveryService,
     @Inject(ATOMIC_QUEUES_CONFIG)
     private readonly config: IAtomicQueuesModuleConfig,
   ) {}
@@ -415,29 +417,47 @@ export class ProcessorDiscoveryService implements OnModuleInit {
 
   /**
    * Process a job using the registered handlers
+   *
+   * Priority order:
+   * 1. Explicit @JobHandler on the processor class
+   * 2. Auto-routing via @JobCommand/@JobQuery decorated classes
+   * 3. Wildcard @JobHandler('*') on the processor class
    */
   private async processJob(
     processor: RegisteredProcessor,
     job: Job,
     entityId: string,
   ): Promise<unknown> {
-    const { processorInstance, jobHandlers, wildcardHandler } = processor;
+    const { processorInstance, jobHandlers, wildcardHandler, entityType } = processor;
     const jobName = job.name;
 
-    // Try to find specific handler
+    // 1. Try to find specific @JobHandler
     const handler = jobHandlers.get(jobName);
     if (handler) {
       return processorInstance[handler.method](job, entityId);
     }
 
-    // Fall back to wildcard handler
+    // 2. Try auto-routing via @JobCommand/@JobQuery
+    if (this.commandDiscovery) {
+      const result = await this.commandDiscovery.executeJob(job, entityId, entityType);
+      if (result !== undefined) {
+        return result;
+      }
+      
+      // Check if a handler exists (even if it returned undefined)
+      if (this.commandDiscovery.hasHandler(jobName, entityType)) {
+        return result;
+      }
+    }
+
+    // 3. Fall back to wildcard handler
     if (wildcardHandler) {
       return processorInstance[wildcardHandler.method](job, entityId);
     }
 
     // No handler found
     this.logger.warn(
-      `No handler found for job '${jobName}' on entity type '${processor.entityType}'`,
+      `No handler found for job '${jobName}' on entity type '${entityType}'`,
     );
     return null;
   }

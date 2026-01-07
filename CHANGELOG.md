@@ -5,6 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-01-06
+
+### Added
+
+- **Zero-boilerplate CQRS integration** with `@JobCommand` and `@JobQuery` decorators
+  - `@JobCommand('job-name')` - Class decorator to route jobs directly to command classes
+  - `@JobQuery('job-name')` - Class decorator to route jobs directly to query classes
+  - Auto-derives job names from class names (e.g., `MakeBetCommand` → `'make-bet'`)
+  - Supports explicit job names and entity type scoping
+  - Constructor parameter extraction for automatic command instantiation
+
+- **CommandDiscoveryService** - Discovers and routes `@JobCommand`/`@JobQuery` decorated classes
+  - Automatic discovery of decorated command/query classes
+  - Job-to-command routing with automatic instantiation
+  - Entity ID injection as first constructor parameter
+  - Job data mapping to remaining constructor parameters
+  - Scoped routing support for entity-type-specific commands
+  - `setCommandBus()` / `setQueryBus()` for CQRS integration
+  - `getRegisteredJobNames()` for debugging/documentation
+
+### Changed
+
+- **ProcessorDiscoveryService** now integrates with `CommandDiscoveryService`
+  - Job processing priority: explicit `@JobHandler` → `@JobCommand`/`@JobQuery` → wildcard handler
+  - Seamless fallback to auto-routed commands when no explicit handler exists
+
+### Migration
+
+Commands decorated with `@JobCommand` no longer need explicit `@JobHandler` methods in processors:
+
+**Before (v1.1.0):**
+```typescript
+// In processor file - BOILERPLATE
+@JobHandler('make-bet')
+async handleMakeBet(job: Job, tableId: string) {
+  return this.commandBus.execute(
+    new MakeBetCommand(tableId, job.data.bets, job.data.player)
+  );
+}
+```
+
+**After (v1.2.0):**
+```typescript
+// In command file - just add decorator
+@JobCommand('make-bet')
+export class MakeBetCommand {
+  constructor(
+    public readonly tableId: string,  // ← entityId (auto-injected)
+    public readonly bets: any[],      // ← from job.data.bets
+    public readonly player: any,      // ← from job.data.player
+  ) {}
+}
+
+// Processor becomes nearly empty - just configuration
+@WorkerProcessor({ entityType: 'table', ... })
+export class TableProcessor {
+  @JobHandler('*')
+  handleUnmapped(job: Job) { /* fallback */ }
+}
+```
+
 ## [1.1.0] - 2026-01-06
 
 ### Added

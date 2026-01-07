@@ -7,4 +7,4 @@ export * from './cron-manager';
 export * from './index-manager';
 export * from './service-queue';
 export * from './shutdown-state';
-export * from './processor-discovery';
+export * from './processor-discovery';export * from './command-discovery';

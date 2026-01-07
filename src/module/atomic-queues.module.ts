@@ -23,6 +23,7 @@ import {
   ServiceQueueManager,
   ShutdownStateService,
   ProcessorDiscoveryService,
+  CommandDiscoveryService,
 } from '../services';
 
 /**
@@ -67,6 +68,7 @@ const CORE_SERVICES: Provider[] = [
   ServiceQueueManager,
   ShutdownStateService,
   ProcessorDiscoveryService,
+  CommandDiscoveryService,
 ];
 
 /**
