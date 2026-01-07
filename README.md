@@ -4,6 +4,39 @@ A NestJS library for atomic, sequential job processing per entity using BullMQ a
 
 ---
 
+## Table of Contents
+
+- [Overview](#overview)
+- [The Concurrency Problem](#the-concurrency-problem)
+  - [Race Condition Scenario](#race-condition-scenario)
+  - [Traditional Solutions and Their Limitations](#traditional-solutions-and-their-limitations)
+- [The Per-Entity Queue Architecture](#the-per-entity-queue-architecture)
+  - [Design Principle](#design-principle)
+  - [Correctness Under Load](#correctness-under-load)
+- [Comparative Analysis](#comparative-analysis)
+  - [Behavioral Characteristics](#behavioral-characteristics)
+  - [Scalability Profile](#scalability-profile)
+- [Architecture](#architecture)
+  - [Alignment with Node.js Event Loop Philosophy](#alignment-with-nodejs-event-loop-philosophy)
+  - [Multi-Pod Kubernetes Deployments](#multi-pod-kubernetes-deployments)
+  - [Distributed Systems Guarantees](#distributed-systems-guarantees)
+  - [Request Flow in Multi-Pod Deployment](#request-flow-in-multi-pod-deployment)
+  - [Horizontal Scaling Model](#horizontal-scaling-model)
+  - [Dynamic Worker Lifecycle](#dynamic-worker-lifecycle)
+- [Use Cases](#use-cases)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [API Reference](#api-reference)
+  - [QueueBus](#queuebus)
+  - [@WorkerProcessor](#workerprocessor)
+- [Entity ID Extraction](#entity-id-extraction)
+- [Scaling with Entity Scalers](#scaling-with-entity-scalers)
+- [Advanced Features](#advanced-features)
+- [Configuration Reference](#configuration-reference)
+- [License](#license)
+
+---
+
 ## Overview
 
 **atomic-queues** solves the fundamental concurrency problem in distributed systems: ensuring that operations on the same logical entity execute sequentially, even when requests arrive simultaneously across multiple service instances.
@@ -122,6 +155,192 @@ Throughput
 ---
 
 ## Architecture
+
+### Alignment with Node.js Event Loop Philosophy
+
+Node.js achieves high concurrency not through multi-threading, but through an **event-driven, non-blocking I/O model**. The single-threaded event loop processes events sequentially, delegating I/O operations to the system kernel and handling callbacks as they complete.
+
+**atomic-queues** extends this philosophy to distributed systems:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                     NODE.JS EVENT LOOP MODEL                                     │
+│                                                                                  │
+│    ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐             │
+│    │  Event   │────▶│  Event   │────▶│  Event   │────▶│  Event   │────▶ ...    │
+│    │    1     │     │    2     │     │    3     │     │    4     │             │
+│    └──────────┘     └──────────┘     └──────────┘     └──────────┘             │
+│         │                                                                        │
+│         ▼                                                                        │
+│    Single-threaded sequential processing prevents race conditions               │
+│    within a single process. But what about multiple processes?                  │
+│                                                                                  │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                     ATOMIC-QUEUES DISTRIBUTED MODEL                              │
+│                                                                                  │
+│    ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐             │
+│    │   Job    │────▶│   Job    │────▶│   Job    │────▶│   Job    │────▶ ...    │
+│    │    1     │     │    2     │     │    3     │     │    4     │             │
+│    └──────────┘     └──────────┘     └──────────┘     └──────────┘             │
+│         │                                                                        │
+│         ▼                                                                        │
+│    Per-entity queue + single worker = event loop semantics at cluster scale    │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+| Concept | Node.js Event Loop | atomic-queues |
+|---------|-------------------|---------------|
+| **Unit of Work** | Event/Callback | Job |
+| **Serialization Mechanism** | Single thread | Single worker per entity |
+| **Concurrency Model** | Non-blocking I/O | Async job processing |
+| **Scope** | Single process | Distributed cluster |
+
+This alignment means developers familiar with Node.js concurrency patterns will find the mental model intuitive: just as the event loop prevents race conditions within a process, per-entity queues prevent race conditions across a distributed cluster.
+
+### Multi-Pod Kubernetes Deployments
+
+In containerized environments, services scale horizontally through pod replication. Each pod runs an independent instance of the application, creating the distributed concurrency challenge this library solves.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         KUBERNETES CLUSTER                                       │
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │                         Service: account-service                         │    │
+│  │                         Replicas: 6 pods                                 │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                      │                                           │
+│                          Load Balancer / Ingress                                │
+│                                      │                                           │
+│         ┌────────────────────────────┼────────────────────────────┐             │
+│         │                            │                            │             │
+│         ▼                            ▼                            ▼             │
+│  ┌─────────────┐              ┌─────────────┐              ┌─────────────┐      │
+│  │   Node 1    │              │   Node 2    │              │   Node 3    │      │
+│  │             │              │             │              │             │      │
+│  │ ┌─────────┐ │              │ ┌─────────┐ │              │ ┌─────────┐ │      │
+│  │ │ Pod 1   │ │              │ │ Pod 3   │ │              │ │ Pod 5   │ │      │
+│  │ │ workers:│ │              │ │ workers:│ │              │ │ workers:│ │      │
+│  │ │ ACC-001 │ │              │ │ ACC-003 │ │              │ │ ACC-007 │ │      │
+│  │ │ ACC-002 │ │              │ │ ACC-005 │ │              │ │ ACC-009 │ │      │
+│  │ └─────────┘ │              │ └─────────┘ │              │ └─────────┘ │      │
+│  │ ┌─────────┐ │              │ ┌─────────┐ │              │ ┌─────────┐ │      │
+│  │ │ Pod 2   │ │              │ │ Pod 4   │ │              │ │ Pod 6   │ │      │
+│  │ │ workers:│ │              │ │ workers:│ │              │ │ workers:│ │      │
+│  │ │ ACC-004 │ │              │ │ ACC-006 │ │              │ │ ACC-008 │ │      │
+│  │ │ ACC-010 │ │              │ │ ACC-011 │ │              │ │ ACC-012 │ │      │
+│  │ └─────────┘ │              │ └─────────┘ │              │ └─────────┘ │      │
+│  └─────────────┘              └─────────────┘              └─────────────┘      │
+│                                                                                  │
+│  Total: 6 pods across 3 nodes, workers distributed via Redis coordination       │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              REDIS CLUSTER                                       │
+│                                                                                  │
+│  • Queues: Shared state accessible from all pods                                │
+│  • Heartbeats: Track which pod owns which entity's worker                       │
+│  • Coordination: Atomic operations prevent duplicate worker spawning            │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Operational Characteristics:**
+
+| Scenario | Behavior |
+|----------|----------|
+| **Pod scales up** | New pod discovers entities needing workers, spawns workers for unassigned entities |
+| **Pod scales down** | Workers on terminating pod close gracefully; heartbeats expire; surviving pods spawn replacement workers |
+| **Pod crashes** | Heartbeat TTL expires (default: 3s); any healthy pod spawns replacement worker |
+| **Rolling deployment** | Old pods drain (stop accepting new workers); new pods take over entity workers progressively |
+| **Network partition** | Partitioned pods lose Redis connectivity; heartbeats expire; workers on connected pods take over |
+
+### Distributed Systems Guarantees
+
+The architecture provides the following guarantees in a distributed environment:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         CONSISTENCY MODEL                                        │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  INVARIANT 1: Single Writer per Entity                                          │
+│  ─────────────────────────────────────                                          │
+│  At any point in time, at most one worker processes jobs for a given entity.    │
+│  Enforced via Redis heartbeat with TTL. If two workers attempt to claim the     │
+│  same entity, the heartbeat check ensures only one succeeds.                    │
+│                                                                                  │
+│  INVARIANT 2: Total Ordering per Entity                                         │
+│  ─────────────────────────────────────                                          │
+│  All operations on an entity execute in a globally consistent order (FIFO).     │
+│  Jobs added from Pod A before Pod B's job will process first, regardless of     │
+│  which pod's worker processes them.                                             │
+│                                                                                  │
+│  INVARIANT 3: At-Least-Once Delivery                                            │
+│  ─────────────────────────────────────                                          │
+│  Jobs are persisted in Redis before acknowledgment. Worker failure mid-job      │
+│  triggers retry on another worker. Handlers must be idempotent.                 │
+│                                                                                  │
+│  INVARIANT 4: Partition Tolerance                                               │
+│  ─────────────────────────────────────                                          │
+│  Network partitions cause heartbeat expiration on disconnected nodes.           │
+│  Connected nodes take over orphaned workers. When partition heals,              │
+│  duplicate workers are prevented by heartbeat check before spawning.            │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Request Flow in Multi-Pod Deployment
+
+```
+                              User Request: Withdraw $80 from ACC-001
+                                             │
+                                             ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                            LOAD BALANCER                                       │
+│                   Routes to any available pod (round-robin)                    │
+└───────────────────────────────────────────────────────────────────────────────┘
+                                             │
+                                             ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│  POD 3 (receives request)                                                      │
+│                                                                                │
+│  1. Deserialize request                                                        │
+│  2. Create WithdrawCommand(ACC-001, $80)                                       │
+│  3. QueueBus.forProcessor(AccountProcessor).enqueue(command)                   │
+│     └──▶ Determines queue name: "account-ACC-001-queue"                        │
+│     └──▶ Adds job to Redis queue (O(1) operation)                              │
+│  4. Return 202 Accepted (job queued)                                           │
+│                                                                                │
+└───────────────────────────────────────────────────────────────────────────────┘
+                                             │
+                                             ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│  REDIS                                                                         │
+│                                                                                │
+│  Queue "account-ACC-001-queue": [..., WithdrawCommand($80)]                    │
+│  Heartbeat "ACC-001-worker": Pod 1 (TTL: 3s)                                   │
+│                                                                                │
+└───────────────────────────────────────────────────────────────────────────────┘
+                                             │
+                                             ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│  POD 1 (owns ACC-001 worker)                                                   │
+│                                                                                │
+│  Worker polling queue "account-ACC-001-queue"                                  │
+│  1. Dequeue job: WithdrawCommand($80)                                          │
+│  2. Lookup handler in QueueBus registry                                        │
+│  3. Execute: CommandBus.execute(withdrawCommand)                               │
+│  4. Handler runs with exclusive access to ACC-001 state                        │
+│  5. Mark job complete                                                          │
+│                                                                                │
+└───────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Key insight**: The pod receiving the HTTP request is not necessarily the pod processing the job. This decoupling enables true horizontal scaling—any pod can accept requests, while entity-specific processing is centralized on the worker owner.
 
 ### Horizontal Scaling Model
 
