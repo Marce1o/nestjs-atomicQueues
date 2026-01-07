@@ -9,17 +9,17 @@ A NestJS library for atomic, sequential job processing per entity with BullMQ an
 ║                              THE PROBLEM                                       ║
 ╠═══════════════════════════════════════════════════════════════════════════════╣
 ║                                                                                ║
-║   Multiple requests for the same entity arrive simultaneously:                 ║
+║   User has $100 balance. Two $80 withdrawals arrive at the same time:          ║
 ║                                                                                ║
-║        ┌──────────┐                                                            ║
-║        │ Request A │──┐                                                        ║
-║        └──────────┘  │                                                         ║
-║        ┌──────────┐  │    ┌─────────────┐                                      ║
-║        │ Request B │──┼───▶│  Entity 123 │───▶  💥 RACE CONDITION!             ║
-║        └──────────┘  │    └─────────────┘                                      ║
-║        ┌──────────┐  │                                                         ║
-║        │ Request C │──┘                                                        ║
-║        └──────────┘                                                            ║
+║       Withdraw $80 ──┐                                                         ║
+║          (API 1)     │    ┌────────────────────┐                               ║
+║                      ├───▶│  Balance: $100     │                               ║
+║       Withdraw $80 ──┘    │  Both read $100    │                               ║
+║          (API 2)          │  Both approve      │                               ║
+║                           │  Final: -$60 💥    │                               ║
+║                           └────────────────────┘                               ║
+║                                                                                ║
+║   Race condition: Both transactions see $100, both succeed, balance goes -$60  ║
 ║                                                                                ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝
 
@@ -27,17 +27,16 @@ A NestJS library for atomic, sequential job processing per entity with BullMQ an
 ║                              THE SOLUTION                                      ║
 ╠═══════════════════════════════════════════════════════════════════════════════╣
 ║                                                                                ║
-║   atomic-queues ensures sequential processing per entity:                      ║
+║   atomic-queues processes one transaction at a time per account:               ║
 ║                                                                                ║
-║        ┌──────────┐      ┌─────────────────┐      ┌──────────┐                 ║
-║        │ Request A │──┐   │                 │      │          │                 ║
-║        └──────────┘  │   │   Redis Queue   │      │  Worker  │  ┌───────────┐  ║
-║        ┌──────────┐  │   │   ┌───┬───┬───┐ │      │          │  │           │  ║
-║        │ Request B │──┼──▶│   │ A │ B │ C │ │─────▶│  (1 job  │─▶│Entity 123 │  ║
-║        └──────────┘  │   │   └───┴───┴───┘ │      │ at a time│  │           │  ║
-║        ┌──────────┐  │   │                 │      │          │  └───────────┘  ║
-║        │ Request C │──┘   └─────────────────┘      └──────────┘                 ║
-║        └──────────┘                                                            ║
+║       Withdraw $80 ──┐     ┌─────────────┐     ┌─────────────────────────────┐ ║
+║          (API 1)     │     │             │     │ Worker processes queue:     │ ║
+║                      ├────▶│ Redis Queue │────▶│                             │ ║
+║       Withdraw $80 ──┘     │  [W1] [W2]  │     │  W1: $100 - $80 = $20 ✓     │ ║
+║          (API 2)           │             │     │  W2: $20 < $80 = REJECTED ✓ │ ║
+║                            └─────────────┘     └─────────────────────────────┘ ║
+║                                                                                ║
+║   Sequential processing: W1 completes first, W2 sees updated balance           ║
 ║                                                                                ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝
 ```
@@ -147,44 +146,65 @@ That's it! The library automatically:
 ║                              ARCHITECTURE                                      ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝
 
-  YOUR CODE                         ATOMIC-QUEUES                        EXECUTION
-  ─────────                         ─────────────                        ─────────
-
-  ┌─────────────────────────┐
-  │ queueBus                │
-  │   .forProcessor(...)    │
-  │   .enqueue(command)     │
-  └───────────┬─────────────┘
-              │
-              │  ① Extract queue config from @WorkerProcessor
-              │  ② Extract entityId from command properties
-              │  ③ Build queue name: {prefix}-{entityId}-queue
-              ▼
-      ┌───────────────────┐
-      │                   │
-      │   Redis Queue     │◀─── Job { name: "MyCommand", data: {...} }
-      │   (per entity)    │
-      │                   │
-      └─────────┬─────────┘
-                │
-                │  ④ Worker pulls job (one at a time)
-                ▼
-      ┌───────────────────┐
-      │                   │
-      │   BullMQ Worker   │
-      │   (1 per entity)  │
-      │                   │
-      └─────────┬─────────┘
-                │
-                │  ⑤ Lookup command class in registry
-                │  ⑥ Instantiate from job.data
-                │  ⑦ Execute via CQRS CommandBus
-                ▼
-      ┌───────────────────┐      ┌─────────────────────────┐
-      │                   │      │                         │
-      │    CommandBus     │─────▶│  MyCommandHandler       │
-      │                   │      │    .execute(command)    │
-      └───────────────────┘      └─────────────────────────┘
+┌──────────────────┐
+│   API Request    │   POST /accounts/ACC-123/withdraw { amount: 80 }
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  QueueBus.forProcessor(AccountProcessor).enqueue(new WithdrawCommand(...))   │
+└────────┬─────────────────────────────────────────────────────────────────────┘
+         │
+         │  ① Reads @WorkerProcessor metadata from AccountProcessor
+         │  ② Extracts accountId from command.accountId property
+         │  ③ Generates queue name: "account-ACC-123-queue"
+         │
+         ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                              REDIS                                            │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  Queue: account-ACC-123-queue                                          │  │
+│  │  ┌─────────────────┬─────────────────┬─────────────────┐               │  │
+│  │  │ Job 1           │ Job 2           │ Job 3           │  ...          │  │
+│  │  │ WithdrawCommand │ DepositCommand  │ TransferCommand │               │  │
+│  │  │ amount: 80      │ amount: 50      │ amount: 25      │               │  │
+│  │  └─────────────────┴─────────────────┴─────────────────┘               │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│                                                                               │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  Queue: account-ACC-456-queue  (different account = different queue)   │  │
+│  │  ┌─────────────────┐                                                   │  │
+│  │  │ Job 1           │  ← Processes in parallel with ACC-123             │  │
+│  │  │ WithdrawCommand │                                                   │  │
+│  │  └─────────────────┘                                                   │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────────────┘
+         │
+         │  ④ BullMQ Worker pulls Job 1 (only one job at a time per queue)
+         │
+         ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  Worker: account-ACC-123-worker                                              │
+│                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────────┐ │
+│  │  ⑤ Lookup "WithdrawCommand" in QueueBus.globalRegistry                  │ │
+│  │  ⑥ Instantiate: Object.assign(new WithdrawCommand(), job.data)          │ │
+│  │  ⑦ Execute: CommandBus.execute(withdrawCommand)                         │ │
+│  └─────────────────────────────────────────────────────────────────────────┘ │
+└────────┬─────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  @CommandHandler(WithdrawCommand)                                            │
+│  class WithdrawHandler {                                                     │
+│    async execute(cmd: WithdrawCommand) {                                     │
+│      // Safe! No race conditions - guaranteed sequential execution           │
+│      const balance = await this.repo.getBalance(cmd.accountId);              │
+│      if (balance < cmd.amount) throw new InsufficientFundsError();           │
+│      await this.repo.debit(cmd.accountId, cmd.amount);                       │
+│    }                                                                         │
+│  }                                                                           │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -300,145 +320,262 @@ export class OrderScaler {
 
 ## Complete Example
 
-A document processing service where multiple users can edit the same document:
+A banking service handling critical financial transactions where race conditions could cause overdrafts or double-spending:
 
 ```typescript
 // ─────────────────────────────────────────────────────────────────
-// commands/update-document.command.ts
+// commands/withdraw.command.ts
 // ─────────────────────────────────────────────────────────────────
-export class UpdateDocumentCommand {
+export class WithdrawCommand {
   constructor(
-    public readonly documentId: string,
-    public readonly userId: string,
-    public readonly content: string,
-    public readonly version: number,
+    public readonly accountId: string,
+    public readonly amount: number,
+    public readonly transactionId: string,
+    public readonly requestedBy: string,
   ) {}
 }
 
 // ─────────────────────────────────────────────────────────────────
-// commands/publish-document.command.ts
+// commands/deposit.command.ts
 // ─────────────────────────────────────────────────────────────────
-export class PublishDocumentCommand {
+export class DepositCommand {
   constructor(
-    public readonly documentId: string,
-    public readonly publishedBy: string,
+    public readonly accountId: string,
+    public readonly amount: number,
+    public readonly transactionId: string,
+    public readonly source: string,
   ) {}
 }
 
 // ─────────────────────────────────────────────────────────────────
-// handlers/update-document.handler.ts
+// commands/transfer.command.ts
+// ─────────────────────────────────────────────────────────────────
+export class TransferCommand {
+  constructor(
+    public readonly accountId: string,  // Source account (for queue routing)
+    public readonly toAccountId: string,
+    public readonly amount: number,
+    public readonly transactionId: string,
+  ) {}
+}
+
+// ─────────────────────────────────────────────────────────────────
+// handlers/withdraw.handler.ts
 // ─────────────────────────────────────────────────────────────────
 import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
-import { UpdateDocumentCommand } from '../commands';
+import { WithdrawCommand } from '../commands';
 
-@CommandHandler(UpdateDocumentCommand)
-export class UpdateDocumentHandler implements ICommandHandler<UpdateDocumentCommand> {
-  constructor(private readonly documentRepo: DocumentRepository) {}
+@CommandHandler(WithdrawCommand)
+export class WithdrawHandler implements ICommandHandler<WithdrawCommand> {
+  constructor(
+    private readonly accountRepo: AccountRepository,
+    private readonly ledger: LedgerService,
+  ) {}
 
-  async execute(command: UpdateDocumentCommand) {
-    const { documentId, userId, content, version } = command;
+  async execute(command: WithdrawCommand) {
+    const { accountId, amount, transactionId } = command;
     
-    // Safe! No race conditions - one update at a time per document
-    await this.documentRepo.update(documentId, { content, version, lastEditedBy: userId });
+    // SAFE: No race conditions! This handler runs sequentially per account
+    // Even if 10 withdrawals arrive simultaneously, they execute one-by-one
     
-    return { success: true, documentId, version };
+    const account = await this.accountRepo.findById(accountId);
+    
+    if (account.balance < amount) {
+      throw new InsufficientFundsError(accountId, account.balance, amount);
+    }
+    
+    if (account.status !== 'active') {
+      throw new AccountFrozenError(accountId);
+    }
+    
+    // Debit the account
+    account.balance -= amount;
+    await this.accountRepo.save(account);
+    
+    // Record in ledger
+    await this.ledger.record({
+      transactionId,
+      accountId,
+      type: 'DEBIT',
+      amount,
+      balanceAfter: account.balance,
+      timestamp: new Date(),
+    });
+    
+    return { 
+      success: true, 
+      transactionId, 
+      newBalance: account.balance 
+    };
   }
 }
 
 // ─────────────────────────────────────────────────────────────────
-// handlers/publish-document.handler.ts
+// handlers/transfer.handler.ts
 // ─────────────────────────────────────────────────────────────────
 import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
-import { PublishDocumentCommand } from '../commands';
+import { TransferCommand, DepositCommand } from '../commands';
+import { QueueBus } from 'atomic-queues';
 
-@CommandHandler(PublishDocumentCommand)
-export class PublishDocumentHandler implements ICommandHandler<PublishDocumentCommand> {
-  constructor(private readonly documentRepo: DocumentRepository) {}
+@CommandHandler(TransferCommand)
+export class TransferHandler implements ICommandHandler<TransferCommand> {
+  constructor(
+    private readonly accountRepo: AccountRepository,
+    private readonly queueBus: QueueBus,
+  ) {}
 
-  async execute(command: PublishDocumentCommand) {
-    const { documentId, publishedBy } = command;
+  async execute(command: TransferCommand) {
+    const { accountId, toAccountId, amount, transactionId } = command;
     
-    await this.documentRepo.publish(documentId, publishedBy);
+    // Step 1: Debit source account (already in source account's queue)
+    const sourceAccount = await this.accountRepo.findById(accountId);
     
-    return { success: true, documentId, publishedAt: new Date() };
+    if (sourceAccount.balance < amount) {
+      throw new InsufficientFundsError(accountId, sourceAccount.balance, amount);
+    }
+    
+    sourceAccount.balance -= amount;
+    await this.accountRepo.save(sourceAccount);
+    
+    // Step 2: Queue credit to destination account (different queue!)
+    // This ensures the destination account also processes atomically
+    await this.queueBus
+      .forProcessor(AccountProcessor)
+      .enqueue(new DepositCommand(
+        toAccountId,
+        amount,
+        transactionId,
+        `transfer:${accountId}`,
+      ));
+    
+    return { success: true, transactionId };
   }
 }
 
 // ─────────────────────────────────────────────────────────────────
-// document.processor.ts
+// account.processor.ts
 // ─────────────────────────────────────────────────────────────────
 import { Injectable } from '@nestjs/common';
 import { WorkerProcessor } from 'atomic-queues';
 
 @WorkerProcessor({
-  entityType: 'document',
-  queueName: (documentId) => `doc-${documentId}-queue`,
-  workerName: (documentId) => `doc-${documentId}-worker`,
+  entityType: 'account',
+  queueName: (accountId) => `bank-account-${accountId}-queue`,
+  workerName: (accountId) => `bank-account-${accountId}-worker`,
+  workerConfig: {
+    concurrency: 1,        // CRITICAL: Must be 1 for financial transactions
+    lockDuration: 60000,   // 60s lock for long transactions
+    stalledInterval: 5000,
+  },
 })
 @Injectable()
-export class DocumentProcessor {}
+export class AccountProcessor {}
 
 // ─────────────────────────────────────────────────────────────────
-// document.module.ts
+// account.scaler.ts - Scale workers based on active accounts
+// ─────────────────────────────────────────────────────────────────
+import { Injectable } from '@nestjs/common';
+import { EntityScaler, GetActiveEntities, GetDesiredWorkerCount } from 'atomic-queues';
+
+@EntityScaler({
+  entityType: 'account',
+  maxWorkersPerEntity: 1,  // Never more than 1 worker per account
+})
+@Injectable()
+export class AccountScaler {
+  constructor(private readonly accountRepo: AccountRepository) {}
+
+  @GetActiveEntities()
+  async getActiveAccounts(): Promise<string[]> {
+    // Return accounts with pending transactions
+    return this.accountRepo.findAccountsWithPendingTransactions();
+  }
+
+  @GetDesiredWorkerCount()
+  async getWorkerCount(accountId: string): Promise<number> {
+    // Always 1 worker per account for atomicity
+    return 1;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// account.module.ts
 // ─────────────────────────────────────────────────────────────────
 import { Module } from '@nestjs/common';
 import { CqrsModule } from '@nestjs/cqrs';
-import { DocumentProcessor } from './document.processor';
-import { DocumentController } from './document.controller';
-import { UpdateDocumentHandler, PublishDocumentHandler } from './handlers';
 
 @Module({
   imports: [CqrsModule],
   providers: [
-    DocumentProcessor,
-    UpdateDocumentHandler,   // Commands auto-discovered!
-    PublishDocumentHandler,
+    AccountProcessor,
+    AccountScaler,
+    WithdrawHandler,    // Commands auto-discovered!
+    DepositHandler,
+    TransferHandler,
   ],
-  controllers: [DocumentController],
+  controllers: [AccountController],
 })
-export class DocumentModule {}
+export class AccountModule {}
 
 // ─────────────────────────────────────────────────────────────────
-// document.controller.ts
+// account.controller.ts
 // ─────────────────────────────────────────────────────────────────
 import { Controller, Post, Body, Param } from '@nestjs/common';
 import { QueueBus } from 'atomic-queues';
-import { DocumentProcessor } from './document.processor';
-import { UpdateDocumentCommand, PublishDocumentCommand } from './commands';
+import { AccountProcessor } from './account.processor';
+import { WithdrawCommand, DepositCommand, TransferCommand } from './commands';
+import { v4 as uuid } from 'uuid';
 
-@Controller('documents')
-export class DocumentController {
+@Controller('accounts')
+export class AccountController {
   constructor(private readonly queueBus: QueueBus) {}
 
-  @Post(':id/update')
-  async updateDocument(
-    @Param('id') documentId: string,
-    @Body() body: { userId: string; content: string; version: number },
+  @Post(':accountId/withdraw')
+  async withdraw(
+    @Param('accountId') accountId: string,
+    @Body() body: { amount: number; requestedBy: string },
   ) {
-    // Multiple users editing same doc? No problem!
-    // Updates are queued and processed one at a time
+    const transactionId = uuid();
+    
+    // Even if user spam-clicks "Withdraw", each request is queued
+    // and processed sequentially - no double-withdrawals possible
     await this.queueBus
-      .forProcessor(DocumentProcessor)
-      .enqueue(new UpdateDocumentCommand(
-        documentId,
-        body.userId,
-        body.content,
-        body.version,
+      .forProcessor(AccountProcessor)
+      .enqueue(new WithdrawCommand(
+        accountId,
+        body.amount,
+        transactionId,
+        body.requestedBy,
       ));
 
-    return { queued: true, documentId };
+    return { 
+      queued: true, 
+      transactionId,
+      message: 'Withdrawal queued for processing',
+    };
   }
 
-  @Post(':id/publish')
-  async publishDocument(
-    @Param('id') documentId: string,
-    @Body() body: { publishedBy: string },
+  @Post(':accountId/transfer')
+  async transfer(
+    @Param('accountId') accountId: string,
+    @Body() body: { toAccountId: string; amount: number },
   ) {
+    const transactionId = uuid();
+    
     await this.queueBus
-      .forProcessor(DocumentProcessor)
-      .enqueue(new PublishDocumentCommand(documentId, body.publishedBy));
+      .forProcessor(AccountProcessor)
+      .enqueue(new TransferCommand(
+        accountId,
+        body.toAccountId,
+        body.amount,
+        transactionId,
+      ));
 
-    return { queued: true, documentId };
+    return { 
+      queued: true, 
+      transactionId,
+      message: 'Transfer queued for processing',
+    };
   }
 }
 ```
