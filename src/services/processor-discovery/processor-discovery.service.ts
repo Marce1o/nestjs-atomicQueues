@@ -29,8 +29,18 @@ import { WorkerManagerService } from '../worker-manager';
 import { QueueManagerService } from '../queue-manager';
 import { CronManagerService } from '../cron-manager';
 import { CommandDiscoveryService } from '../command-discovery';
+import { QueueBus } from '../queue-bus';
 import { ATOMIC_QUEUES_CONFIG } from '../constants';
 import { IAtomicQueuesModuleConfig } from '../../domain';
+
+// Import CQRS types but make them optional
+interface ICommandBus {
+  execute<T>(command: T): Promise<any>;
+}
+
+interface IQueryBus {
+  execute<T>(query: T): Promise<any>;
+}
 
 /**
  * Registered processor info
@@ -97,6 +107,9 @@ export class ProcessorDiscoveryService implements OnModuleInit {
   private readonly scalers: Map<string, RegisteredScaler> = new Map();
   private readonly activeWorkers: Map<string, Set<string>> = new Map(); // entityType -> Set of entityIds with workers
 
+  private commandBus: ICommandBus | null = null;
+  private queryBus: IQueryBus | null = null;
+
   constructor(
     @Optional() private readonly discoveryService: DiscoveryService,
     @Optional() private readonly metadataScanner: MetadataScanner,
@@ -108,6 +121,28 @@ export class ProcessorDiscoveryService implements OnModuleInit {
     @Inject(ATOMIC_QUEUES_CONFIG)
     private readonly config: IAtomicQueuesModuleConfig,
   ) {}
+
+  /**
+   * Set the CommandBus for executing commands from QueueBus registry
+   */
+  setCommandBus(commandBus: ICommandBus): void {
+    this.commandBus = commandBus;
+    // Also set on CommandDiscoveryService if available
+    if (this.commandDiscovery) {
+      this.commandDiscovery.setCommandBus(commandBus);
+    }
+  }
+
+  /**
+   * Set the QueryBus for executing queries from QueueBus registry
+   */
+  setQueryBus(queryBus: IQueryBus): void {
+    this.queryBus = queryBus;
+    // Also set on CommandDiscoveryService if available
+    if (this.commandDiscovery) {
+      this.commandDiscovery.setQueryBus(queryBus);
+    }
+  }
 
   async onModuleInit(): Promise<void> {
     if (!this.discoveryService) {
@@ -421,7 +456,8 @@ export class ProcessorDiscoveryService implements OnModuleInit {
    * Priority order:
    * 1. Explicit @JobHandler on the processor class
    * 2. Auto-routing via @JobCommand/@JobQuery decorated classes
-   * 3. Wildcard @JobHandler('*') on the processor class
+   * 3. QueueBus registry lookup (class name as job name)
+   * 4. Wildcard @JobHandler('*') on the processor class
    */
   private async processJob(
     processor: RegisteredProcessor,
@@ -450,7 +486,13 @@ export class ProcessorDiscoveryService implements OnModuleInit {
       }
     }
 
-    // 3. Fall back to wildcard handler
+    // 3. Try QueueBus registry lookup (job.name = class name like 'MakeBetCommand')
+    const registryEntry = QueueBus.getRegistered(jobName);
+    if (registryEntry) {
+      return this.executeFromRegistry(registryEntry, job, entityId);
+    }
+
+    // 4. Fall back to wildcard handler
     if (wildcardHandler) {
       return processorInstance[wildcardHandler.method](job, entityId);
     }
@@ -460,6 +502,38 @@ export class ProcessorDiscoveryService implements OnModuleInit {
       `No handler found for job '${jobName}' on entity type '${entityType}'`,
     );
     return null;
+  }
+
+  /**
+   * Execute a command/query from QueueBus registry
+   */
+  private async executeFromRegistry(
+    entry: { className: string; targetClass: Type<any>; isQuery: boolean },
+    job: Job,
+    entityId: string,
+  ): Promise<unknown> {
+    const { targetClass, isQuery, className } = entry;
+    
+    // Instantiate the command/query with job data
+    const instance = Object.assign(new targetClass(), job.data);
+    
+    if (isQuery) {
+      if (!this.queryBus) {
+        this.logger.error(
+          `QueryBus not set. Cannot execute query ${className}. Call setQueryBus() first.`,
+        );
+        return null;
+      }
+      return this.queryBus.execute(instance);
+    } else {
+      if (!this.commandBus) {
+        this.logger.error(
+          `CommandBus not set. Cannot execute command ${className}. Call setCommandBus() first.`,
+        );
+        return null;
+      }
+      return this.commandBus.execute(instance);
+    }
   }
 
   // ==========================================================================

@@ -1,5 +1,5 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
-import { Queue, Job } from 'bullmq';
+import { Queue, Job, QueueEvents } from 'bullmq';
 import Redis from 'ioredis';
 import {
   IQueueManager,
@@ -38,6 +38,7 @@ import { IAtomicQueuesModuleConfig } from '../../domain';
 export class QueueManagerService implements IQueueManager, OnModuleDestroy {
   private readonly logger = new Logger(QueueManagerService.name);
   private readonly queues: Map<string, IManagedQueue> = new Map();
+  private readonly queueEvents: Map<string, QueueEvents> = new Map();
   private readonly keyPrefix: string;
 
   constructor(
@@ -306,6 +307,25 @@ export class QueueManagerService implements IQueueManager, OnModuleDestroy {
     return this.queues.get(this.normalizeQueueName(queueName));
   }
 
+  /**
+   * Get or create QueueEvents for a queue.
+   * Used for waitUntilFinished functionality.
+   */
+  async getQueueEvents(queueName: string): Promise<QueueEvents> {
+    const normalizedName = this.normalizeQueueName(queueName);
+    
+    if (this.queueEvents.has(normalizedName)) {
+      return this.queueEvents.get(normalizedName)!;
+    }
+    
+    const events = new QueueEvents(normalizedName, {
+      connection: this.redis.duplicate(),
+    });
+    
+    this.queueEvents.set(normalizedName, events);
+    return events;
+  }
+
   // =========================================================================
   // PRIVATE METHODS
   // =========================================================================
@@ -366,6 +386,16 @@ export class QueueManagerService implements IQueueManager, OnModuleDestroy {
    * Cleanup on module destroy.
    */
   async onModuleDestroy(): Promise<void> {
+    // Close all QueueEvents
+    for (const [name, events] of this.queueEvents) {
+      try {
+        await events.close();
+      } catch (error) {
+        this.logger.error(`Error closing QueueEvents ${name}:`, error);
+      }
+    }
+    this.queueEvents.clear();
+    
     await this.closeAllQueues();
   }
 }
