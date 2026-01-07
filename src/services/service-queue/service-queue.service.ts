@@ -532,9 +532,9 @@ export class ServiceQueueManager implements OnModuleInit, OnApplicationShutdown 
   ): Promise<unknown> {
     const { uuid, jobName, payload, responseChannel } = job.data;
 
-    this.logger.debug(
-      `Processing service job ${uuid}: ${jobName}`,
-    );
+    if (this.config.verbose) {
+      this.logger.debug(`Processing service job ${uuid}: ${jobName}`);
+    }
 
     let result: unknown;
     let error: Error | null = null;

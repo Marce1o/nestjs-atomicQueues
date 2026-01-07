@@ -155,6 +155,24 @@ export class ProcessorDiscoveryService implements OnModuleInit {
     await this.discoverProcessors();
     await this.discoverScalers();
     await this.registerScalersWithCronManager();
+    
+    // Auto-register commands from CQRS handlers (default: true)
+    if (this.config.autoRegisterCommands !== false) {
+      this.autoRegisterCommandsFromCqrs();
+    }
+  }
+  
+  /**
+   * Auto-discover and register commands/queries from @nestjs/cqrs handlers
+   */
+  private autoRegisterCommandsFromCqrs(): void {
+    const { commands, queries } = QueueBus.discoverFromCqrs(this.discoveryService);
+    
+    if (commands > 0 || queries > 0) {
+      this.logger.log(
+        `Auto-registered ${commands} commands and ${queries} queries from CQRS handlers`,
+      );
+    }
   }
 
   /**

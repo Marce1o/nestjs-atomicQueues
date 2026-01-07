@@ -77,9 +77,12 @@ export class CommandDiscoveryService implements OnModuleInit {
     this.discoverCommands();
     this.discoverQueries();
 
-    this.logger.log(
-      `Discovered ${this.commandMap.size} @JobCommand and ${this.queryMap.size} @JobQuery classes`,
-    );
+    // Only log if any @JobCommand or @JobQuery classes were found
+    if (this.commandMap.size > 0 || this.queryMap.size > 0) {
+      this.logger.log(
+        `Discovered ${this.commandMap.size} @JobCommand and ${this.queryMap.size} @JobQuery classes`,
+      );
+    }
   }
 
   /**

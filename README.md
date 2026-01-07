@@ -94,25 +94,9 @@ import { WorkerProcessor } from 'atomic-queues';
 export class OrderProcessor {}
 ```
 
-### 4. Register Commands at Startup
+### 4. Queue Jobs with the Fluent API
 
-```typescript
-import { Injectable, OnModuleInit } from '@nestjs/common';
-import { QueueBus } from 'atomic-queues';
-import { ProcessOrderCommand, ShipOrderCommand } from './commands';
-
-@Injectable()
-export class OrderModule implements OnModuleInit {
-  onModuleInit() {
-    QueueBus.registerCommands(
-      ProcessOrderCommand,
-      ShipOrderCommand,
-    );
-  }
-}
-```
-
-### 5. Queue Jobs with the Fluent API
+Commands are **automatically registered** from your `@CommandHandler` classes - no manual registration needed!
 
 ```typescript
 import { Injectable } from '@nestjs/common';
@@ -138,6 +122,7 @@ export class OrderService {
 ```
 
 That's it! The library automatically:
+- Discovers commands from `@CommandHandler` decorators
 - Creates a queue for each `orderId`
 - Spawns a worker to process jobs sequentially
 - Routes jobs to the correct command handlers
@@ -235,24 +220,6 @@ Defines how workers are created for an entity type:
 })
 ```
 
-### QueueBus.registerCommands()
-
-Register command classes for worker-side instantiation:
-
-```typescript
-// At startup
-QueueBus.registerCommands(
-  ProcessOrderCommand,
-  ShipOrderCommand,
-  CancelOrderCommand,
-);
-
-// For queries
-QueueBus.registerQueries(
-  GetOrderStatusQuery,
-);
-```
-
 ---
 
 ## Entity ID Extraction
@@ -336,6 +303,32 @@ export class DealCardsCommand {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// handlers/place-bet.handler.ts (auto-registers PlaceBetCommand)
+// ─────────────────────────────────────────────────────────────────
+import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
+import { PlaceBetCommand } from '../commands/place-bet.command';
+
+@CommandHandler(PlaceBetCommand)
+export class PlaceBetHandler implements ICommandHandler<PlaceBetCommand> {
+  async execute(command: PlaceBetCommand) {
+    console.log(`Placing bet of ${command.amount} for player ${command.playerId}`);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// handlers/deal-cards.handler.ts (auto-registers DealCardsCommand)
+// ─────────────────────────────────────────────────────────────────
+import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
+import { DealCardsCommand } from '../commands/deal-cards.command';
+
+@CommandHandler(DealCardsCommand)
+export class DealCardsHandler implements ICommandHandler<DealCardsCommand> {
+  async execute(command: DealCardsCommand) {
+    console.log(`Dealing cards for table ${command.tableId}`);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
 // table.processor.ts
 // ─────────────────────────────────────────────────────────────────
 import { Injectable } from '@nestjs/common';
@@ -350,22 +343,24 @@ import { WorkerProcessor } from 'atomic-queues';
 export class TableProcessor {}
 
 // ─────────────────────────────────────────────────────────────────
-// table.module.ts
+// table.module.ts - No manual registration needed!
 // ─────────────────────────────────────────────────────────────────
-import { Module, OnModuleInit } from '@nestjs/common';
-import { QueueBus } from 'atomic-queues';
-import { PlaceBetCommand, DealCardsCommand } from './commands';
+import { Module } from '@nestjs/common';
+import { CqrsModule } from '@nestjs/cqrs';
 import { TableProcessor } from './table.processor';
 import { TableGateway } from './table.gateway';
+import { PlaceBetHandler, DealCardsHandler } from './handlers';
 
 @Module({
-  providers: [TableProcessor, TableGateway],
+  imports: [CqrsModule],
+  providers: [
+    TableProcessor,
+    TableGateway,
+    PlaceBetHandler,   // Commands auto-discovered from handlers!
+    DealCardsHandler,
+  ],
 })
-export class TableModule implements OnModuleInit {
-  onModuleInit() {
-    QueueBus.registerCommands(PlaceBetCommand, DealCardsCommand);
-  }
-}
+export class TableModule {}
 
 // ─────────────────────────────────────────────────────────────────
 // table.gateway.ts (WebSocket example)
@@ -410,6 +405,9 @@ AtomicQueuesModule.forRoot({
   enableCronManager: true,       // Enable auto-scaling (default: false)
   cronInterval: 5000,            // Scaling check interval (default: 5000ms)
   
+  verbose: false,                // Enable verbose logging (default: false)
+                                 // When true, logs service job processing details
+  
   workerDefaults: {
     concurrency: 1,              // Jobs processed simultaneously
     stalledInterval: 1000,       // Stalled job check interval
@@ -417,6 +415,41 @@ AtomicQueuesModule.forRoot({
     heartbeatTTL: 3,             // Worker heartbeat TTL (seconds)
   },
 });
+```
+
+---
+
+## Command Registration
+
+By default, atomic-queues **auto-discovers** all commands from your `@CommandHandler` and `@QueryHandler` decorators. No manual registration needed!
+
+### Auto-Discovery (Default)
+
+Commands are automatically discovered when you have CQRS handlers:
+
+```typescript
+// Your handler - that's all you need!
+@CommandHandler(ProcessOrderCommand)
+export class ProcessOrderHandler implements ICommandHandler<ProcessOrderCommand> {
+  async execute(command: ProcessOrderCommand) {
+    // ProcessOrderCommand is auto-registered with QueueBus
+  }
+}
+```
+
+### Manual Registration (Optional)
+
+If you need to register commands without handlers, or disable auto-discovery:
+
+```typescript
+// Disable auto-discovery in config
+AtomicQueuesModule.forRoot({
+  redis: { host: 'localhost', port: 6379 },
+  autoRegisterCommands: false, // Disable auto-discovery
+});
+
+// Then manually register
+QueueBus.registerCommands(ProcessOrderCommand, ShipOrderCommand);
 ```
 
 ---

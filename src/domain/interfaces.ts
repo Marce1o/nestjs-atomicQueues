@@ -117,6 +117,14 @@ export interface IAtomicQueuesModuleConfig {
   keyPrefix?: string;
   /** Service queue configuration for global atomic operations */
   serviceQueue?: IServiceQueueConfig;
+  /** Enable verbose logging (debug logs for service jobs, scaling cycles, etc.) */
+  verbose?: boolean;
+  /** 
+   * Auto-register commands from @nestjs/cqrs handlers (default: true)
+   * When enabled, all @CommandHandler and @QueryHandler decorated classes
+   * are automatically discovered and registered with QueueBus.
+   */
+  autoRegisterCommands?: boolean;
 }
 
 // =============================================================================

@@ -356,6 +356,66 @@ export class QueueBus {
   }
   
   /**
+   * Auto-discover and register all commands/queries from CQRS handlers
+   * 
+   * This method discovers all classes decorated with @CommandHandler and @QueryHandler
+   * from @nestjs/cqrs and automatically registers them with QueueBus.
+   * 
+   * Call this during module init to enable zero-config command registration.
+   * 
+   * @param discoveryService - NestJS DiscoveryService
+   * @returns Number of commands and queries discovered
+   * 
+   * @example
+   * ```typescript
+   * @Module({})
+   * export class MyModule implements OnModuleInit {
+   *   constructor(private discoveryService: DiscoveryService) {}
+   *   
+   *   onModuleInit() {
+   *     const { commands, queries } = QueueBus.discoverFromCqrs(this.discoveryService);
+   *     console.log(`Auto-registered ${commands} commands, ${queries} queries`);
+   *   }
+   * }
+   * ```
+   */
+  static discoverFromCqrs(discoveryService: any): { commands: number; queries: number } {
+    // CQRS metadata keys (from @nestjs/cqrs)
+    const COMMAND_HANDLER_METADATA = '__commandHandler__';
+    const QUERY_HANDLER_METADATA = '__queryHandler__';
+    
+    let commandCount = 0;
+    let queryCount = 0;
+    
+    const providers = discoveryService.getProviders?.() ?? [];
+    
+    for (const wrapper of providers) {
+      const { metatype } = wrapper;
+      if (!metatype) continue;
+      
+      // Check for @CommandHandler
+      const commandClass = Reflect.getMetadata(COMMAND_HANDLER_METADATA, metatype);
+      if (commandClass && typeof commandClass === 'function') {
+        if (!QueueBus.globalRegistry.has(commandClass.name)) {
+          QueueBus.register(commandClass, false);
+          commandCount++;
+        }
+      }
+      
+      // Check for @QueryHandler
+      const queryClass = Reflect.getMetadata(QUERY_HANDLER_METADATA, metatype);
+      if (queryClass && typeof queryClass === 'function') {
+        if (!QueueBus.globalRegistry.has(queryClass.name)) {
+          QueueBus.register(queryClass, true);
+          queryCount++;
+        }
+      }
+    }
+    
+    return { commands: commandCount, queries: queryCount };
+  }
+  
+  /**
    * Execute a command/query by adding it to a queue
    * 
    * @deprecated Use .forProcessor(ProcessorClass).enqueue(command) instead
