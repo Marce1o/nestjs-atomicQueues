@@ -5,30 +5,41 @@ A NestJS library for atomic, sequential job processing per entity with BullMQ an
 ## What It Does
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     THE PROBLEM                                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Multiple requests for the same entity arrive simultaneously:    │
-│                                                                  │
-│    Request A ───┐                                                │
-│    Request B ───┼──► Entity 123 ──► 💥 RACE CONDITION!          │
-│    Request C ───┘                                                │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                              THE PROBLEM                                       ║
+╠═══════════════════════════════════════════════════════════════════════════════╣
+║                                                                                ║
+║   Multiple requests for the same entity arrive simultaneously:                 ║
+║                                                                                ║
+║        ┌──────────┐                                                            ║
+║        │ Request A │──┐                                                        ║
+║        └──────────┘  │                                                         ║
+║        ┌──────────┐  │    ┌─────────────┐                                      ║
+║        │ Request B │──┼───▶│  Entity 123 │───▶  💥 RACE CONDITION!             ║
+║        └──────────┘  │    └─────────────┘                                      ║
+║        ┌──────────┐  │                                                         ║
+║        │ Request C │──┘                                                        ║
+║        └──────────┘                                                            ║
+║                                                                                ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
 
-┌─────────────────────────────────────────────────────────────────┐
-│                     THE SOLUTION                                 │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  atomic-queues ensures sequential processing per entity:         │
-│                                                                  │
-│    Request A ───┐     ┌─────────┐                                │
-│    Request B ───┼──►  │ Queue   │  ──► Worker ──► Entity 123    │
-│    Request C ───┘     │ A, B, C │      (1 at a time)            │
-│                       └─────────┘                                │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                              THE SOLUTION                                      ║
+╠═══════════════════════════════════════════════════════════════════════════════╣
+║                                                                                ║
+║   atomic-queues ensures sequential processing per entity:                      ║
+║                                                                                ║
+║        ┌──────────┐      ┌─────────────────┐      ┌──────────┐                 ║
+║        │ Request A │──┐   │                 │      │          │                 ║
+║        └──────────┘  │   │   Redis Queue   │      │  Worker  │  ┌───────────┐  ║
+║        ┌──────────┐  │   │   ┌───┬───┬───┐ │      │          │  │           │  ║
+║        │ Request B │──┼──▶│   │ A │ B │ C │ │─────▶│  (1 job  │─▶│Entity 123 │  ║
+║        └──────────┘  │   │   └───┴───┴───┘ │      │ at a time│  │           │  ║
+║        ┌──────────┐  │   │                 │      │          │  └───────────┘  ║
+║        │ Request C │──┘   └─────────────────┘      └──────────┘                 ║
+║        └──────────┘                                                            ║
+║                                                                                ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
 ```
 
 ## Installation
@@ -132,40 +143,48 @@ That's it! The library automatically:
 ## How It Works
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        FLOW DIAGRAM                              │
-└─────────────────────────────────────────────────────────────────┘
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                              ARCHITECTURE                                      ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
 
-  YOUR CODE                    ATOMIC-QUEUES                 WORKER
-  ─────────                    ─────────────                 ──────
+  YOUR CODE                         ATOMIC-QUEUES                        EXECUTION
+  ─────────                         ─────────────                        ─────────
 
-  queueBus
-    .forProcessor(OrderProcessor)
-    .enqueue(new ProcessOrderCommand(...))
-           │
-           │ 1. Extract queue config from @WorkerProcessor
-           │ 2. Extract orderId from command.orderId
-           │ 3. Build queue name: order-{orderId}-queue
-           ▼
-    ┌─────────────┐
-    │   Redis     │
-    │   Queue     │  ◄─── Job: { name: "ProcessOrderCommand", data: {...} }
-    └──────┬──────┘
-           │
-           │ 4. Worker pulls job from queue
-           ▼
-    ┌─────────────┐
-    │   Worker    │
-    │ (1 per ID)  │
-    └──────┬──────┘
-           │
-           │ 5. Lookup ProcessOrderCommand in registry
-           │ 6. Instantiate command from job.data
-           │ 7. Execute via CommandBus
-           ▼
-    ┌─────────────┐
-    │ CommandBus  │  ──►  ProcessOrderCommandHandler.execute()
-    └─────────────┘
+  ┌─────────────────────────┐
+  │ queueBus                │
+  │   .forProcessor(...)    │
+  │   .enqueue(command)     │
+  └───────────┬─────────────┘
+              │
+              │  ① Extract queue config from @WorkerProcessor
+              │  ② Extract entityId from command properties
+              │  ③ Build queue name: {prefix}-{entityId}-queue
+              ▼
+      ┌───────────────────┐
+      │                   │
+      │   Redis Queue     │◀─── Job { name: "MyCommand", data: {...} }
+      │   (per entity)    │
+      │                   │
+      └─────────┬─────────┘
+                │
+                │  ④ Worker pulls job (one at a time)
+                ▼
+      ┌───────────────────┐
+      │                   │
+      │   BullMQ Worker   │
+      │   (1 per entity)  │
+      │                   │
+      └─────────┬─────────┘
+                │
+                │  ⑤ Lookup command class in registry
+                │  ⑥ Instantiate from job.data
+                │  ⑦ Execute via CQRS CommandBus
+                ▼
+      ┌───────────────────┐      ┌─────────────────────────┐
+      │                   │      │                         │
+      │    CommandBus     │─────▶│  MyCommandHandler       │
+      │                   │      │    .execute(command)    │
+      └───────────────────┘      └─────────────────────────┘
 ```
 
 ---
@@ -281,109 +300,145 @@ export class OrderScaler {
 
 ## Complete Example
 
+A document processing service where multiple users can edit the same document:
+
 ```typescript
 // ─────────────────────────────────────────────────────────────────
-// commands/place-bet.command.ts
+// commands/update-document.command.ts
 // ─────────────────────────────────────────────────────────────────
-export class PlaceBetCommand {
+export class UpdateDocumentCommand {
   constructor(
-    public readonly tableId: string,
-    public readonly playerId: string,
-    public readonly amount: number,
+    public readonly documentId: string,
+    public readonly userId: string,
+    public readonly content: string,
+    public readonly version: number,
   ) {}
 }
 
 // ─────────────────────────────────────────────────────────────────
-// commands/deal-cards.command.ts
+// commands/publish-document.command.ts
 // ─────────────────────────────────────────────────────────────────
-export class DealCardsCommand {
+export class PublishDocumentCommand {
   constructor(
-    public readonly tableId: string,
+    public readonly documentId: string,
+    public readonly publishedBy: string,
   ) {}
 }
 
 // ─────────────────────────────────────────────────────────────────
-// handlers/place-bet.handler.ts (auto-registers PlaceBetCommand)
+// handlers/update-document.handler.ts
 // ─────────────────────────────────────────────────────────────────
 import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
-import { PlaceBetCommand } from '../commands/place-bet.command';
+import { UpdateDocumentCommand } from '../commands';
 
-@CommandHandler(PlaceBetCommand)
-export class PlaceBetHandler implements ICommandHandler<PlaceBetCommand> {
-  async execute(command: PlaceBetCommand) {
-    console.log(`Placing bet of ${command.amount} for player ${command.playerId}`);
+@CommandHandler(UpdateDocumentCommand)
+export class UpdateDocumentHandler implements ICommandHandler<UpdateDocumentCommand> {
+  constructor(private readonly documentRepo: DocumentRepository) {}
+
+  async execute(command: UpdateDocumentCommand) {
+    const { documentId, userId, content, version } = command;
+    
+    // Safe! No race conditions - one update at a time per document
+    await this.documentRepo.update(documentId, { content, version, lastEditedBy: userId });
+    
+    return { success: true, documentId, version };
   }
 }
 
 // ─────────────────────────────────────────────────────────────────
-// handlers/deal-cards.handler.ts (auto-registers DealCardsCommand)
+// handlers/publish-document.handler.ts
 // ─────────────────────────────────────────────────────────────────
 import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
-import { DealCardsCommand } from '../commands/deal-cards.command';
+import { PublishDocumentCommand } from '../commands';
 
-@CommandHandler(DealCardsCommand)
-export class DealCardsHandler implements ICommandHandler<DealCardsCommand> {
-  async execute(command: DealCardsCommand) {
-    console.log(`Dealing cards for table ${command.tableId}`);
+@CommandHandler(PublishDocumentCommand)
+export class PublishDocumentHandler implements ICommandHandler<PublishDocumentCommand> {
+  constructor(private readonly documentRepo: DocumentRepository) {}
+
+  async execute(command: PublishDocumentCommand) {
+    const { documentId, publishedBy } = command;
+    
+    await this.documentRepo.publish(documentId, publishedBy);
+    
+    return { success: true, documentId, publishedAt: new Date() };
   }
 }
 
 // ─────────────────────────────────────────────────────────────────
-// table.processor.ts
+// document.processor.ts
 // ─────────────────────────────────────────────────────────────────
 import { Injectable } from '@nestjs/common';
 import { WorkerProcessor } from 'atomic-queues';
 
 @WorkerProcessor({
-  entityType: 'table',
-  queueName: (tableId) => `table-${tableId}-queue`,
-  workerName: (tableId) => `table-${tableId}-worker`,
+  entityType: 'document',
+  queueName: (documentId) => `doc-${documentId}-queue`,
+  workerName: (documentId) => `doc-${documentId}-worker`,
 })
 @Injectable()
-export class TableProcessor {}
+export class DocumentProcessor {}
 
 // ─────────────────────────────────────────────────────────────────
-// table.module.ts - No manual registration needed!
+// document.module.ts
 // ─────────────────────────────────────────────────────────────────
 import { Module } from '@nestjs/common';
 import { CqrsModule } from '@nestjs/cqrs';
-import { TableProcessor } from './table.processor';
-import { TableGateway } from './table.gateway';
-import { PlaceBetHandler, DealCardsHandler } from './handlers';
+import { DocumentProcessor } from './document.processor';
+import { DocumentController } from './document.controller';
+import { UpdateDocumentHandler, PublishDocumentHandler } from './handlers';
 
 @Module({
   imports: [CqrsModule],
   providers: [
-    TableProcessor,
-    TableGateway,
-    PlaceBetHandler,   // Commands auto-discovered from handlers!
-    DealCardsHandler,
+    DocumentProcessor,
+    UpdateDocumentHandler,   // Commands auto-discovered!
+    PublishDocumentHandler,
   ],
+  controllers: [DocumentController],
 })
-export class TableModule {}
+export class DocumentModule {}
 
 // ─────────────────────────────────────────────────────────────────
-// table.gateway.ts (WebSocket example)
+// document.controller.ts
 // ─────────────────────────────────────────────────────────────────
-import { Injectable } from '@nestjs/common';
+import { Controller, Post, Body, Param } from '@nestjs/common';
 import { QueueBus } from 'atomic-queues';
-import { TableProcessor } from './table.processor';
-import { PlaceBetCommand, DealCardsCommand } from './commands';
+import { DocumentProcessor } from './document.processor';
+import { UpdateDocumentCommand, PublishDocumentCommand } from './commands';
 
-@Injectable()
-export class TableGateway {
+@Controller('documents')
+export class DocumentController {
   constructor(private readonly queueBus: QueueBus) {}
 
-  async onPlaceBet(tableId: string, playerId: string, amount: number) {
+  @Post(':id/update')
+  async updateDocument(
+    @Param('id') documentId: string,
+    @Body() body: { userId: string; content: string; version: number },
+  ) {
+    // Multiple users editing same doc? No problem!
+    // Updates are queued and processed one at a time
     await this.queueBus
-      .forProcessor(TableProcessor)
-      .enqueue(new PlaceBetCommand(tableId, playerId, amount));
+      .forProcessor(DocumentProcessor)
+      .enqueue(new UpdateDocumentCommand(
+        documentId,
+        body.userId,
+        body.content,
+        body.version,
+      ));
+
+    return { queued: true, documentId };
   }
 
-  async onDealCards(tableId: string) {
+  @Post(':id/publish')
+  async publishDocument(
+    @Param('id') documentId: string,
+    @Body() body: { publishedBy: string },
+  ) {
     await this.queueBus
-      .forProcessor(TableProcessor)
-      .enqueue(new DealCardsCommand(tableId));
+      .forProcessor(DocumentProcessor)
+      .enqueue(new PublishDocumentCommand(documentId, body.publishedBy));
+
+    return { queued: true, documentId };
   }
 }
 ```
