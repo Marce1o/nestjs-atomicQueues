@@ -22,8 +22,8 @@ export const ON_TERMINATE_WORKER_METADATA = 'atomic:on-terminate-worker';
 export const JOB_COMMAND_METADATA = 'atomic:job-command';
 export const JOB_QUERY_METADATA = 'atomic:job-query';
 
-// Registry to track @EntityId usage per class (for duplicate detection)
-const entityIdRegistry = new Map<Function, string>();
+// Registry to track @QueueEntityId usage per class (for duplicate detection)
+const queueEntityIdRegistry = new Map<Function, string>();
 
 // =============================================================================
 // DECORATOR OPTION INTERFACES
@@ -202,7 +202,7 @@ export const AtomicProcessor = (jobType: string): MethodDecorator => {
  * ```typescript
  * @EntityType('account')
  * export class WithdrawCommand {
- *   @EntityId()
+ *   @QueueEntityId()
  *   public readonly accountId: string;
  *   public readonly amount: number;
  * }
@@ -218,16 +218,16 @@ export function EntityType(entityType: string): ClassDecorator {
 }
 
 /**
- * @EntityId decorator
+ * @QueueEntityId decorator
  *
  * Marks a property OR constructor parameter as the entity ID for queue routing.
- * Only ONE @EntityId() allowed per class (enforced at decoration time).
+ * Only ONE @QueueEntityId() allowed per class (enforced at decoration time).
  * Overrides module-level defaultEntityId configuration.
  *
  * @example Property decorator:
  * ```typescript
  * export class TransferCommand {
- *   @EntityId()
+ *   @QueueEntityId()
  *   public readonly sourceAccountId: string;
  *   public readonly amount: number;
  * }
@@ -238,13 +238,13 @@ export function EntityType(entityType: string): ClassDecorator {
  * @QueueEntity('account')
  * export class TransferCommand {
  *   constructor(
- *     @EntityId() public readonly sourceAccountId: string,
+ *     @QueueEntityId() public readonly sourceAccountId: string,
  *     public readonly amount: number,
  *   ) {}
  * }
  * ```
  */
-export function EntityId(): PropertyDecorator & ParameterDecorator {
+export function QueueEntityId(): PropertyDecorator & ParameterDecorator {
   return (
     target: object,
     propertyKey: string | symbol | undefined,
@@ -265,16 +265,16 @@ export function EntityId(): PropertyDecorator & ParameterDecorator {
       }
       
       // Check for duplicate
-      const existing = entityIdRegistry.get(constructor);
+      const existing = queueEntityIdRegistry.get(constructor);
       if (existing) {
         throw new Error(
-          `Multiple @EntityId() decorators on ${className}. ` +
+          `Multiple @QueueEntityId() decorators on ${className}. ` +
           `Found on '${existing}' and '${paramName}'. ` +
           `Only one parameter/property can be the entity ID.`
         );
       }
       
-      entityIdRegistry.set(constructor, paramName);
+      queueEntityIdRegistry.set(constructor, paramName);
       Reflect.defineMetadata(ENTITY_ID_METADATA, paramName, constructor);
       return;
     }
@@ -284,20 +284,25 @@ export function EntityId(): PropertyDecorator & ParameterDecorator {
     const className = constructor.name;
     const propName = String(propertyKey);
     
-    // Check for duplicate @EntityId on same class
-    const existing = entityIdRegistry.get(constructor);
+    // Check for duplicate @QueueEntityId on same class
+    const existing = queueEntityIdRegistry.get(constructor);
     if (existing) {
       throw new Error(
-        `Multiple @EntityId() decorators on ${className}. ` +
+        `Multiple @QueueEntityId() decorators on ${className}. ` +
         `Found on '${existing}' and '${propName}'. ` +
         `Only one property can be the entity ID.`
       );
     }
     
-    entityIdRegistry.set(constructor, propName);
+    queueEntityIdRegistry.set(constructor, propName);
     Reflect.defineMetadata(ENTITY_ID_METADATA, propName, constructor);
   };
 }
+
+/**
+ * @deprecated Use @QueueEntityId() instead. This alias is provided for backwards compatibility.
+ */
+export const EntityId = QueueEntityId;
 
 /**
  * Extract parameter name from constructor function by parsing its string representation.
@@ -366,7 +371,7 @@ export function getEntityType(target: Function): string | undefined {
 }
 
 /**
- * Get the entity ID property name from a class decorated with @EntityId or @QueueEntity
+ * Get the entity ID property name from a class decorated with @QueueEntityId or @QueueEntity
  */
 export function getEntityIdProperty(target: Function): string | undefined {
   return Reflect.getMetadata(ENTITY_ID_METADATA, target);
@@ -379,7 +384,7 @@ export function getEntityIdProperty(target: Function): string | undefined {
 /**
  * @QueueEntity decorator
  *
- * Single decorator that combines @EntityType and @EntityId into one.
+ * Single decorator that combines @EntityType and @QueueEntityId into one.
  * This is the recommended way to mark commands/queries for queue routing.
  *
  * @param entityType - The entity type for routing (e.g., 'table', 'account')

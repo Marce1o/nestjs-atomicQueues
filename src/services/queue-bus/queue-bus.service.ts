@@ -36,7 +36,7 @@ function extractData(commandOrQuery: object): Record<string, any> {
  * Extract entityId from command using explicit decorators and config.
  * 
  * Priority chain (highest to lowest):
- * 1. @EntityId() decorator on command property
+ * 1. @QueueEntityId() decorator on command property
  * 2. processorDefaultEntityId from @WorkerProcessor({ defaultEntityId })
  * 3. entityConfig.defaultEntityId from module entities config
  * 4. Throws error (no magic fallback)
@@ -56,11 +56,11 @@ function extractEntityIdExplicit(
 ): string {
   const className = commandOrQuery.constructor.name;
   
-  // 1. Check for @EntityId() decorator on the command class
+  // 1. Check for @QueueEntityId() decorator on the command class
   const decoratedProperty = getEntityIdProperty(commandOrQuery.constructor);
   if (decoratedProperty && data[decoratedProperty] !== undefined) {
     logger?.debug(
-      `[${className}] Using @EntityId() decorated property: ${decoratedProperty}`,
+      `[${className}] Using @QueueEntityId() decorated property: ${decoratedProperty}`,
     );
     return String(data[decoratedProperty]);
   }
@@ -85,7 +85,7 @@ function extractEntityIdExplicit(
   const availableKeys = Object.keys(data).join(', ');
   throw new Error(
     `Cannot extract entityId from ${className}. ` +
-    `Use @EntityId() decorator on the ID property, ` +
+    `Use @QueueEntityId() decorator on the ID property, ` +
     `or set defaultEntityId in @WorkerProcessor or module entities config. ` +
     `Available properties: [${availableKeys}]`,
   );
@@ -601,14 +601,14 @@ export class QueueBus {
    * @returns The created BullMQ job
    * 
    * @example
-   * @EntityType('table')
-   * class MakeBetCommand {
-   *   @EntityId()
-   *   tableId: string;
+   * @EntityType('account')
+   * class WithdrawCommand {
+   *   @QueueEntityId()
+   *   accountId: string;
    *   // ...
    * }
    * 
-   * await this.queueBus.enqueue(new MakeBetCommand(tableId, bets, player));
+   * await this.queueBus.enqueue(new WithdrawCommand(accountId, amount));
    */
   async enqueue<T extends object>(
     commandOrQuery: T,

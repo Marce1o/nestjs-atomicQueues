@@ -8,36 +8,17 @@ A NestJS library for atomic, sequential job processing per entity using BullMQ a
 
 - [Overview](#overview)
 - [The Concurrency Problem](#the-concurrency-problem)
-  - [Race Condition Scenario](#race-condition-scenario)
-  - [Traditional Solutions and Their Limitations](#traditional-solutions-and-their-limitations)
 - [The Per-Entity Queue Architecture](#the-per-entity-queue-architecture)
-  - [Design Principle](#design-principle)
-  - [Correctness Under Load](#correctness-under-load)
-- [Comparative Analysis](#comparative-analysis)
-  - [Behavioral Characteristics](#behavioral-characteristics)
-  - [Scalability Profile](#scalability-profile)
 - [Architecture](#architecture)
-  - [Alignment with Node.js Event Loop Philosophy](#alignment-with-nodejs-event-loop-philosophy)
-  - [Multi-Pod Kubernetes Deployments](#multi-pod-kubernetes-deployments)
-  - [Distributed Systems Guarantees](#distributed-systems-guarantees)
-  - [Request Flow in Multi-Pod Deployment](#request-flow-in-multi-pod-deployment)
-  - [Horizontal Scaling Model](#horizontal-scaling-model)
-  - [Dynamic Worker Lifecycle](#dynamic-worker-lifecycle)
 - [Use Cases](#use-cases)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [API Reference](#api-reference)
-  - [QueueBus](#queuebus)
-  - [@WorkerProcessor](#workerprocessor)
 - [Entity ID Extraction](#entity-id-extraction)
-  - [Priority Chain](#priority-chain)
-  - [Using @EntityId() Decorator](#using-entityid-decorator-recommended)
-  - [Using Module-Level Defaults](#using-module-level-defaults)
-  - [Using Processor-Level Defaults](#using-processor-level-defaults)
-  - [Why No Magic Extraction?](#why-no-magic-extraction)
+- [Scalerless Mode (Auto-Spawn Workers)](#scalerless-mode-auto-spawn-workers)
 - [Scaling with Entity Scalers](#scaling-with-entity-scalers)
-- [Advanced Features](#advanced-features)
-- [Configuration Reference](#configuration-reference)
+- [Complete Example](#complete-example)
+- [Configuration](#configuration)
 - [License](#license)
 
 ---
@@ -46,15 +27,13 @@ A NestJS library for atomic, sequential job processing per entity using BullMQ a
 
 **atomic-queues** solves the fundamental concurrency problem in distributed systems: ensuring that operations on the same logical entity execute sequentially, even when requests arrive simultaneously across multiple service instances.
 
-Rather than relying on distributed locks—which introduce contention, latency degradation, and complex failure modes—this library implements a **per-entity queue architecture** where each entity (user account, game table, order, document) has its own dedicated processing queue and worker.
+Rather than relying on distributed locks—which introduce contention, latency degradation, and complex failure modes—this library implements a **per-entity queue architecture** where each entity (user account, order, document) has its own dedicated processing queue and worker.
 
 ---
 
 ## The Concurrency Problem
 
-### Race Condition Scenario
-
-Consider a financial system where a user with a $100 balance submits two concurrent $80 withdrawal requests:
+Consider a banking system where a user with a $100 balance submits two concurrent $80 withdrawal requests:
 
 ```
 Time    Request A                    Request B                    Database State
@@ -67,24 +46,13 @@ T₃                                   UPDATE: balance = -$60       balance = -$
 Result: Both withdrawals succeed. Balance becomes -$60. Integrity violated.
 ```
 
-This occurs because both transactions read the balance before either writes, a classic **lost update anomaly**.
+This occurs because both transactions read the balance before either writes—a classic **lost update anomaly**.
 
-### Traditional Solutions and Their Limitations
-
-| Approach | Mechanism | Failure Mode |
-|----------|-----------|--------------|
-| **Distributed Locks (Redlock)** | Acquire lock before operation, release after | Lock contention storms under high throughput; exponential latency degradation; lock holder failure requires TTL expiration |
-| **Database Row Locks** | `SELECT ... FOR UPDATE` | Connection pool exhaustion; deadlock risk in multi-entity transactions; database becomes bottleneck |
-| **Optimistic Concurrency Control** | Version numbers with conditional updates | Retry storms under contention; unbounded retries on hot entities; wasted compute cycles |
-| **Application Semaphores** | In-memory mutex/semaphore | Single-process only; ineffective in horizontally scaled deployments |
-
-**Fundamental limitation**: These approaches attempt to serialize access at the *moment of execution*. Under high contention, this creates a thundering herd where N requests compete for the same resource simultaneously.
+Traditional solutions (distributed locks, row locks, optimistic concurrency) attempt to serialize access at the *moment of execution*. Under high contention, this creates a thundering herd where N requests compete for the same resource simultaneously.
 
 ---
 
 ## The Per-Entity Queue Architecture
-
-### Design Principle
 
 Instead of serializing at execution time, **serialize at ingestion time**:
 
@@ -102,7 +70,7 @@ Instead of serializing at execution time, **serialize at ingestion time**:
 Operations targeting the same entity are immediately routed to that entity's queue. A dedicated worker processes operations one at a time, guaranteeing:
 
 1. **Serialized Execution**: Operations execute in FIFO order
-2. **Consistent State Visibility**: Each operation sees the result of all prior operations
+2. **Consistent State Visibility**: Each operation sees the result of all prior operations  
 3. **Isolation**: No interleaving of concurrent modifications
 
 ### Correctness Under Load
@@ -119,237 +87,11 @@ Result: First withdrawal succeeds. Second is rejected. Integrity preserved.
 
 ---
 
-## Comparative Analysis
-
-### Behavioral Characteristics
-
-| Characteristic            | Distributed Locks                     | Per-Entity Queues                               |
-|-------------------------  |-------------------------------------- |-------------------                              |
-| **Request Handling**      | Block until lock acquired             | Queue immediately, return                       |
-| **Latency Distribution**  | Bimodal (fast if uncontested)         | Predictable (queue depth × avg processing time) |
-| **Throughput Ceiling**    | Limited by lock contention            | Limited only by worker processing rate          |
-| **Failure Recovery**      | Stuck locks until TTL expiration      | Failed jobs retry or move to dead-letter queue  |
-| **Ordering Guarantees**   | Non-deterministic (race to acquire)   | Deterministic FIFO                              |
-| **Observability**         | Lock wait times difficult to measure  | Queue depth, throughput directly observable     |
-
-### Scalability Profile
-
-```
-Throughput
-    ▲
-    │                                    ╭──── Per-Entity Queues
-    │                                ╭───╯     (linear scaling)
-    │                            ╭───╯
-    │                        ╭───╯
-    │                    ╭───╯
-    │                ╭───╯         ╭────── Distributed Locks
-    │            ╭───╯         ╭───╯       (contention ceiling)
-    │        ╭───╯         ╭───╯
-    │    ╭───╯     ╭───────╯
-    │╭───╯ ╭───────╯
-    ├──────╯
-    └──────────────────────────────────────────────▶ Concurrent Requests
-
-    Lock-based systems hit a contention ceiling where adding more 
-    requests increases wait time faster than throughput.
-    
-    Queue-based systems scale linearly: each entity's queue is 
-    independent, so Entity A's load doesn't affect Entity B.
-```
-
----
-
 ## Architecture
-
-### Alignment with Node.js Event Loop Philosophy
-
-Node.js achieves high concurrency not through multi-threading, but through an **event-driven, non-blocking I/O model**. The single-threaded event loop processes events sequentially, delegating I/O operations to the system kernel and handling callbacks as they complete.
-
-**atomic-queues** extends this philosophy to distributed systems:
-
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                     NODE.JS EVENT LOOP MODEL                                     │
-│                                                                                  │
-│    ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐             │
-│    │  Event   │────▶│  Event   │────▶│  Event   │────▶│  Event   │────▶ ...    │
-│    │    1     │     │    2     │     │    3     │     │    4     │             │
-│    └──────────┘     └──────────┘     └──────────┘     └──────────┘             │
-│         │                                                                        │
-│         ▼                                                                        │
-│    Single-threaded sequential processing prevents race conditions               │
-│    within a single process. But what about multiple processes?                  │
-│                                                                                  │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                     ATOMIC-QUEUES DISTRIBUTED MODEL                              │
-│                                                                                  │
-│    ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐             │
-│    │   Job    │────▶│   Job    │────▶│   Job    │────▶│   Job    │────▶ ...    │
-│    │    1     │     │    2     │     │    3     │     │    4     │             │
-│    └──────────┘     └──────────┘     └──────────┘     └──────────┘             │
-│         │                                                                        │
-│         ▼                                                                        │
-│    Per-entity queue + single worker = event loop semantics at cluster scale    │
-│                                                                                  │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
-
-| Concept | Node.js Event Loop | atomic-queues |
-|---------|-------------------|---------------|
-| **Unit of Work** | Event/Callback | Job |
-| **Serialization Mechanism** | Single thread | Single worker per entity |
-| **Concurrency Model** | Non-blocking I/O | Async job processing |
-| **Scope** | Single process | Distributed cluster |
-
-This alignment means developers familiar with Node.js concurrency patterns will find the mental model intuitive: just as the event loop prevents race conditions within a process, per-entity queues prevent race conditions across a distributed cluster.
 
 ### Multi-Pod Kubernetes Deployments
 
-In containerized environments, services scale horizontally through pod replication. Each pod runs an independent instance of the application, creating the distributed concurrency challenge this library solves.
-
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                         KUBERNETES CLUSTER                                       │
-│                                                                                  │
-│  ┌─────────────────────────────────────────────────────────────────────────┐    │
-│  │                         Service: account-service                         │    │
-│  │                         Replicas: 6 pods                                 │    │
-│  └─────────────────────────────────────────────────────────────────────────┘    │
-│                                      │                                           │
-│                          Load Balancer / Ingress                                │
-│                                      │                                           │
-│         ┌────────────────────────────┼────────────────────────────┐             │
-│         │                            │                            │             │
-│         ▼                            ▼                            ▼             │
-│  ┌─────────────┐              ┌─────────────┐              ┌─────────────┐      │
-│  │   Node 1    │              │   Node 2    │              │   Node 3    │      │
-│  │             │              │             │              │             │      │
-│  │ ┌─────────┐ │              │ ┌─────────┐ │              │ ┌─────────┐ │      │
-│  │ │ Pod 1   │ │              │ │ Pod 3   │ │              │ │ Pod 5   │ │      │
-│  │ │ workers:│ │              │ │ workers:│ │              │ │ workers:│ │      │
-│  │ │ ACC-001 │ │              │ │ ACC-003 │ │              │ │ ACC-007 │ │      │
-│  │ │ ACC-002 │ │              │ │ ACC-005 │ │              │ │ ACC-009 │ │      │
-│  │ └─────────┘ │              │ └─────────┘ │              │ └─────────┘ │      │
-│  │ ┌─────────┐ │              │ ┌─────────┐ │              │ ┌─────────┐ │      │
-│  │ │ Pod 2   │ │              │ │ Pod 4   │ │              │ │ Pod 6   │ │      │
-│  │ │ workers:│ │              │ │ workers:│ │              │ │ workers:│ │      │
-│  │ │ ACC-004 │ │              │ │ ACC-006 │ │              │ │ ACC-008 │ │      │
-│  │ │ ACC-010 │ │              │ │ ACC-011 │ │              │ │ ACC-012 │ │      │
-│  │ └─────────┘ │              │ └─────────┘ │              │ └─────────┘ │      │
-│  └─────────────┘              └─────────────┘              └─────────────┘      │
-│                                                                                  │
-│  Total: 6 pods across 3 nodes, workers distributed via Redis coordination       │
-│                                                                                  │
-└─────────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              REDIS CLUSTER                                       │
-│                                                                                  │
-│  • Queues: Shared state accessible from all pods                                │
-│  • Heartbeats: Track which pod owns which entity's worker                       │
-│  • Coordination: Atomic operations prevent duplicate worker spawning            │
-│                                                                                  │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
-
-**Operational Characteristics:**
-
-| Scenario | Behavior |
-|----------|----------|
-| **Pod scales up** | New pod discovers entities needing workers, spawns workers for unassigned entities |
-| **Pod scales down** | Workers on terminating pod close gracefully; heartbeats expire; surviving pods spawn replacement workers |
-| **Pod crashes** | Heartbeat TTL expires (default: 3s); any healthy pod spawns replacement worker |
-| **Rolling deployment** | Old pods drain (stop accepting new workers); new pods take over entity workers progressively |
-| **Network partition** | Partitioned pods lose Redis connectivity; heartbeats expire; workers on connected pods take over |
-
-### Distributed Systems Guarantees
-
-The architecture provides the following guarantees in a distributed environment:
-
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                         CONSISTENCY MODEL                                        │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                  │
-│  INVARIANT 1: Single Writer per Entity                                          │
-│  ─────────────────────────────────────                                          │
-│  At any point in time, at most one worker processes jobs for a given entity.    │
-│  Enforced via Redis heartbeat with TTL. If two workers attempt to claim the     │
-│  same entity, the heartbeat check ensures only one succeeds.                    │
-│                                                                                  │
-│  INVARIANT 2: Total Ordering per Entity                                         │
-│  ─────────────────────────────────────                                          │
-│  All operations on an entity execute in a globally consistent order (FIFO).     │
-│  Jobs added from Pod A before Pod B's job will process first, regardless of     │
-│  which pod's worker processes them.                                             │
-│                                                                                  │
-│  INVARIANT 3: At-Least-Once Delivery                                            │
-│  ─────────────────────────────────────                                          │
-│  Jobs are persisted in Redis before acknowledgment. Worker failure mid-job      │
-│  triggers retry on another worker. Handlers must be idempotent.                 │
-│                                                                                  │
-│  INVARIANT 4: Partition Tolerance                                               │
-│  ─────────────────────────────────────                                          │
-│  Network partitions cause heartbeat expiration on disconnected nodes.           │
-│  Connected nodes take over orphaned workers. When partition heals,              │
-│  duplicate workers are prevented by heartbeat check before spawning.            │
-│                                                                                  │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Request Flow in Multi-Pod Deployment
-
-```
-                              User Request: Withdraw $80 from ACC-001
-                                             │
-                                             ▼
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                            LOAD BALANCER                                       │
-│                   Routes to any available pod (round-robin)                    │
-└───────────────────────────────────────────────────────────────────────────────┘
-                                             │
-                                             ▼
-┌───────────────────────────────────────────────────────────────────────────────┐
-│  POD 3 (receives request)                                                      │
-│                                                                                │
-│  1. Deserialize request                                                        │
-│  2. Create WithdrawCommand(ACC-001, $80)                                       │
-│  3. QueueBus.forProcessor(AccountProcessor).enqueue(command)                   │
-│     └──▶ Determines queue name: "account-ACC-001-queue"                        │
-│     └──▶ Adds job to Redis queue (O(1) operation)                              │
-│  4. Return 202 Accepted (job queued)                                           │
-│                                                                                │
-└───────────────────────────────────────────────────────────────────────────────┘
-                                             │
-                                             ▼
-┌───────────────────────────────────────────────────────────────────────────────┐
-│  REDIS                                                                         │
-│                                                                                │
-│  Queue "account-ACC-001-queue": [..., WithdrawCommand($80)]                    │
-│  Heartbeat "ACC-001-worker": Pod 1 (TTL: 3s)                                   │
-│                                                                                │
-└───────────────────────────────────────────────────────────────────────────────┘
-                                             │
-                                             ▼
-┌───────────────────────────────────────────────────────────────────────────────┐
-│  POD 1 (owns ACC-001 worker)                                                   │
-│                                                                                │
-│  Worker polling queue "account-ACC-001-queue"                                  │
-│  1. Dequeue job: WithdrawCommand($80)                                          │
-│  2. Lookup handler in QueueBus registry                                        │
-│  3. Execute: CommandBus.execute(withdrawCommand)                               │
-│  4. Handler runs with exclusive access to ACC-001 state                        │
-│  5. Mark job complete                                                          │
-│                                                                                │
-└───────────────────────────────────────────────────────────────────────────────┘
-```
-
-**Key insight**: The pod receiving the HTTP request is not necessarily the pod processing the job. This decoupling enables true horizontal scaling—any pod can accept requests, while entity-specific processing is centralized on the worker owner.
-
-### Horizontal Scaling Model
-
-Workers are distributed across service instances via Redis-based coordination:
+In containerized environments, services scale horizontally through pod replication. Workers are distributed across service instances via Redis-based coordination:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
@@ -371,7 +113,6 @@ Workers are distributed across service instances via Redis-based coordination:
            ▼                        ▼                        ▼
 ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐
 │   Service Node 1    │  │   Service Node 2    │  │   Service Node 3    │
-│                     │  │                     │  │                     │
 │  ┌───────────────┐  │  │  ┌───────────────┐  │  │  ┌───────────────┐  │
 │  │ Worker ACC-001│  │  │  │ Worker ACC-002│  │  │  │ Worker ACC-004│  │
 │  │ Worker ACC-003│  │  │  │ Worker ACC-005│  │  │  │ Worker ACC-006│  │
@@ -422,22 +163,13 @@ Workers are distributed across service instances via Redis-based coordination:
 
 ## Use Cases
 
-### Recommended Applications
-
 | Domain            | Entity Type     | Operations                                          |
 |-------------------|-----------------|-----------------------------------------------------|
 | **Finance**       | Account, Wallet | Deposits, withdrawals, transfers, balance queries   |
-| **Gaming**        | Game, Match     | Player actions, state transitions, bet processing   |
 | **E-Commerce**    | Order, Cart     | Add/remove items, apply discounts, checkout         |
 | **Collaboration** | Document        | Edits, comments, permission changes                 |
 | **IoT**           | Device          | Command dispatch, state synchronization             |
-
-### When to Use Alternative Approaches
-
-- **Read-heavy workloads**: Use caching layers (Redis, Memcached) or read replicas
-- **Parallelizable operations**: Use standard job queues (BullMQ, SQS) without entity affinity
-- **Fire-and-forget notifications**: Use pub/sub (Redis Pub/Sub, Kafka) without ordering guarantees
-- **Short critical sections (<10ms)**: Distributed locks may suffice if contention is low
+| **Gaming**        | Match, Session  | Player actions, state transitions                   |
 
 ---
 
@@ -446,6 +178,8 @@ Workers are distributed across service instances via Redis-based coordination:
 ```bash
 npm install atomic-queues bullmq ioredis
 ```
+
+---
 
 ## Quick Start
 
@@ -460,152 +194,103 @@ import { AtomicQueuesModule } from 'atomic-queues';
     AtomicQueuesModule.forRoot({
       redis: { host: 'localhost', port: 6379 },
       keyPrefix: 'myapp',
+      enableCronManager: true,
     }),
   ],
 })
 export class AppModule {}
 ```
 
-### 2. Create Your Commands
+### 2. Create Commands
 
-Plain classes - no decorators needed:
+Plain classes—no decorators required:
 
 ```typescript
-// commands/process-order.command.ts
-export class ProcessOrderCommand {
+// commands/withdraw.command.ts
+export class WithdrawCommand {
   constructor(
-    public readonly orderId: string,
-    public readonly items: string[],
+    public readonly accountId: string,
     public readonly amount: number,
+    public readonly transactionId: string,
   ) {}
 }
 
-// commands/ship-order.command.ts
-export class ShipOrderCommand {
+// commands/deposit.command.ts
+export class DepositCommand {
   constructor(
-    public readonly orderId: string,
-    public readonly address: string,
+    public readonly accountId: string,
+    public readonly amount: number,
+    public readonly source: string,
   ) {}
 }
 ```
 
-### 3. Create a Worker Processor
+### 3. Create a Worker Processor (Scalerless Mode)
+
+The simplest approach—workers automatically spawn when jobs arrive and terminate when idle:
 
 ```typescript
 import { Injectable } from '@nestjs/common';
-import { WorkerProcessor } from 'atomic-queues';
+import { WorkerProcessor, JobHandler } from 'atomic-queues';
+import { CommandBus } from '@nestjs/cqrs';
 
 @WorkerProcessor({
-  entityType: 'order',
-  queueName: (orderId) => `order-${orderId}-queue`,
-  workerName: (orderId) => `order-${orderId}-worker`,
+  entityType: 'account',
+  queueName: (accountId) => `${accountId}-queue`,
+  workerName: (accountId) => `${accountId}-worker`,
+  maxWorkersPerEntity: 1,
+  idleTimeoutSeconds: 15,
+  autoSpawn: true,  // Workers spawn automatically when jobs arrive
 })
 @Injectable()
-export class OrderProcessor {}
+export class AccountProcessor {
+  constructor(private readonly commandBus: CommandBus) {}
+
+  @JobHandler('*')  // Handle all job types for this entity
+  async handleJob(job: any): Promise<any> {
+    const { commandName, data } = job.data;
+    
+    // Reconstruct and execute the command
+    const CommandClass = QueueBus.getCommandClass(commandName);
+    const command = Object.assign(new CommandClass(), data);
+    return this.commandBus.execute(command);
+  }
+}
 ```
 
 ### 4. Queue Jobs with the Fluent API
 
-Commands are **automatically registered** from your `@CommandHandler` classes - no manual registration needed!
-
 ```typescript
 import { Injectable } from '@nestjs/common';
 import { QueueBus } from 'atomic-queues';
-import { OrderProcessor } from './order.processor';
-import { ProcessOrderCommand, ShipOrderCommand } from './commands';
+import { AccountProcessor } from './account.processor';
+import { WithdrawCommand, DepositCommand } from './commands';
 
 @Injectable()
-export class OrderService {
+export class AccountService {
   constructor(private readonly queueBus: QueueBus) {}
 
-  async createOrder(orderId: string, items: string[], amount: number) {
-    // Jobs are queued and processed sequentially per orderId
+  async withdraw(accountId: string, amount: number, transactionId: string) {
+    // Jobs are queued and processed sequentially per accountId
     await this.queueBus
-      .forProcessor(OrderProcessor)
-      .enqueue(new ProcessOrderCommand(orderId, items, amount));
+      .forProcessor(AccountProcessor)
+      .enqueue(new WithdrawCommand(accountId, amount, transactionId));
+  }
 
+  async deposit(accountId: string, amount: number, source: string) {
     await this.queueBus
-      .forProcessor(OrderProcessor)
-      .enqueue(new ShipOrderCommand(orderId, '123 Main St'));
+      .forProcessor(AccountProcessor)
+      .enqueue(new DepositCommand(accountId, amount, source));
   }
 }
 ```
 
 That's it! The library automatically:
 - Discovers commands from `@CommandHandler` decorators
-- Creates a queue for each `orderId`
-- Spawns a worker to process jobs sequentially
+- Creates a queue for each `accountId`
+- Spawns a worker when jobs arrive (scalerless mode)
 - Routes jobs to the correct command handlers
-
----
-
-## How It Works
-
-```
-╔═══════════════════════════════════════════════════════════════════════════════╗
-║                              ARCHITECTURE                                      ║
-╚═══════════════════════════════════════════════════════════════════════════════╝
-
-┌──────────────────┐
-│   API Request    │   POST /accounts/ACC-123/withdraw { amount: 80 }
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  QueueBus.forProcessor(AccountProcessor).enqueue(new WithdrawCommand(...))   │
-└────────┬─────────────────────────────────────────────────────────────────────┘
-         │
-         │  ① Reads @WorkerProcessor metadata from AccountProcessor
-         │  ② Extracts accountId from command.accountId property
-         │  ③ Generates queue name: "account-ACC-123-queue"
-         │
-         ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                              REDIS                                            │
-│  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │  Queue: account-ACC-123-queue                                          │  │
-│  │  ┌─────────────────┬─────────────────┬─────────────────┐               │  │
-│  │  │ Job 1           │ Job 2           │ Job 3           │  ...          │  │
-│  │  │ WithdrawCommand │ DepositCommand  │ TransferCommand │               │  │
-│  │  │ amount: 80      │ amount: 50      │ amount: 25      │               │  │
-│  │  └─────────────────┴─────────────────┴─────────────────┘               │  │
-│  └────────────────────────────────────────────────────────────────────────┘  │
-│                                                                               │
-│  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │  Queue: account-ACC-456-queue  (different account = different queue)   │  │
-│  │  ┌─────────────────┐                                                   │  │
-│  │  │ Job 1           │  ← Processes in parallel with ACC-123             │  │
-│  │  │ WithdrawCommand │                                                   │  │
-│  │  └─────────────────┘                                                   │  │
-│  └────────────────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────────────────┘
-         │
-         │  ④ BullMQ Worker pulls Job 1 (only one job at a time per queue)
-         │
-         ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  Worker: account-ACC-123-worker                                              │
-│                                                                               │
-│  ┌─────────────────────────────────────────────────────────────────────────┐ │
-│  │  ⑤ Lookup "WithdrawCommand" in QueueBus.globalRegistry                  │ │
-│  │  ⑥ Instantiate: Object.assign(new WithdrawCommand(), job.data)          │ │
-│  │  ⑦ Execute: CommandBus.execute(withdrawCommand)                         │ │
-│  └─────────────────────────────────────────────────────────────────────────┘ │
-└────────┬─────────────────────────────────────────────────────────────────────┘
-         │
-         ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  @CommandHandler(WithdrawCommand)                                            │
-│  class WithdrawHandler {                                                     │
-│    async execute(cmd: WithdrawCommand) {                                     │
-│      // Safe! No race conditions - guaranteed sequential execution           │
-│      const balance = await this.repo.getBalance(cmd.accountId);              │
-│      if (balance < cmd.amount) throw new InsufficientFundsError();           │
-│      await this.repo.debit(cmd.accountId, cmd.amount);                       │
-│    }                                                                         │
-│  }                                                                           │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
+- Terminates idle workers after the configured timeout
 
 ---
 
@@ -613,7 +298,7 @@ That's it! The library automatically:
 
 ### QueueBus
 
-QueueBus provides three ways to enqueue commands, from most explicit to most ergonomic:
+QueueBus provides three ways to enqueue commands:
 
 #### Option 1: `forProcessor()` - Full Control
 
@@ -643,11 +328,11 @@ AtomicQueuesModule.forRoot({
   redis: { host: 'localhost', port: 6379 },
   entities: {
     order: { defaultEntityId: 'orderId' },
-    user: { defaultEntityId: 'userId' },
+    account: { defaultEntityId: 'accountId' },
   },
 })
 
-// Usage - no @WorkerProcessor class needed!
+// Usage
 await queueBus
   .forEntity('order')
   .enqueue(new ProcessOrderCommand(orderId, items));
@@ -655,12 +340,14 @@ await queueBus
 
 #### Option 3: Direct `enqueue()` - Most Ergonomic
 
-Use when commands have `@EntityType` and `@EntityId` decorators:
+Use when commands have `@EntityType` and `@QueueEntityId` decorators:
 
 ```typescript
+import { EntityType, QueueEntityId } from 'atomic-queues';
+
 @EntityType('order')
 export class ProcessOrderCommand {
-  @EntityId()
+  @QueueEntityId()
   orderId: string;
   
   constructor(orderId: string, public readonly items: string[]) {
@@ -672,41 +359,19 @@ export class ProcessOrderCommand {
 await queueBus.enqueue(new ProcessOrderCommand(orderId, items));
 ```
 
-#### All Methods
-
-```typescript
-// Enqueue and wait for result
-const result = await queueBus
-  .forProcessor(MyProcessor)
-  .enqueueAndWait(new MyQuery(entityId));
-
-// Enqueue multiple commands (same entity)
-await queueBus
-  .forProcessor(MyProcessor)
-  .enqueueBulk([
-    new CommandA(entityId),
-    new CommandB(entityId),
-  ]);
-
-// With job options (delay, priority, etc.)
-await queueBus
-  .forProcessor(MyProcessor)
-  .enqueue(new MyCommand(entityId), {
-    jobOptions: { delay: 5000, priority: 1 }
-  });
-```
-
 ### @WorkerProcessor
 
 Defines how workers are created for an entity type:
 
 ```typescript
 @WorkerProcessor({
-  entityType: 'order',                              // Required
-  defaultEntityId: 'orderId',                       // Default property for entity ID
-  queueName: (id) => `order-${id}-queue`,           // Optional
-  workerName: (id) => `order-${id}-worker`,         // Optional
-  overrideDefaults: false,                          // If true, ignores module-level entity config
+  entityType: 'account',                            // Required
+  defaultEntityId: 'accountId',                     // Default property for entity ID
+  queueName: (id) => `account-${id}-queue`,         // Queue naming pattern
+  workerName: (id) => `account-${id}-worker`,       // Worker naming pattern
+  maxWorkersPerEntity: 1,                           // Max workers per entity (scalerless)
+  idleTimeoutSeconds: 15,                           // Idle timeout before termination
+  autoSpawn: true,                                  // Enable scalerless mode
   workerConfig: {
     concurrency: 1,                                 // Jobs per worker (default: 1)
     stalledInterval: 1000,                          // Check stalled jobs (ms)
@@ -725,19 +390,19 @@ Commands must explicitly declare which property contains the entity ID. This pre
 
 Entity ID is resolved in this order:
 
-1. **`@EntityId()` decorator** on command property (highest priority)
+1. **`@QueueEntityId()` decorator** on command property (highest priority)
 2. **`defaultEntityId`** in `@WorkerProcessor` options
 3. **`defaultEntityId`** in module `entities` config
 4. **Error** (no magic fallback)
 
-### Using `@EntityId()` Decorator (Recommended)
+### Using `@QueueEntityId()` Decorator (Recommended)
 
 ```typescript
-import { EntityId, EntityType } from 'atomic-queues';
+import { QueueEntityId, EntityType } from 'atomic-queues';
 
 @EntityType('account')
 export class TransferCommand {
-  @EntityId()  // Explicit: this command routes to sourceAccountId's queue
+  @QueueEntityId()  // Explicit: this command routes to sourceAccountId's queue
   sourceAccountId: string;
   
   targetAccountId: string;
@@ -751,11 +416,11 @@ export class TransferCommand {
 }
 ```
 
-> ⚠️ **Only one `@EntityId()` per class** - a compile-time error is thrown if multiple properties are decorated.
+> ⚠️ **Only one `@QueueEntityId()` per class** — a compile-time error is thrown if multiple properties are decorated.
 
 ### Using Module-Level Defaults
 
-For commands without `@EntityId()`, configure defaults per entity type:
+For commands without `@QueueEntityId()`, configure defaults per entity type:
 
 ```typescript
 AtomicQueuesModule.forRoot({
@@ -778,33 +443,51 @@ AtomicQueuesModule.forRoot({
 ```typescript
 @WorkerProcessor({
   entityType: 'order',
-  defaultEntityId: 'orderId',  // All commands use this if no @EntityId()
+  defaultEntityId: 'orderId',  // All commands use this if no @QueueEntityId()
 })
 export class OrderProcessor {}
 ```
 
-### Why No Magic Extraction?
+---
 
-Previous versions used heuristics (checking for `entityId`, `tableId`, `userId` in property names). This was dangerous:
+## Scalerless Mode (Auto-Spawn Workers)
+
+The simplest way to use atomic-queues—no EntityScaler class required:
 
 ```typescript
-// 🚨 DANGEROUS: Property order matters with magic extraction!
-class TransferCommand {
-  constructor(
-    public accountId: string,     // Magic might pick this
-    public toAccountId: string,   // Or this - depending on property order!
-    public amount: number,
-  ) {}
+@WorkerProcessor({
+  entityType: 'account',
+  queueName: (accountId) => `${accountId}-queue`,
+  maxWorkersPerEntity: 1,     // Max 1 worker per entity
+  idleTimeoutSeconds: 15,     // Terminate after 15s idle
+  autoSpawn: true,            // Spawn workers when jobs arrive
+})
+@Injectable()
+export class AccountProcessor {
+  constructor(private readonly commandBus: CommandBus) {}
+
+  @JobHandler('*')
+  async handleJob(job: any): Promise<any> {
+    const { commandName, data } = job.data;
+    const CommandClass = QueueBus.getCommandClass(commandName);
+    const command = Object.assign(new CommandClass(), data);
+    return this.commandBus.execute(command);
+  }
 }
 ```
 
-With explicit `@EntityId()`, the routing is always clear and refactoring-safe.
+**How it works:**
+1. When a job is enqueued, the library listens via BullMQ's `QueueEvents` (Redis pub/sub)
+2. If no worker exists for that entity, one is automatically spawned
+3. The worker processes jobs sequentially
+4. When the queue is empty and the worker has been idle for `idleTimeoutSeconds`, it terminates
+5. The CronManager handles idle detection via Redis heartbeat tracking
 
 ---
 
 ## Scaling with Entity Scalers
 
-For dynamic worker management based on demand:
+For more control over worker lifecycle (e.g., based on external state), use an EntityScaler:
 
 ```typescript
 import { Injectable } from '@nestjs/common';
@@ -813,6 +496,7 @@ import { EntityScaler, GetActiveEntities, GetDesiredWorkerCount } from 'atomic-q
 @EntityScaler({
   entityType: 'order',
   maxWorkersPerEntity: 1,
+  idleTimeoutSeconds: 30,
 })
 @Injectable()
 export class OrderScaler {
@@ -820,13 +504,13 @@ export class OrderScaler {
 
   @GetActiveEntities()
   async getActiveOrders(): Promise<string[]> {
-    // Return IDs that need workers
+    // Return IDs of orders that need active workers
     return this.orderRepo.findPendingOrderIds();
   }
 
   @GetDesiredWorkerCount()
   async getWorkerCount(orderId: string): Promise<number> {
-    return 1; // One worker per order
+    return 1; // Always 1 worker per order
   }
 }
 ```
@@ -835,7 +519,7 @@ export class OrderScaler {
 
 ## Complete Example
 
-A banking service handling critical financial transactions where race conditions could cause overdrafts or double-spending:
+A banking service handling critical financial transactions where race conditions could cause overdrafts:
 
 ```typescript
 // ─────────────────────────────────────────────────────────────────
@@ -846,7 +530,6 @@ export class WithdrawCommand {
     public readonly accountId: string,
     public readonly amount: number,
     public readonly transactionId: string,
-    public readonly requestedBy: string,
   ) {}
 }
 
@@ -857,7 +540,6 @@ export class DepositCommand {
   constructor(
     public readonly accountId: string,
     public readonly amount: number,
-    public readonly transactionId: string,
     public readonly source: string,
   ) {}
 }
@@ -867,7 +549,7 @@ export class DepositCommand {
 // ─────────────────────────────────────────────────────────────────
 export class TransferCommand {
   constructor(
-    public readonly accountId: string,  // Source account (for queue routing)
+    public readonly accountId: string,   // Source account (for queue routing)
     public readonly toAccountId: string,
     public readonly amount: number,
     public readonly transactionId: string,
@@ -920,7 +602,7 @@ export class WithdrawHandler implements ICommandHandler<WithdrawCommand> {
     return { 
       success: true, 
       transactionId, 
-      newBalance: account.balance 
+      newBalance: account.balance,
     };
   }
 }
@@ -959,7 +641,6 @@ export class TransferHandler implements ICommandHandler<TransferCommand> {
       .enqueue(new DepositCommand(
         toAccountId,
         amount,
-        transactionId,
         `transfer:${accountId}`,
       ));
     
@@ -968,48 +649,34 @@ export class TransferHandler implements ICommandHandler<TransferCommand> {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// account.processor.ts
+// account.processor.ts (Scalerless Mode)
 // ─────────────────────────────────────────────────────────────────
 import { Injectable } from '@nestjs/common';
-import { WorkerProcessor } from 'atomic-queues';
+import { WorkerProcessor, JobHandler, QueueBus } from 'atomic-queues';
+import { CommandBus } from '@nestjs/cqrs';
 
 @WorkerProcessor({
   entityType: 'account',
-  queueName: (accountId) => `bank-account-${accountId}-queue`,
-  workerName: (accountId) => `bank-account-${accountId}-worker`,
+  queueName: (accountId) => `${accountId}-queue`,
+  workerName: (accountId) => `${accountId}-worker`,
+  maxWorkersPerEntity: 1,
+  idleTimeoutSeconds: 15,
+  autoSpawn: true,
   workerConfig: {
-    concurrency: 1,        // CRITICAL: Must be 1 for financial transactions
-    lockDuration: 60000,   // 60s lock for long transactions
-    stalledInterval: 5000,
+    concurrency: 1,         // CRITICAL: Must be 1 for financial transactions
+    lockDuration: 60000,    // 60s lock for long transactions
   },
 })
 @Injectable()
-export class AccountProcessor {}
+export class AccountProcessor {
+  constructor(private readonly commandBus: CommandBus) {}
 
-// ─────────────────────────────────────────────────────────────────
-// account.scaler.ts - Scale workers based on active accounts
-// ─────────────────────────────────────────────────────────────────
-import { Injectable } from '@nestjs/common';
-import { EntityScaler, GetActiveEntities, GetDesiredWorkerCount } from 'atomic-queues';
-
-@EntityScaler({
-  entityType: 'account',
-  maxWorkersPerEntity: 1,  // Never more than 1 worker per account
-})
-@Injectable()
-export class AccountScaler {
-  constructor(private readonly accountRepo: AccountRepository) {}
-
-  @GetActiveEntities()
-  async getActiveAccounts(): Promise<string[]> {
-    // Return accounts with pending transactions
-    return this.accountRepo.findAccountsWithPendingTransactions();
-  }
-
-  @GetDesiredWorkerCount()
-  async getWorkerCount(accountId: string): Promise<number> {
-    // Always 1 worker per account for atomicity
-    return 1;
+  @JobHandler('*')
+  async handleJob(job: any): Promise<any> {
+    const { commandName, data } = job.data;
+    const CommandClass = QueueBus.getCommandClass(commandName);
+    const command = Object.assign(new CommandClass(), data);
+    return this.commandBus.execute(command);
   }
 }
 
@@ -1023,8 +690,7 @@ import { CqrsModule } from '@nestjs/cqrs';
   imports: [CqrsModule],
   providers: [
     AccountProcessor,
-    AccountScaler,
-    WithdrawHandler,    // Commands auto-discovered!
+    WithdrawHandler,
     DepositHandler,
     TransferHandler,
   ],
@@ -1038,7 +704,7 @@ export class AccountModule {}
 import { Controller, Post, Body, Param } from '@nestjs/common';
 import { QueueBus } from 'atomic-queues';
 import { AccountProcessor } from './account.processor';
-import { WithdrawCommand, DepositCommand, TransferCommand } from './commands';
+import { WithdrawCommand, TransferCommand } from './commands';
 import { v4 as uuid } from 'uuid';
 
 @Controller('accounts')
@@ -1048,7 +714,7 @@ export class AccountController {
   @Post(':accountId/withdraw')
   async withdraw(
     @Param('accountId') accountId: string,
-    @Body() body: { amount: number; requestedBy: string },
+    @Body() body: { amount: number },
   ) {
     const transactionId = uuid();
     
@@ -1056,12 +722,7 @@ export class AccountController {
     // and processed sequentially - no double-withdrawals possible
     await this.queueBus
       .forProcessor(AccountProcessor)
-      .enqueue(new WithdrawCommand(
-        accountId,
-        body.amount,
-        transactionId,
-        body.requestedBy,
-      ));
+      .enqueue(new WithdrawCommand(accountId, body.amount, transactionId));
 
     return { 
       queued: true, 
@@ -1107,56 +768,20 @@ AtomicQueuesModule.forRoot({
     password: 'secret',
   },
   
-  keyPrefix: 'myapp',           // Redis key prefix (default: 'aq')
+  keyPrefix: 'myapp',            // Redis key prefix (default: 'aq')
   
-  enableCronManager: true,       // Enable auto-scaling (default: false)
+  enableCronManager: true,       // Enable worker scaling/cleanup (default: false)
   cronInterval: 5000,            // Scaling check interval (default: 5000ms)
   
   verbose: false,                // Enable verbose logging (default: false)
-                                 // When true, logs service job processing details
   
   workerDefaults: {
     concurrency: 1,              // Jobs processed simultaneously
-    stalledInterval: 1000,       // Stalled job check interval
-    lockDuration: 30000,         // Job lock duration
+    stalledInterval: 1000,       // Stalled job check interval (ms)
+    lockDuration: 30000,         // Job lock duration (ms)
     heartbeatTTL: 3,             // Worker heartbeat TTL (seconds)
   },
 });
-```
-
----
-
-## Command Registration
-
-By default, atomic-queues **auto-discovers** all commands from your `@CommandHandler` and `@QueryHandler` decorators. No manual registration needed!
-
-### Auto-Discovery (Default)
-
-Commands are automatically discovered when you have CQRS handlers:
-
-```typescript
-// Your handler - that's all you need!
-@CommandHandler(ProcessOrderCommand)
-export class ProcessOrderHandler implements ICommandHandler<ProcessOrderCommand> {
-  async execute(command: ProcessOrderCommand) {
-    // ProcessOrderCommand is auto-registered with QueueBus
-  }
-}
-```
-
-### Manual Registration (Optional)
-
-If you need to register commands without handlers, or disable auto-discovery:
-
-```typescript
-// Disable auto-discovery in config
-AtomicQueuesModule.forRoot({
-  redis: { host: 'localhost', port: 6379 },
-  autoRegisterCommands: false, // Disable auto-discovery
-});
-
-// Then manually register
-QueueBus.registerCommands(ProcessOrderCommand, ShipOrderCommand);
 ```
 
 ---

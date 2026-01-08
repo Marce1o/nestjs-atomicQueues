@@ -106,7 +106,7 @@ export interface IServiceQueueConfig {
 export interface IEntityConfig {
   /** 
    * Default property name to use for entity ID extraction.
-   * This is used when commands don't have an @EntityId() decorator.
+   * This is used when commands don't have an @QueueEntityId() decorator.
    * Example: 'tableId', 'accountId', 'userId'
    */
   defaultEntityId?: string;
@@ -159,7 +159,7 @@ export interface IAtomicQueuesModuleConfig {
    * These defaults are merged with processor-level and command-level settings.
    * 
    * Priority chain (highest to lowest):
-   * 1. @EntityId() decorator on command property
+   * 1. @QueueEntityId() decorator on command property
    * 2. @WorkerProcessor({ defaultEntityId }) 
    * 3. entities[entityType].defaultEntityId
    * 4. Error (no fallback to magic extraction)
