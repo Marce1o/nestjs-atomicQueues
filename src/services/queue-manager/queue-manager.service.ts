@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, Optional, Inject } from '@nestjs/common';
 import { Queue, Job, QueueEvents } from 'bullmq';
 import Redis from 'ioredis';
 import {
@@ -8,8 +8,12 @@ import {
   IQueueConfig,
 } from '../../domain';
 import { ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG } from '../constants';
-import { Inject } from '@nestjs/common';
 import { IAtomicQueuesModuleConfig } from '../../domain';
+
+// Forward declaration to avoid circular dependency
+interface IQueueEventsManager {
+  ensureListening(queueName: string, entityType: string): Promise<void>;
+}
 
 /**
  * QueueManagerService
@@ -40,12 +44,23 @@ export class QueueManagerService implements IQueueManager, OnModuleDestroy {
   private readonly queues: Map<string, IManagedQueue> = new Map();
   private readonly queueEvents: Map<string, QueueEvents> = new Map();
   private readonly keyPrefix: string;
+  
+  // Optional reference to QueueEventsManager for auto-listening
+  private queueEventsManager: IQueueEventsManager | null = null;
 
   constructor(
     @Inject(ATOMIC_QUEUES_REDIS) private readonly redis: Redis,
     @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
   ) {
     this.keyPrefix = config.keyPrefix || 'aq';
+  }
+
+  /**
+   * Set the QueueEventsManager reference.
+   * Called by ProcessorDiscoveryService after initialization.
+   */
+  setQueueEventsManager(manager: IQueueEventsManager): void {
+    this.queueEventsManager = manager;
   }
 
   /**
@@ -187,15 +202,22 @@ export class QueueManagerService implements IQueueManager, OnModuleDestroy {
 
   /**
    * Add a job to a queue with optional configuration.
+   * If QueueEventsManager is available and entityType is provided,
+   * ensures we're listening for job events to trigger auto-spawning.
    */
   async addJob<T>(
     queueName: string,
     jobName: string,
     data: T,
-    options?: IJobOptions,
+    options?: IJobOptions & { entityType?: string },
   ): Promise<Job<T>> {
     const queue = this.getOrCreateQueue(queueName);
     const mergedOptions = this.mergeJobOptions(options);
+    
+    // Ensure we're listening for queue events (for auto-spawn functionality)
+    if (this.queueEventsManager && options?.entityType) {
+      await this.queueEventsManager.ensureListening(queueName, options.entityType);
+    }
 
     try {
       const job = await queue.add(jobName, data, mergedOptions);

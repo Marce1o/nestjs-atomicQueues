@@ -48,6 +48,23 @@ export interface WorkerProcessorOptions {
    * If false (default), workerConfig is merged with workerDefaults.
    */
   overrideDefaults?: boolean;
+  /**
+   * Maximum workers per entity (default: 1).
+   * Used when operating without an EntityScaler.
+   */
+  maxWorkersPerEntity?: number;
+  /**
+   * Idle timeout in seconds before a worker is considered idle and can be terminated.
+   * Workers self-report idle time via heartbeat. Default: 15 seconds.
+   * Used when operating without an EntityScaler.
+   */
+  idleTimeoutSeconds?: number;
+  /**
+   * If true, workers are automatically spawned when jobs arrive (scalerless mode).
+   * When enabled, no @EntityScaler is required - workers spawn on job arrival
+   * and terminate when idle. Default: true if no EntityScaler is registered.
+   */
+  autoSpawn?: boolean;
 }
 
 /**

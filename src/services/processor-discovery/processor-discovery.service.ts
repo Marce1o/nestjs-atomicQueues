@@ -31,6 +31,7 @@ import { CronManagerService } from '../cron-manager';
 import { CommandDiscoveryService } from '../command-discovery';
 import { ServiceQueueManager } from '../service-queue';
 import { QueueBus } from '../queue-bus';
+import { QueueEventsManagerService } from '../queue-events-manager';
 import { ATOMIC_QUEUES_CONFIG } from '../constants';
 import { IAtomicQueuesModuleConfig } from '../../domain';
 
@@ -120,6 +121,7 @@ export class ProcessorDiscoveryService implements OnModuleInit {
     @Optional() private readonly cronManager: CronManagerService,
     @Optional() private readonly commandDiscovery: CommandDiscoveryService,
     @Optional() private readonly serviceQueueManager: ServiceQueueManager,
+    @Optional() private readonly queueEventsManager: QueueEventsManagerService,
     @Inject(ATOMIC_QUEUES_CONFIG)
     private readonly config: IAtomicQueuesModuleConfig,
   ) {}
@@ -157,12 +159,115 @@ export class ProcessorDiscoveryService implements OnModuleInit {
     await this.discoverProcessors();
     await this.discoverScalers();
     await this.registerScalersWithCronManager();
+    await this.registerScalerlessProcessors();
     await this.registerSpawnWorkerHandler();
+    await this.setupQueueEventsListening();
     
     // Auto-register commands from CQRS handlers (default: true)
     if (this.config.autoRegisterCommands !== false) {
       this.autoRegisterCommandsFromCqrs();
     }
+  }
+  
+  /**
+   * Register processors that don't have an EntityScaler (scalerless mode).
+   * These processors will auto-spawn workers when jobs arrive and
+   * auto-terminate when idle.
+   */
+  private async registerScalerlessProcessors(): Promise<void> {
+    if (!this.cronManager) {
+      this.logger.debug('CronManager not available, skipping scalerless processor registration');
+      return;
+    }
+
+    for (const [entityType, processor] of this.processors) {
+      // Skip if a scaler is already registered for this entity type
+      if (this.scalers.has(entityType)) {
+        continue;
+      }
+
+      // Check if autoSpawn is explicitly disabled
+      if (processor.options.autoSpawn === false) {
+        this.logger.debug(`Auto-spawn disabled for ${entityType}, skipping scalerless registration`);
+        continue;
+      }
+
+      this.logger.log(`Registering scalerless config for '${entityType}' (autoSpawn mode)`);
+
+      const scalingConfig: IEntityScalingConfig = {
+        entityType,
+        maxWorkersPerEntity: processor.options.maxWorkersPerEntity ?? 1,
+        idleTimeoutSeconds: processor.options.idleTimeoutSeconds ?? 15,
+
+        // In scalerless mode, we don't rely on getActiveEntityIds
+        // Workers are spawned reactively when jobs arrive
+        getActiveEntityIds: async (): Promise<string[]> => {
+          // Return empty - workers are spawned by QueueEventsManager when jobs arrive
+          return [];
+        },
+
+        getDesiredWorkerCount: async (_entityId: string): Promise<number> => {
+          return 1; // Default to 1 worker per entity
+        },
+
+        onSpawnWorker: async (entityId: string): Promise<void> => {
+          await this.createWorkerForEntity(entityType, entityId);
+        },
+
+        onTerminateWorker: async (entityId: string, _workerId: string): Promise<void> => {
+          const workerName = processor.workerNameFn(entityId);
+          await this.workerManager.signalWorkerClose(workerName);
+        },
+      };
+
+      this.cronManager.registerEntityType(scalingConfig);
+      this.logger.log(
+        `Registered scalerless config for '${entityType}' (idleTimeout: ${scalingConfig.idleTimeoutSeconds}s)`,
+      );
+    }
+  }
+
+  /**
+   * Setup QueueEvents listening for job arrivals.
+   * This enables automatic worker spawning when jobs are added.
+   */
+  private async setupQueueEventsListening(): Promise<void> {
+    if (!this.queueEventsManager) {
+      this.logger.debug('QueueEventsManager not available, skipping event listening setup');
+      return;
+    }
+
+    // Wire up QueueManager with QueueEventsManager for auto-listening
+    this.queueManager.setQueueEventsManager(this.queueEventsManager);
+
+    // Set up the callback for job arrivals
+    this.queueEventsManager.setOnJobArrivedCallback(
+      async (entityType: string, entityId: string, _queueName: string) => {
+        const processor = this.processors.get(entityType);
+        const scaler = this.scalers.get(entityType);
+
+        // If there's a scaler with @OnSpawnWorker, use it
+        if (scaler?.methods.onSpawnWorker) {
+          await scaler.scalerInstance[scaler.methods.onSpawnWorker](entityId);
+        }
+
+        // Also auto-create worker if processor is registered
+        if (processor) {
+          await this.createWorkerForEntity(entityType, entityId);
+        }
+      },
+    );
+
+    // Register entity patterns for all processors
+    for (const [entityType, processor] of this.processors) {
+      this.queueEventsManager.registerEntityPattern(
+        entityType,
+        processor.queueNameFn,
+        processor.workerNameFn,
+      );
+    }
+
+    this.logger.log('Queue events listening setup complete');
   }
   
   /**

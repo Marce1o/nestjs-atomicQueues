@@ -10,3 +10,4 @@ export * from './shutdown-state';
 export * from './processor-discovery';
 export * from './command-discovery';
 export * from './queue-bus';
+export * from './queue-events-manager';

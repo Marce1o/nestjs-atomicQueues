@@ -25,6 +25,7 @@ import {
   ProcessorDiscoveryService,
   CommandDiscoveryService,
   QueueBus,
+  QueueEventsManagerService,
 } from '../services';
 
 /**
@@ -71,6 +72,7 @@ const CORE_SERVICES: Provider[] = [
   ProcessorDiscoveryService,
   CommandDiscoveryService,
   QueueBus,
+  QueueEventsManagerService,
 ];
 
 /**

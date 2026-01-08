@@ -240,12 +240,19 @@ export class QueueTarget {
     const queueNameFn = this.getQueueNameFn();
     const queueName = queueNameFn(entityId);
     
-    // Get or create the queue
-    const queue = this.queueManager.getOrCreateQueue(queueName);
+    // Add job via QueueManager (which handles event listening setup)
+    const { entityType } = this.processorOptions;
     
     this.logger.debug(
       `[${this.processorClass.name}] Adding job ${jobName} to queue ${queueName}`,
     );
+    
+    // Get queue and ensure event listening
+    const queue = this.queueManager.getOrCreateQueue(queueName);
+    const queueEventsManager = (this.queueManager as any).queueEventsManager;
+    if (queueEventsManager) {
+      await queueEventsManager.ensureListening(queueName, entityType);
+    }
     
     // Add job to queue
     return queue.add(jobName, data, options?.jobOptions);
@@ -286,6 +293,13 @@ export class QueueTarget {
     const queueNameFn = this.getQueueNameFn();
     const queueName = queueNameFn(entityId);
     const queue = this.queueManager.getOrCreateQueue(queueName);
+    
+    // Ensure listening is set up for auto-spawn
+    const { entityType } = this.processorOptions;
+    const queueEventsManager = (this.queueManager as any).queueEventsManager;
+    if (queueEventsManager) {
+      await queueEventsManager.ensureListening(queueName, entityType);
+    }
     
     const bulkJobs = commandsOrQueries.map((cmd) => ({
       name: getJobName(cmd),
@@ -372,12 +386,18 @@ export class EntityTarget {
     const queueNameFn = this.getQueueNameFn();
     const queueName = queueNameFn(entityId);
     
-    const queue = this.queueManager.getOrCreateQueue(queueName);
-    
     this.logger.debug(
       `[forEntity:${this.entityType}] Adding job ${jobName} to queue ${queueName}`,
     );
     
+    // Get queue and ensure event listening
+    const queue = this.queueManager.getOrCreateQueue(queueName);
+    const queueEventsManager = (this.queueManager as any).queueEventsManager;
+    if (queueEventsManager) {
+      await queueEventsManager.ensureListening(queueName, this.entityType);
+    }
+    
+    // Add job to queue
     return queue.add(jobName, data, options?.jobOptions);
   }
   
@@ -416,6 +436,12 @@ export class EntityTarget {
     const queueNameFn = this.getQueueNameFn();
     const queueName = queueNameFn(entityId);
     const queue = this.queueManager.getOrCreateQueue(queueName);
+    
+    // Ensure listening is set up for auto-spawn
+    const queueEventsManager = (this.queueManager as any).queueEventsManager;
+    if (queueEventsManager) {
+      await queueEventsManager.ensureListening(queueName, this.entityType);
+    }
     
     const bulkJobs = commandsOrQueries.map((cmd) => ({
       name: getJobName(cmd),

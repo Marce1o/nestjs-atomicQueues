@@ -289,6 +289,10 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
   /**
    * Run scaling cycle for a specific entity type.
    * This is the internal implementation called either directly or via service queue.
+   * 
+   * Supports two modes:
+   * 1. Scaler mode: getActiveEntityIds returns active entities, workers spawn/terminate based on this
+   * 2. Scalerless mode: getActiveEntityIds returns empty, workers spawn via QueueEvents and terminate when idle
    */
   private async runEntityScalingCycleInternal(
     entityType: string,
@@ -299,60 +303,77 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
     // Get active entities from the config's getActiveEntityIds (primary source)
     const activeEntityIds = await config.getActiveEntityIds();
     
-    // Get entities with running workers
+    // Get entities with running workers (from heartbeat keys)
     const entitiesWithWorkers = await this.getEntitiesWithWorkers(entityType);
+    
+    const isScalerlessMode = activeEntityIds.length === 0;
 
-    // Spawn missing workers for active entities
-    for (const entityId of activeEntityIds) {
-      const decision = await this.handleEntitySpawning(
-        entityType,
-        entityId,
-        config,
-        1, // At least 1 job assumed for active entities
+    if (isScalerlessMode) {
+      // SCALERLESS MODE: Workers spawn via QueueEvents, we just handle idle termination
+      // All workers are managed based on their idle state
+      for (const entityId of entitiesWithWorkers) {
+        const decision = await this.handleIdleWorkersForActiveEntity(
+          entityType,
+          entityId,
+          config,
+        );
+        if (decision) decisions.push(decision);
+      }
+    } else {
+      // SCALER MODE: Traditional flow with active entities
+      
+      // Spawn missing workers for active entities
+      for (const entityId of activeEntityIds) {
+        const decision = await this.handleEntitySpawning(
+          entityType,
+          entityId,
+          config,
+          1, // At least 1 job assumed for active entities
+        );
+        if (decision) decisions.push(decision);
+      }
+
+      // Handle excess workers for active entities
+      for (const entityId of activeEntityIds) {
+        const decision = await this.handleExcessWorkers(
+          entityType,
+          entityId,
+          config,
+        );
+        if (decision) decisions.push(decision);
+      }
+
+      // Check for idle workers on ACTIVE entities and terminate them
+      // They will be re-spawned on the next cycle if still active
+      for (const entityId of activeEntityIds) {
+        const decision = await this.handleIdleWorkersForActiveEntity(
+          entityType,
+          entityId,
+          config,
+        );
+        if (decision) decisions.push(decision);
+      }
+
+      // Close workers for entities with workers but no longer active
+      const activeEntitySet = new Set(activeEntityIds);
+      const entitiesWithWorkersNoLongerActive = Array.from(entitiesWithWorkers).filter(
+        (entityId) => !activeEntitySet.has(entityId),
       );
-      if (decision) decisions.push(decision);
-    }
 
-    // Handle excess workers for active entities
-    for (const entityId of activeEntityIds) {
-      const decision = await this.handleExcessWorkers(
-        entityType,
-        entityId,
-        config,
-      );
-      if (decision) decisions.push(decision);
-    }
+      if (entitiesWithWorkersNoLongerActive.length > 0) {
+        this.logger.debug(
+          `[${entityType}] Found ${entitiesWithWorkersNoLongerActive.length} entities with workers but no longer active: ${entitiesWithWorkersNoLongerActive.join(', ')}`,
+        );
+      }
 
-    // Check for idle workers on ACTIVE entities and terminate them
-    // They will be re-spawned on the next cycle if still active
-    for (const entityId of activeEntityIds) {
-      const decision = await this.handleIdleWorkersForActiveEntity(
-        entityType,
-        entityId,
-        config,
-      );
-      if (decision) decisions.push(decision);
-    }
-
-    // Close workers for entities with workers but no longer active
-    const activeEntitySet = new Set(activeEntityIds);
-    const entitiesWithWorkersNoLongerActive = Array.from(entitiesWithWorkers).filter(
-      (entityId) => !activeEntitySet.has(entityId),
-    );
-
-    if (entitiesWithWorkersNoLongerActive.length > 0) {
-      this.logger.debug(
-        `[${entityType}] Found ${entitiesWithWorkersNoLongerActive.length} entities with workers but no longer active: ${entitiesWithWorkersNoLongerActive.join(', ')}`,
-      );
-    }
-
-    for (const entityId of entitiesWithWorkersNoLongerActive) {
-      const decision = await this.handleWorkerClosure(
-        entityType,
-        entityId,
-        config,
-      );
-      if (decision) decisions.push(decision);
+      for (const entityId of entitiesWithWorkersNoLongerActive) {
+        const decision = await this.handleWorkerClosure(
+          entityType,
+          entityId,
+          config,
+        );
+        if (decision) decisions.push(decision);
+      }
     }
 
     return decisions;
