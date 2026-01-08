@@ -293,9 +293,14 @@ export interface IWorkerManager {
   createWorker(options: IWorkerCreationOptions): Promise<Worker>;
 
   /**
-   * Check if a worker exists and is alive
+   * Check if a worker exists and is alive (across ALL nodes)
    */
   workerExists(workerName: string): Promise<boolean>;
+
+  /**
+   * Check if a worker exists on THIS node specifically
+   */
+  workerExistsOnThisNode(workerName: string): Promise<boolean>;
 
   /**
    * Get all running workers for current node

@@ -102,6 +102,11 @@ export class WorkerManagerService
     
     this.logger.log(`Worker ${workerName} config: concurrency=${workerConfig.concurrency}`);
 
+    // IMMEDIATELY create heartbeat key BEFORE creating BullMQ worker
+    // This closes the race condition window where another scaling cycle
+    // could see "no worker exists" and try to create a duplicate
+    await this.resetWorkerHeartbeat(workerName, workerConfig.heartbeatTTL || 3);
+
     // Create the BullMQ worker
     const worker = new Worker(queueName, processor, {
       connection: this.redis.duplicate(),
@@ -139,8 +144,22 @@ export class WorkerManagerService
 
   /**
    * Check if a worker exists and is alive (has valid heartbeat).
+   * Checks across ALL nodes, not just the current node, to prevent
+   * multiple nodes from creating duplicate workers for the same entity.
    */
   async workerExists(workerName: string): Promise<boolean> {
+    // Check across all nodes, not just this node
+    // Pattern: {prefix}:worker:*:{workerName}
+    const pattern = `${this.keyPrefix}:worker:*:${workerName}`;
+    const keys = await this.redis.keys(pattern);
+    return keys.length > 0;
+  }
+
+  /**
+   * Check if a worker exists on THIS node specifically.
+   * Use this when you need node-local checks (e.g., for cleanup).
+   */
+  async workerExistsOnThisNode(workerName: string): Promise<boolean> {
     const key = this.getWorkerKey(workerName);
     const exists = await this.redis.exists(key);
     return exists === 1;
