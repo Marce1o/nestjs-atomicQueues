@@ -24,7 +24,7 @@ import {
   getJobHandlerMetadata,
   getEntityScalerMetadata,
 } from '../../decorators';
-import { IWorkerConfig, IEntityScalingConfig } from '../../domain';
+import { IWorkerConfig, IEntityScalingConfig, IEntityConfig } from '../../domain';
 import { WorkerManagerService } from '../worker-manager';
 import { QueueManagerService } from '../queue-manager';
 import { CronManagerService } from '../cron-manager';
@@ -158,6 +158,7 @@ export class ProcessorDiscoveryService implements OnModuleInit {
 
     await this.discoverProcessors();
     await this.discoverScalers();
+    await this.registerEntitiesFromConfig();
     await this.registerScalersWithCronManager();
     await this.registerScalerlessProcessors();
     await this.registerSpawnWorkerHandler();
@@ -166,6 +167,71 @@ export class ProcessorDiscoveryService implements OnModuleInit {
     // Auto-register commands from CQRS handlers (default: true)
     if (this.config.autoRegisterCommands !== false) {
       this.autoRegisterCommandsFromCqrs();
+    }
+  }
+  
+  /**
+   * Register entity types from module config `entities` option.
+   * This creates virtual processors for entities that don't have explicit @WorkerProcessor classes.
+   * 
+   * Benefits:
+   * - No boilerplate @WorkerProcessor class needed
+   * - Just configure in module and decorate commands with @QueueEntity
+   * - Workers auto-spawn on job arrival and terminate when idle
+   */
+  private async registerEntitiesFromConfig(): Promise<void> {
+    const entities = this.config.entities;
+    if (!entities) {
+      return;
+    }
+
+    const keyPrefix = this.config.keyPrefix || 'aq';
+
+    for (const [entityType, entityConfig] of Object.entries(entities)) {
+      // Skip if a processor is already registered for this entity type
+      if (this.processors.has(entityType)) {
+        this.logger.debug(
+          `Entity '${entityType}' already has a @WorkerProcessor, skipping config-based registration`,
+        );
+        continue;
+      }
+
+      this.logger.log(`Registering entity '${entityType}' from module config (no @WorkerProcessor needed)`);
+
+      // Build queue and worker name functions
+      const queueNameFn = entityConfig.queueName 
+        ?? ((entityId: string) => `${keyPrefix}:${entityType}:${entityId}:queue`);
+      
+      const workerNameFn = entityConfig.workerName 
+        ?? ((entityId: string) => `${keyPrefix}:${entityType}:${entityId}:worker`);
+
+      // Create a virtual processor entry
+      const processor: RegisteredProcessor = {
+        entityType,
+        processorInstance: null, // No instance - we use generic processing
+        options: {
+          entityType,
+          defaultEntityId: entityConfig.defaultEntityId,
+          queueName: queueNameFn,
+          workerName: workerNameFn,
+          workerConfig: entityConfig.workerConfig,
+          maxWorkersPerEntity: entityConfig.maxWorkersPerEntity ?? 1,
+          idleTimeoutSeconds: entityConfig.idleTimeoutSeconds ?? 15,
+          autoSpawn: entityConfig.autoSpawn !== false, // Default true
+        },
+        jobHandlers: new Map(), // No explicit handlers - use generic routing
+        wildcardHandler: undefined,
+        queueNameFn,
+        workerNameFn,
+      };
+
+      this.processors.set(entityType, processor);
+      this.activeWorkers.set(entityType, new Set());
+
+      this.logger.debug(
+        `Registered config-based processor for '${entityType}' ` +
+        `(maxWorkers: ${processor.options.maxWorkersPerEntity}, idle: ${processor.options.idleTimeoutSeconds}s)`,
+      );
     }
   }
   
@@ -621,10 +687,10 @@ export class ProcessorDiscoveryService implements OnModuleInit {
    * Process a job using the registered handlers
    *
    * Priority order:
-   * 1. Explicit @JobHandler on the processor class
+   * 1. Explicit @JobHandler on the processor class (if instance exists)
    * 2. Auto-routing via @JobCommand/@JobQuery decorated classes
    * 3. QueueBus registry lookup (class name as job name)
-   * 4. Wildcard @JobHandler('*') on the processor class
+   * 4. Wildcard @JobHandler('*') on the processor class (if instance exists)
    */
   private async processJob(
     processor: RegisteredProcessor,
@@ -634,10 +700,12 @@ export class ProcessorDiscoveryService implements OnModuleInit {
     const { processorInstance, jobHandlers, wildcardHandler, entityType } = processor;
     const jobName = job.name;
 
-    // 1. Try to find specific @JobHandler
-    const handler = jobHandlers.get(jobName);
-    if (handler) {
-      return processorInstance[handler.method](job, entityId);
+    // 1. Try to find specific @JobHandler (only if processor has an instance)
+    if (processorInstance) {
+      const handler = jobHandlers.get(jobName);
+      if (handler) {
+        return processorInstance[handler.method](job, entityId);
+      }
     }
 
     // 2. Try auto-routing via @JobCommand/@JobQuery
@@ -659,8 +727,8 @@ export class ProcessorDiscoveryService implements OnModuleInit {
       return this.executeFromRegistry(registryEntry, job, entityId);
     }
 
-    // 4. Fall back to wildcard handler
-    if (wildcardHandler) {
+    // 4. Fall back to wildcard handler (only if processor has an instance)
+    if (processorInstance && wildcardHandler) {
       return processorInstance[wildcardHandler.method](job, entityId);
     }
 

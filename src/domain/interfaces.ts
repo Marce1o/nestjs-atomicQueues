@@ -101,7 +101,30 @@ export interface IServiceQueueConfig {
 
 /**
  * Entity-specific configuration for per-entity queue defaults
- * Used in module-level `entities` config to define defaults per entity type
+ * Used in module-level `entities` config to define defaults per entity type.
+ * 
+ * When configured in the module, entities automatically get:
+ * - Worker spawning when jobs arrive (via QueueEvents)
+ * - Idle worker termination (via CronManager)
+ * - Job routing via CQRS CommandBus/QueryBus
+ * 
+ * No @WorkerProcessor class needed!
+ * 
+ * @example
+ * ```typescript
+ * AtomicQueuesModule.forRoot({
+ *   redis: { host: 'localhost', port: 6379 },
+ *   enableCronManager: true,
+ *   entities: {
+ *     account: {
+ *       queueName: (id) => `${id}-queue`,
+ *       workerName: (id) => `${id}-worker`,
+ *       maxWorkersPerEntity: 1,
+ *       idleTimeoutSeconds: 15,
+ *     },
+ *   },
+ * })
+ * ```
  */
 export interface IEntityConfig {
   /** 
@@ -113,18 +136,36 @@ export interface IEntityConfig {
   
   /** 
    * Custom queue name generator for this entity type.
-   * If not provided, uses: {keyPrefix}-{entityType}-{entityId}
+   * If not provided, uses: {keyPrefix}:{entityType}:{entityId}:queue
    */
   queueName?: (entityId: string) => string;
   
   /** 
    * Custom worker name generator for this entity type.
-   * If not provided, uses: {keyPrefix}-{entityType}-{entityId}-worker
+   * If not provided, uses: {keyPrefix}:{entityType}:{entityId}:worker
    */
   workerName?: (entityId: string) => string;
   
   /** Worker configuration overrides for this entity type */
   workerConfig?: Partial<IWorkerConfig>;
+  
+  /**
+   * Maximum workers per entity (default: 1).
+   * Determines how many concurrent workers can process jobs for a single entity.
+   */
+  maxWorkersPerEntity?: number;
+  
+  /**
+   * Idle timeout in seconds before a worker is terminated (default: 15).
+   * Workers are terminated when they have no jobs to process for this duration.
+   */
+  idleTimeoutSeconds?: number;
+  
+  /**
+   * If true, workers are automatically spawned when jobs arrive (default: true).
+   * When enabled, no @WorkerProcessor or @EntityScaler is required.
+   */
+  autoSpawn?: boolean;
 }
 
 /**
