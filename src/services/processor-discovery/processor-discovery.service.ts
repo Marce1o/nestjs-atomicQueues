@@ -167,7 +167,9 @@ export class ProcessorDiscoveryService implements OnModuleInit {
   
   /**
    * Register spawn worker handler with ServiceQueueManager
-   * This allows workers to be spawned on-demand via the service queue
+   * This allows workers to be spawned on-demand via the service queue.
+   * Uses the same logic as scaling cycle - calls scaler's @OnSpawnWorker first,
+   * then auto-creates via processor if registered.
    */
   private async registerSpawnWorkerHandler(): Promise<void> {
     if (!this.serviceQueueManager) {
@@ -177,7 +179,26 @@ export class ProcessorDiscoveryService implements OnModuleInit {
     
     this.serviceQueueManager.registerSpawnWorkerHandler(
       async (entityType: string, entityId: string) => {
-        await this.createWorkerForEntity(entityType, entityId);
+        const scaler = this.scalers.get(entityType);
+        const processor = this.processors.get(entityType);
+        
+        // First call custom spawn handler if scaler has @OnSpawnWorker defined
+        if (scaler?.methods.onSpawnWorker) {
+          await scaler.scalerInstance[scaler.methods.onSpawnWorker](entityId);
+        }
+        
+        // Also auto-create worker if processor is registered (and scaler didn't create one)
+        if (processor) {
+          await this.createWorkerForEntity(entityType, entityId);
+        }
+        
+        // If neither scaler nor processor can handle this, log a warning
+        if (!scaler?.methods.onSpawnWorker && !processor) {
+          this.logger.warn(
+            `No spawn handler for entity type '${entityType}'. ` +
+            `Either add @OnSpawnWorker() to your scaler or register a @WorkerProcessor.`
+          );
+        }
       },
     );
     
