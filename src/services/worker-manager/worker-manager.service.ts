@@ -55,6 +55,8 @@ export class WorkerManagerService
   private readonly workerStates: Map<string, IWorkerState> = new Map();
   private readonly heartbeatIntervals: Map<string, NodeJS.Timeout> = new Map();
   private readonly shutdownSubscriptions: Map<string, () => void> = new Map();
+  /** Tracks the last job completion time per worker (for idle detection) */
+  private readonly lastJobCompletedAt: Map<string, number> = new Map();
   private subscriberClient: Redis | null = null;
   private readonly keyPrefix: string;
 
@@ -298,8 +300,87 @@ export class WorkerManagerService
   async removeWorkerHeartbeat(workerName: string): Promise<void> {
     const key = this.getWorkerKey(workerName);
     await this.redis.del(key);
+    // Also remove idle counter
+    await this.removeWorkerIdleCounter(workerName);
     this.logger.debug(`Removed heartbeat for worker: ${workerName}`);
   }
+
+  // =========================================================================
+  // IDLE TRACKING METHODS
+  // =========================================================================
+
+  /**
+   * Mark that a worker has completed a job (resets idle counter).
+   * Called internally when job completes.
+   */
+  markWorkerActive(workerName: string): void {
+    this.lastJobCompletedAt.set(workerName, Date.now());
+    // Reset Redis idle counter to 0
+    this.resetWorkerIdleCounter(workerName).catch((err) =>
+      this.logger.warn(`Failed to reset idle counter for ${workerName}: ${err.message}`),
+    );
+  }
+
+  /**
+   * Get the idle seconds counter for a worker from Redis.
+   * This is incremented by the heartbeat and reset when a job completes.
+   */
+  async getWorkerIdleSeconds(workerName: string): Promise<number> {
+    const key = this.getWorkerIdleKey(workerName);
+    const value = await this.redis.get(key);
+    return value ? parseInt(value, 10) : 0;
+  }
+
+  /**
+   * Reset the idle counter for a worker (called when job completes).
+   */
+  async resetWorkerIdleCounter(workerName: string): Promise<void> {
+    const key = this.getWorkerIdleKey(workerName);
+    await this.redis.set(key, '0');
+  }
+
+  /**
+   * Increment the idle counter for a worker (called by heartbeat).
+   * Returns the new idle seconds value.
+   */
+  async incrementWorkerIdleCounter(workerName: string, incrementBy: number = 1): Promise<number> {
+    const key = this.getWorkerIdleKey(workerName);
+    const newValue = await this.redis.incrby(key, incrementBy);
+    return newValue;
+  }
+
+  /**
+   * Remove the idle counter for a worker (cleanup).
+   */
+  async removeWorkerIdleCounter(workerName: string): Promise<void> {
+    const key = this.getWorkerIdleKey(workerName);
+    await this.redis.del(key);
+  }
+
+  /**
+   * Check if a worker is idle based on threshold.
+   * @param workerName - Worker name
+   * @param thresholdSeconds - Idle threshold in seconds (default: 15)
+   */
+  async isWorkerIdle(workerName: string, thresholdSeconds: number = 15): Promise<boolean> {
+    const idleSeconds = await this.getWorkerIdleSeconds(workerName);
+    const isIdle = idleSeconds >= thresholdSeconds;
+    if (isIdle) {
+      this.logger.debug(`Worker ${workerName} is idle: ${idleSeconds}s >= ${thresholdSeconds}s threshold`);
+    }
+    return isIdle;
+  }
+
+  /**
+   * Get the Redis key for a worker's idle counter.
+   */
+  private getWorkerIdleKey(workerName: string): string {
+    return `${this.keyPrefix}:worker-idle:${workerName}`;
+  }
+
+  // =========================================================================
+  // PUBLIC METHODS (CONTINUED)
+  // =========================================================================
 
   /**
    * Get the node ID for this instance.
@@ -421,18 +502,36 @@ export class WorkerManagerService
 
   /**
    * Set up heartbeat interval for a worker.
+   * Also increments idle counter on each heartbeat tick.
    */
   private setupHeartbeat(workerName: string, ttlSeconds: number): void {
+    // Initialize idle counter to 0
+    this.resetWorkerIdleCounter(workerName).catch(() => {});
+    // Track last job completed as now (worker just started)
+    this.lastJobCompletedAt.set(workerName, Date.now());
+
+    const heartbeatIntervalMs = (ttlSeconds * 1000) / 2; // Update at half the TTL
+    const idleIncrementSeconds = Math.ceil(heartbeatIntervalMs / 1000); // Convert to seconds
+
     const interval = setInterval(async () => {
       try {
+        // Reset heartbeat TTL
         await this.resetWorkerHeartbeat(workerName, ttlSeconds);
+        
+        // Increment idle counter (will be reset to 0 when job completes)
+        const idleSeconds = await this.incrementWorkerIdleCounter(workerName, idleIncrementSeconds);
+        
+        // Debug log every 10 seconds of idle time
+        if (idleSeconds > 0 && idleSeconds % 10 === 0) {
+          this.logger.debug(`Worker ${workerName} idle for ${idleSeconds}s`);
+        }
       } catch (error) {
         this.logger.error(
           `Failed to reset heartbeat for worker ${workerName}:`,
           error,
         );
       }
-    }, (ttlSeconds * 1000) / 2); // Update at half the TTL
+    }, heartbeatIntervalMs);
 
     this.heartbeatIntervals.set(workerName, interval);
   }
@@ -518,6 +617,9 @@ export class WorkerManagerService
     });
 
     worker.on('completed', async (job: Job) => {
+      // Reset idle counter - worker is active
+      this.markWorkerActive(workerName);
+      
       this.logger.debug(`Worker ${workerName} completed job: ${job.id}`);
       if (events?.onCompleted) {
         await events.onCompleted(job, workerName);
@@ -525,6 +627,9 @@ export class WorkerManagerService
     });
 
     worker.on('failed', async (job: Job | undefined, error: Error) => {
+      // Reset idle counter even on failure - worker was processing
+      this.markWorkerActive(workerName);
+      
       this.logger.error(
         `Worker ${workerName} failed job ${job?.id}: ${error.message}`,
       );

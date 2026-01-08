@@ -392,6 +392,7 @@ export class ProcessorDiscoveryService implements OnModuleInit {
       const scalingConfig: IEntityScalingConfig = {
         entityType,
         maxWorkersPerEntity: scaler.options.maxWorkersPerEntity ?? 1,
+        idleTimeoutSeconds: scaler.options.idleTimeoutSeconds ?? 15,
 
         getActiveEntityIds: async (): Promise<string[]> => {
           if (scaler.methods.getActiveEntities) {
@@ -442,7 +443,7 @@ export class ProcessorDiscoveryService implements OnModuleInit {
       };
 
       this.cronManager.registerEntityType(scalingConfig);
-      this.logger.log(`Registered scaling config for entity type '${entityType}'`);
+      this.logger.log(`Registered scaling config for entity type '${entityType}' (idleTimeout: ${scalingConfig.idleTimeoutSeconds}s)`);
     }
   }
 

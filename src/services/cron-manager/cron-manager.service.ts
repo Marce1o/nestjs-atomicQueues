@@ -441,7 +441,8 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
 
   /**
    * Handle worker closure for entities with no jobs.
-   * Only terminates workers if the entity's queue is truly empty (no waiting or active jobs).
+   * Uses worker self-reported idle time for reliable detection.
+   * Workers increment idle counter on heartbeat, reset on job completion.
    */
   private async handleWorkerClosure(
     entityType: string,
@@ -461,29 +462,37 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
       `[handleWorkerClosure] ${entityType}/${entityId} - Found ${workers.length} workers to potentially close: ${workers.join(', ')}`,
     );
 
-    // Check if there are pending or active jobs in the queue
-    // Don't terminate workers that might still be processing jobs
-    const queueName = `${entityId}-queue`;
-    const hasActiveJobs = await this.checkQueueHasJobs(queueName);
-    
-    if (hasActiveJobs) {
+    // Get idle timeout threshold (default: 15 seconds)
+    const idleTimeoutSeconds = config.idleTimeoutSeconds ?? 15;
+
+    // Check each worker's idle time
+    const idleWorkers: string[] = [];
+    for (const workerName of workers) {
+      const isIdle = await this.workerManager.isWorkerIdle(workerName, idleTimeoutSeconds);
+      if (isIdle) {
+        idleWorkers.push(workerName);
+      }
+    }
+
+    if (idleWorkers.length === 0) {
       this.logger.debug(
-        `[handleWorkerClosure] ${entityType}/${entityId} - Queue has active jobs, skipping termination`,
+        `[handleWorkerClosure] ${entityType}/${entityId} - No idle workers (threshold: ${idleTimeoutSeconds}s), skipping termination`,
       );
       return null;
     }
 
     this.logger.log(
-      `[handleWorkerClosure] Closing ${workers.length} workers for idle ${entityType}/${entityId}`,
+      `[handleWorkerClosure] Closing ${idleWorkers.length} idle workers for ${entityType}/${entityId} (idle >= ${idleTimeoutSeconds}s)`,
     );
 
-    // Signal all workers to close
-    for (const workerId of workers) {
-      this.logger.debug(`[handleWorkerClosure] Terminating worker: ${workerId}`);
+    // Signal idle workers to close
+    for (const workerName of idleWorkers) {
+      const idleSeconds = await this.workerManager.getWorkerIdleSeconds(workerName);
+      this.logger.debug(`[handleWorkerClosure] Terminating worker: ${workerName} (idle: ${idleSeconds}s)`);
       if (config.onTerminateWorker) {
-        await config.onTerminateWorker(entityId, workerId);
+        await config.onTerminateWorker(entityId, workerName);
       } else {
-        await this.workerManager.signalWorkerClose(workerId);
+        await this.workerManager.signalWorkerClose(workerName);
       }
     }
 
@@ -491,15 +500,18 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
       entityId,
       entityType,
       currentWorkers: workers.length,
-      desiredWorkers: 0,
+      desiredWorkers: workers.length - idleWorkers.length,
       action: 'terminate',
-      count: workers.length,
+      count: idleWorkers.length,
     };
   }
 
   /**
    * Check if a queue has any waiting or active jobs.
    * Uses BullMQ's internal key structure with the configured prefix.
+   * 
+   * NOTE: This is kept as a backup/utility method, but idle detection
+   * now primarily uses worker self-reported idle counters.
    * 
    * BullMQ v4+ key structure:
    * - {prefix}:{queueName}:wait (list) - jobs waiting to be processed

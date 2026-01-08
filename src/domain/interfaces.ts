@@ -346,6 +346,45 @@ export interface IWorkerManager {
    * Get the node ID for this instance
    */
   getNodeId(): string;
+
+  // =========================================================================
+  // IDLE TRACKING METHODS
+  // =========================================================================
+
+  /**
+   * Mark that a worker has completed a job (resets idle counter).
+   * Called internally when job completes.
+   */
+  markWorkerActive(workerName: string): void;
+
+  /**
+   * Get the idle seconds counter for a worker.
+   * This is incremented by the heartbeat and reset when a job completes.
+   */
+  getWorkerIdleSeconds(workerName: string): Promise<number>;
+
+  /**
+   * Reset the idle counter for a worker (called when job completes).
+   */
+  resetWorkerIdleCounter(workerName: string): Promise<void>;
+
+  /**
+   * Increment the idle counter for a worker (called by heartbeat).
+   * Returns the new idle seconds value.
+   */
+  incrementWorkerIdleCounter(workerName: string, incrementBy?: number): Promise<number>;
+
+  /**
+   * Remove the idle counter for a worker (cleanup).
+   */
+  removeWorkerIdleCounter(workerName: string): Promise<void>;
+
+  /**
+   * Check if a worker is idle based on threshold.
+   * @param workerName - Worker name
+   * @param thresholdSeconds - Idle threshold in seconds (default: 15)
+   */
+  isWorkerIdle(workerName: string, thresholdSeconds?: number): Promise<boolean>;
 }
 
 // =============================================================================
@@ -548,6 +587,11 @@ export interface IEntityScalingConfig {
   getActiveEntityIds: () => Promise<string[]>;
   /** Maximum workers per entity */
   maxWorkersPerEntity?: number;
+  /** 
+   * Idle timeout in seconds before a worker is considered idle and can be terminated.
+   * Workers self-report idle time via heartbeat. Default: 15 seconds.
+   */
+  idleTimeoutSeconds?: number;
   /** Function called when spawning a worker */
   onSpawnWorker?: (entityId: string) => Promise<void>;
   /** Function called when terminating a worker */

@@ -58,6 +58,11 @@ export interface EntityScalerOptions {
   entityType: string;
   /** Maximum workers per entity */
   maxWorkersPerEntity?: number;
+  /** 
+   * Idle timeout in seconds before a worker is considered idle and can be terminated.
+   * Workers self-report idle time via heartbeat. Default: 15 seconds.
+   */
+  idleTimeoutSeconds?: number;
 }
 
 /**
