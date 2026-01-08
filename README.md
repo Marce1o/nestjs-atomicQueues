@@ -89,6 +89,10 @@ npm install atomic-queues bullmq ioredis
 
 ### 1. Configure the Module
 
+The `entities` configuration is **optional**. Choose the approach that fits your needs:
+
+#### Option A: Minimal Setup (uses default naming)
+
 ```typescript
 import { Module } from '@nestjs/common';
 import { AtomicQueuesModule } from 'atomic-queues';
@@ -99,12 +103,30 @@ import { AtomicQueuesModule } from 'atomic-queues';
       redis: { host: 'localhost', port: 6379 },
       keyPrefix: 'myapp',
       enableCronManager: true,
+      // No entities config needed! Uses default naming:
+      // Queue: {keyPrefix}:{entityType}:{entityId}:queue
+      // Worker: {keyPrefix}:{entityType}:{entityId}:worker
+    }),
+  ],
+})
+export class AppModule {}
+```
+
+#### Option B: Custom Queue/Worker Naming (via entities config)
+
+```typescript
+@Module({
+  imports: [
+    AtomicQueuesModule.forRoot({
+      redis: { host: 'localhost', port: 6379 },
+      keyPrefix: 'myapp',
+      enableCronManager: true,
       
-      // Define your entities - that's it! No processor classes needed.
+      // Optional: Define custom naming and settings per entity type
       entities: {
         account: {
-          queueName: (id) => `${id}-queue`,
-          workerName: (id) => `${id}-worker`,
+          queueName: (id) => `${id}-queue`,        // Custom queue naming
+          workerName: (id) => `${id}-worker`,      // Custom worker naming
           maxWorkersPerEntity: 1,
           idleTimeoutSeconds: 15,
         },
@@ -114,6 +136,27 @@ import { AtomicQueuesModule } from 'atomic-queues';
 })
 export class AppModule {}
 ```
+
+#### Option C: Custom Naming via @WorkerProcessor
+
+For advanced use cases, define a processor class instead of entities config:
+
+```typescript
+@WorkerProcessor({
+  entityType: 'account',
+  queueName: (id) => `${id}-queue`,
+  workerName: (id) => `${id}-worker`,
+  maxWorkersPerEntity: 1,
+  idleTimeoutSeconds: 15,
+})
+@Injectable()
+export class AccountProcessor {}
+```
+
+> **When to use each:**
+> - **Option A**: Default naming works for you
+> - **Option B**: Need custom naming but no custom job handling logic
+> - **Option C**: Need custom naming AND custom `@JobHandler` methods
 
 ### 2. Create Commands with Decorators
 
@@ -269,7 +312,8 @@ AtomicQueuesModule.forRoot({
     heartbeatTTL: 3,             // Worker heartbeat TTL (seconds)
   },
   
-  // Per-entity configuration
+  // OPTIONAL: Per-entity configuration
+  // If omitted, uses default naming: {keyPrefix}:{entityType}:{entityId}:queue/worker
   entities: {
     account: {
       defaultEntityId: 'accountId',
@@ -520,7 +564,7 @@ export class AccountProcessor {
 }
 ```
 
-**Note:** When you define a `@WorkerProcessor` for an entity type, it takes precedence over config-based registration.
+**Note:** When you define a `@WorkerProcessor` for an entity type, it takes precedence over config-based default registration.
 
 ---
 
