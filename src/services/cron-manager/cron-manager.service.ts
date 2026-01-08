@@ -323,6 +323,17 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
       if (decision) decisions.push(decision);
     }
 
+    // Check for idle workers on ACTIVE entities and terminate them
+    // They will be re-spawned on the next cycle if still active
+    for (const entityId of activeEntityIds) {
+      const decision = await this.handleIdleWorkersForActiveEntity(
+        entityType,
+        entityId,
+        config,
+      );
+      if (decision) decisions.push(decision);
+    }
+
     // Close workers for entities with workers but no longer active
     const activeEntitySet = new Set(activeEntityIds);
     const entitiesWithWorkersNoLongerActive = Array.from(entitiesWithWorkers).filter(
@@ -436,6 +447,64 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
       desiredWorkers: maxWorkers,
       action: 'terminate',
       count: excess,
+    };
+  }
+
+  /**
+   * Handle idle workers for ACTIVE entities.
+   * Even if an entity is active, if workers are idle beyond the threshold,
+   * they should be terminated to save resources. They'll be re-spawned
+   * on the next scaling cycle if the entity is still active.
+   */
+  private async handleIdleWorkersForActiveEntity(
+    entityType: string,
+    entityId: string,
+    config: IEntityScalingConfig,
+  ): Promise<IScalingDecision | null> {
+    const workers = await this.workerManager.getEntityWorkers(entityType, entityId);
+
+    if (workers.length === 0) {
+      return null;
+    }
+
+    // Get idle timeout threshold (default: 15 seconds)
+    const idleTimeoutSeconds = config.idleTimeoutSeconds ?? 15;
+
+    // Check each worker's idle time
+    const idleWorkers: string[] = [];
+    for (const workerName of workers) {
+      const isIdle = await this.workerManager.isWorkerIdle(workerName, idleTimeoutSeconds);
+      if (isIdle) {
+        idleWorkers.push(workerName);
+      }
+    }
+
+    if (idleWorkers.length === 0) {
+      return null;
+    }
+
+    this.logger.log(
+      `[handleIdleWorkers] Terminating ${idleWorkers.length} idle workers for active ${entityType}/${entityId} (idle >= ${idleTimeoutSeconds}s)`,
+    );
+
+    // Signal idle workers to close
+    for (const workerName of idleWorkers) {
+      const idleSeconds = await this.workerManager.getWorkerIdleSeconds(workerName);
+      this.logger.debug(`[handleIdleWorkers] Terminating idle worker: ${workerName} (idle: ${idleSeconds}s)`);
+      if (config.onTerminateWorker) {
+        await config.onTerminateWorker(entityId, workerName);
+      } else {
+        await this.workerManager.signalWorkerClose(workerName);
+      }
+    }
+
+    return {
+      entityId,
+      entityType,
+      currentWorkers: workers.length,
+      desiredWorkers: workers.length - idleWorkers.length,
+      action: 'terminate',
+      count: idleWorkers.length,
     };
   }
 
