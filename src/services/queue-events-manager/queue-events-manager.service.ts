@@ -107,16 +107,34 @@ export class QueueEventsManagerService implements OnModuleDestroy {
     queueNameFn: (entityId: string) => string,
     workerNameFn: (entityId: string) => string,
   ): void {
-    // Create a regex pattern extractor from the queue name function
-    // Queue names follow pattern: {prefix}:{entityType}:{entityId}:queue
+    // Create a regex pattern extractor by analyzing the queueNameFn
+    // We pass a known placeholder and see where it appears in the result
+    const placeholder = '__ENTITY_ID_PLACEHOLDER__';
+    const sampleQueueName = queueNameFn(placeholder);
+    
+    // Escape regex special characters in the parts before/after the placeholder
+    const parts = sampleQueueName.split(placeholder);
+    const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    
+    let extractRegex: RegExp;
+    if (parts.length === 2) {
+      // Standard case: prefix + entityId + suffix
+      const [prefix, suffix] = parts;
+      extractRegex = new RegExp(`^${escapeRegex(prefix)}(.+)${escapeRegex(suffix)}$`);
+    } else {
+      // Fallback: try common patterns
+      extractRegex = new RegExp(`^(.+)-queue$`);
+    }
+    
     const extractEntityId = (queueName: string): string | null => {
-      const prefix = this.keyPrefix;
-      // Try to extract entityId from queue name
-      // Expected format: {prefix}:{entityType}:{entityId}:queue
-      const regex = new RegExp(`^${prefix}:${entityType}:([^:]+):queue$`);
-      const match = queueName.match(regex);
+      const match = queueName.match(extractRegex);
       return match ? match[1] : null;
     };
+
+    // Log the derived pattern for debugging
+    this.logger.debug(
+      `[${entityType}] Derived queue pattern: ${extractRegex.source} from sample: ${sampleQueueName}`,
+    );
 
     this.entityPatterns.set(entityType, {
       queueNameFn,
