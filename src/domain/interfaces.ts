@@ -100,6 +100,34 @@ export interface IServiceQueueConfig {
 }
 
 /**
+ * Entity-specific configuration for per-entity queue defaults
+ * Used in module-level `entities` config to define defaults per entity type
+ */
+export interface IEntityConfig {
+  /** 
+   * Default property name to use for entity ID extraction.
+   * This is used when commands don't have an @EntityId() decorator.
+   * Example: 'tableId', 'accountId', 'userId'
+   */
+  defaultEntityId?: string;
+  
+  /** 
+   * Custom queue name generator for this entity type.
+   * If not provided, uses: {keyPrefix}-{entityType}-{entityId}
+   */
+  queueName?: (entityId: string) => string;
+  
+  /** 
+   * Custom worker name generator for this entity type.
+   * If not provided, uses: {keyPrefix}-{entityType}-{entityId}-worker
+   */
+  workerName?: (entityId: string) => string;
+  
+  /** Worker configuration overrides for this entity type */
+  workerConfig?: Partial<IWorkerConfig>;
+}
+
+/**
  * Main module configuration
  */
 export interface IAtomicQueuesModuleConfig {
@@ -125,6 +153,32 @@ export interface IAtomicQueuesModuleConfig {
    * are automatically discovered and registered with QueueBus.
    */
   autoRegisterCommands?: boolean;
+  /**
+   * Per-entity type configuration.
+   * Allows setting defaults for specific entity types (e.g., 'table', 'account').
+   * These defaults are merged with processor-level and command-level settings.
+   * 
+   * Priority chain (highest to lowest):
+   * 1. @EntityId() decorator on command property
+   * 2. @WorkerProcessor({ defaultEntityId }) 
+   * 3. entities[entityType].defaultEntityId
+   * 4. Error (no fallback to magic extraction)
+   * 
+   * @example
+   * ```typescript
+   * entities: {
+   *   table: { 
+   *     defaultEntityId: 'tableId',
+   *     workerConfig: { concurrency: 1 }
+   *   },
+   *   account: { 
+   *     defaultEntityId: 'accountId',
+   *     queueName: (id) => `accounts-${id}-queue`
+   *   }
+   * }
+   * ```
+   */
+  entities?: Record<string, IEntityConfig>;
 }
 
 // =============================================================================

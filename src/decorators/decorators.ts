@@ -10,6 +10,7 @@ import { IWorkerConfig } from '../domain';
  */
 export const ATOMIC_PROCESSOR_METADATA = 'atomic:processor';
 export const ENTITY_TYPE_METADATA = 'atomic:entity-type';
+export const ENTITY_ID_METADATA = 'atomic:entity-id';
 export const JOB_TYPE_METADATA = 'atomic:job-type';
 export const WORKER_PROCESSOR_METADATA = 'atomic:worker-processor';
 export const JOB_HANDLER_METADATA = 'atomic:job-handler';
@@ -21,6 +22,9 @@ export const ON_TERMINATE_WORKER_METADATA = 'atomic:on-terminate-worker';
 export const JOB_COMMAND_METADATA = 'atomic:job-command';
 export const JOB_QUERY_METADATA = 'atomic:job-query';
 
+// Registry to track @EntityId usage per class (for duplicate detection)
+const entityIdRegistry = new Map<Function, string>();
+
 // =============================================================================
 // DECORATOR OPTION INTERFACES
 // =============================================================================
@@ -31,12 +35,19 @@ export const JOB_QUERY_METADATA = 'atomic:job-query';
 export interface WorkerProcessorOptions {
   /** Entity type this processor handles (e.g., 'table', 'user') */
   entityType: string;
+  /** Default property name for entity ID extraction (optional) */
+  defaultEntityId?: string;
   /** Function to generate queue name from entityId */
   queueName?: string | ((entityId: string) => string);
   /** Function to generate worker name from entityId */
   workerName?: string | ((entityId: string) => string);
   /** Worker configuration */
   workerConfig?: IWorkerConfig;
+  /** 
+   * If true, workerConfig fully replaces module workerDefaults (no merge).
+   * If false (default), workerConfig is merged with workerDefaults.
+   */
+  overrideDefaults?: boolean;
 }
 
 /**
@@ -109,9 +120,11 @@ export interface JobHandlerMetadata {
  */
 export interface WorkerProcessorMetadata {
   entityType: string;
+  defaultEntityId?: string;
   queueNameFn: (entityId: string) => string;
   workerNameFn: (entityId: string) => string;
   workerConfig: IWorkerConfig;
+  overrideDefaults: boolean;
   targetClass: Type<any>;
   jobHandlers: Map<string, JobHandlerMetadata>;
   wildcardHandler?: JobHandlerMetadata;
@@ -158,15 +171,234 @@ export const AtomicProcessor = (jobType: string): MethodDecorator => {
 };
 
 /**
- * @EntityType decorator (LEGACY)
+ * @EntityType decorator
  *
- * Marks a class or method with an entity type for automatic registration.
+ * Marks a command/query class with its entity type for automatic routing.
+ * When present, queueBus.enqueue(cmd) can auto-route without forEntity().
  *
- * @deprecated Use @WorkerProcessor or @EntityScaler class decorators instead
+ * @example
+ * ```typescript
+ * @EntityType('account')
+ * export class WithdrawCommand {
+ *   @EntityId()
+ *   public readonly accountId: string;
+ *   public readonly amount: number;
+ * }
+ *
+ * // Can now use direct enqueue:
+ * await queueBus.enqueue(new WithdrawCommand(accountId, amount));
+ * ```
  */
-export const EntityType = (entityType: string): ClassDecorator & MethodDecorator => {
-  return SetMetadata(ENTITY_TYPE_METADATA, entityType);
-};
+export function EntityType(entityType: string): ClassDecorator {
+  return (target: Function) => {
+    Reflect.defineMetadata(ENTITY_TYPE_METADATA, entityType, target);
+  };
+}
+
+/**
+ * @EntityId decorator
+ *
+ * Marks a property OR constructor parameter as the entity ID for queue routing.
+ * Only ONE @EntityId() allowed per class (enforced at decoration time).
+ * Overrides module-level defaultEntityId configuration.
+ *
+ * @example Property decorator:
+ * ```typescript
+ * export class TransferCommand {
+ *   @EntityId()
+ *   public readonly sourceAccountId: string;
+ *   public readonly amount: number;
+ * }
+ * ```
+ *
+ * @example Parameter decorator (recommended):
+ * ```typescript
+ * @QueueEntity('account')
+ * export class TransferCommand {
+ *   constructor(
+ *     @EntityId() public readonly sourceAccountId: string,
+ *     public readonly amount: number,
+ *   ) {}
+ * }
+ * ```
+ */
+export function EntityId(): PropertyDecorator & ParameterDecorator {
+  return (
+    target: object,
+    propertyKey: string | symbol | undefined,
+    parameterIndex?: number,
+  ) => {
+    // Parameter decorator case (on constructor param)
+    if (typeof parameterIndex === 'number') {
+      const constructor = target as Function;
+      const className = constructor.name;
+      
+      // Extract parameter name from constructor
+      const paramName = getConstructorParamName(constructor, parameterIndex);
+      if (!paramName) {
+        throw new Error(
+          `Cannot determine parameter name at index ${parameterIndex} in ${className}. ` +
+          `Ensure you're using 'public readonly paramName' syntax.`
+        );
+      }
+      
+      // Check for duplicate
+      const existing = entityIdRegistry.get(constructor);
+      if (existing) {
+        throw new Error(
+          `Multiple @EntityId() decorators on ${className}. ` +
+          `Found on '${existing}' and '${paramName}'. ` +
+          `Only one parameter/property can be the entity ID.`
+        );
+      }
+      
+      entityIdRegistry.set(constructor, paramName);
+      Reflect.defineMetadata(ENTITY_ID_METADATA, paramName, constructor);
+      return;
+    }
+    
+    // Property decorator case (on class property)
+    const constructor = target.constructor;
+    const className = constructor.name;
+    const propName = String(propertyKey);
+    
+    // Check for duplicate @EntityId on same class
+    const existing = entityIdRegistry.get(constructor);
+    if (existing) {
+      throw new Error(
+        `Multiple @EntityId() decorators on ${className}. ` +
+        `Found on '${existing}' and '${propName}'. ` +
+        `Only one property can be the entity ID.`
+      );
+    }
+    
+    entityIdRegistry.set(constructor, propName);
+    Reflect.defineMetadata(ENTITY_ID_METADATA, propName, constructor);
+  };
+}
+
+/**
+ * Extract parameter name from constructor function by parsing its string representation.
+ * Works with TypeScript's 'public readonly paramName' shorthand.
+ */
+function getConstructorParamName(constructor: Function, index: number): string | undefined {
+  const fnStr = constructor.toString();
+  
+  // Match constructor parameters - handles various formats
+  const constructorMatch = fnStr.match(/constructor\s*\(([^)]*)\)/);
+  if (!constructorMatch) return undefined;
+  
+  const paramsStr = constructorMatch[1];
+  if (!paramsStr.trim()) return undefined;
+  
+  // Split by comma, but be careful with nested generics/objects
+  const params = splitParams(paramsStr);
+  if (index >= params.length) return undefined;
+  
+  const param = params[index].trim();
+  
+  // Extract the actual parameter name, handling:
+  // - @Decorator() public readonly paramName: Type
+  // - public readonly paramName: Type
+  // - paramName: Type
+  // - paramName
+  const nameMatch = param.match(/(?:@\w+\([^)]*\)\s*)*(?:public\s+)?(?:readonly\s+)?(\w+)/);
+  return nameMatch ? nameMatch[1] : undefined;
+}
+
+/**
+ * Split parameter string by commas, respecting nested structures
+ */
+function splitParams(paramsStr: string): string[] {
+  const params: string[] = [];
+  let current = '';
+  let depth = 0;
+  
+  for (const char of paramsStr) {
+    if (char === '(' || char === '<' || char === '{' || char === '[') {
+      depth++;
+      current += char;
+    } else if (char === ')' || char === '>' || char === '}' || char === ']') {
+      depth--;
+      current += char;
+    } else if (char === ',' && depth === 0) {
+      params.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  
+  if (current.trim()) {
+    params.push(current);
+  }
+  
+  return params;
+}
+
+/**
+ * Get the entity type from a command/query class decorated with @EntityType or @QueueEntity
+ */
+export function getEntityType(target: Function): string | undefined {
+  return Reflect.getMetadata(ENTITY_TYPE_METADATA, target);
+}
+
+/**
+ * Get the entity ID property name from a class decorated with @EntityId or @QueueEntity
+ */
+export function getEntityIdProperty(target: Function): string | undefined {
+  return Reflect.getMetadata(ENTITY_ID_METADATA, target);
+}
+
+// =============================================================================
+// NEW COMBINED DECORATOR - Less Invasive
+// =============================================================================
+
+/**
+ * @QueueEntity decorator
+ *
+ * Single decorator that combines @EntityType and @EntityId into one.
+ * This is the recommended way to mark commands/queries for queue routing.
+ *
+ * @param entityType - The entity type for routing (e.g., 'table', 'account')
+ * @param entityIdProperty - Optional property name containing the entity ID.
+ *                           If omitted, uses module-level defaultEntityId from entities config.
+ *
+ * @example
+ * // With explicit property name:
+ * @QueueEntity('table', 'tableId')
+ * export class MakeBetCommand {
+ *   constructor(
+ *     public readonly tableId: string,  // ← unchanged!
+ *     public readonly amount: number,
+ *   ) {}
+ * }
+ *
+ * @example
+ * // Using module default (entities config has defaultEntityId: 'tableId'):
+ * @QueueEntity('table')
+ * export class DealCommand {
+ *   constructor(
+ *     public readonly tableId: string,
+ *     public readonly card: string,
+ *   ) {}
+ * }
+ *
+ * @example
+ * // Then just enqueue directly:
+ * await queueBus.enqueue(new MakeBetCommand(tableId, 100));
+ */
+export function QueueEntity(entityType: string, entityIdProperty?: string): ClassDecorator {
+  return (target: Function) => {
+    // Always set entity type
+    Reflect.defineMetadata(ENTITY_TYPE_METADATA, entityType, target);
+    
+    // Set entity ID property if provided (otherwise falls back to module config)
+    if (entityIdProperty) {
+      Reflect.defineMetadata(ENTITY_ID_METADATA, entityIdProperty, target);
+    }
+  };
+}
 
 /**
  * @JobType decorator (LEGACY)
@@ -252,8 +484,12 @@ export const InjectAtomicQueue = (
  */
 export function WorkerProcessor(options: WorkerProcessorOptions): ClassDecorator {
   return (target: Function) => {
-    // Store the options on the class
-    Reflect.defineMetadata(WORKER_PROCESSOR_METADATA, options, target);
+    // Store the options with defaults
+    const metadata = {
+      ...options,
+      overrideDefaults: options.overrideDefaults ?? false,
+    };
+    Reflect.defineMetadata(WORKER_PROCESSOR_METADATA, metadata, target);
 
     // Mark as injectable if not already
     if (!Reflect.hasMetadata('injectable', target)) {

@@ -30,6 +30,11 @@ A NestJS library for atomic, sequential job processing per entity using BullMQ a
   - [QueueBus](#queuebus)
   - [@WorkerProcessor](#workerprocessor)
 - [Entity ID Extraction](#entity-id-extraction)
+  - [Priority Chain](#priority-chain)
+  - [Using @EntityId() Decorator](#using-entityid-decorator-recommended)
+  - [Using Module-Level Defaults](#using-module-level-defaults)
+  - [Using Processor-Level Defaults](#using-processor-level-defaults)
+  - [Why No Magic Extraction?](#why-no-magic-extraction)
 - [Scaling with Entity Scalers](#scaling-with-entity-scalers)
 - [Advanced Features](#advanced-features)
 - [Configuration Reference](#configuration-reference)
@@ -608,20 +613,74 @@ That's it! The library automatically:
 
 ### QueueBus
 
-The main way to add jobs to queues:
+QueueBus provides three ways to enqueue commands, from most explicit to most ergonomic:
+
+#### Option 1: `forProcessor()` - Full Control
+
+Use when you have a `@WorkerProcessor` class with custom configuration:
 
 ```typescript
-// Enqueue a single command
-await queueBus
-  .forProcessor(MyProcessor)
-  .enqueue(new MyCommand(entityId, data));
+@WorkerProcessor({
+  entityType: 'order',
+  defaultEntityId: 'orderId',
+  queueName: (id) => `order-${id}-queue`,
+})
+export class OrderProcessor {}
 
+// Usage
+await queueBus
+  .forProcessor(OrderProcessor)
+  .enqueue(new ProcessOrderCommand(orderId, items));
+```
+
+#### Option 2: `forEntity()` - Zero Boilerplate
+
+Use when you've configured entity defaults in the module:
+
+```typescript
+// Module config
+AtomicQueuesModule.forRoot({
+  redis: { host: 'localhost', port: 6379 },
+  entities: {
+    order: { defaultEntityId: 'orderId' },
+    user: { defaultEntityId: 'userId' },
+  },
+})
+
+// Usage - no @WorkerProcessor class needed!
+await queueBus
+  .forEntity('order')
+  .enqueue(new ProcessOrderCommand(orderId, items));
+```
+
+#### Option 3: Direct `enqueue()` - Most Ergonomic
+
+Use when commands have `@EntityType` and `@EntityId` decorators:
+
+```typescript
+@EntityType('order')
+export class ProcessOrderCommand {
+  @EntityId()
+  orderId: string;
+  
+  constructor(orderId: string, public readonly items: string[]) {
+    this.orderId = orderId;
+  }
+}
+
+// Usage - command knows where it goes!
+await queueBus.enqueue(new ProcessOrderCommand(orderId, items));
+```
+
+#### All Methods
+
+```typescript
 // Enqueue and wait for result
 const result = await queueBus
   .forProcessor(MyProcessor)
   .enqueueAndWait(new MyQuery(entityId));
 
-// Enqueue multiple commands
+// Enqueue multiple commands (same entity)
 await queueBus
   .forProcessor(MyProcessor)
   .enqueueBulk([
@@ -644,8 +703,10 @@ Defines how workers are created for an entity type:
 ```typescript
 @WorkerProcessor({
   entityType: 'order',                              // Required
+  defaultEntityId: 'orderId',                       // Default property for entity ID
   queueName: (id) => `order-${id}-queue`,           // Optional
   workerName: (id) => `order-${id}-worker`,         // Optional
+  overrideDefaults: false,                          // If true, ignores module-level entity config
   workerConfig: {
     concurrency: 1,                                 // Jobs per worker (default: 1)
     stalledInterval: 1000,                          // Check stalled jobs (ms)
@@ -658,27 +719,86 @@ Defines how workers are created for an entity type:
 
 ## Entity ID Extraction
 
-The `entityId` is automatically extracted from your command's properties:
+Commands must explicitly declare which property contains the entity ID. This prevents silent misrouting bugs.
+
+### Priority Chain
+
+Entity ID is resolved in this order:
+
+1. **`@EntityId()` decorator** on command property (highest priority)
+2. **`defaultEntityId`** in `@WorkerProcessor` options
+3. **`defaultEntityId`** in module `entities` config
+4. **Error** (no magic fallback)
+
+### Using `@EntityId()` Decorator (Recommended)
 
 ```typescript
-// These property names are checked in order:
-// entityId, tableId, userId, id, gameId, playerId
+import { EntityId, EntityType } from 'atomic-queues';
 
-export class ProcessOrderCommand {
-  constructor(
-    public readonly orderId: string,  // ✓ 'orderId' contains 'Id' → entityId
-    public readonly items: string[],
-  ) {}
+@EntityType('account')
+export class TransferCommand {
+  @EntityId()  // Explicit: this command routes to sourceAccountId's queue
+  sourceAccountId: string;
+  
+  targetAccountId: string;
+  amount: number;
+  
+  constructor(source: string, target: string, amount: number) {
+    this.sourceAccountId = source;
+    this.targetAccountId = target;
+    this.amount = amount;
+  }
 }
+```
 
-// Or use standard names
-export class UpdateUserCommand {
+> ⚠️ **Only one `@EntityId()` per class** - a compile-time error is thrown if multiple properties are decorated.
+
+### Using Module-Level Defaults
+
+For commands without `@EntityId()`, configure defaults per entity type:
+
+```typescript
+AtomicQueuesModule.forRoot({
+  redis: { host: 'localhost', port: 6379 },
+  entities: {
+    account: { 
+      defaultEntityId: 'accountId',
+      workerConfig: { concurrency: 1 },
+    },
+    order: { 
+      defaultEntityId: 'orderId',
+      queueName: (id) => `orders-${id}`,
+    },
+  },
+})
+```
+
+### Using Processor-Level Defaults
+
+```typescript
+@WorkerProcessor({
+  entityType: 'order',
+  defaultEntityId: 'orderId',  // All commands use this if no @EntityId()
+})
+export class OrderProcessor {}
+```
+
+### Why No Magic Extraction?
+
+Previous versions used heuristics (checking for `entityId`, `tableId`, `userId` in property names). This was dangerous:
+
+```typescript
+// 🚨 DANGEROUS: Property order matters with magic extraction!
+class TransferCommand {
   constructor(
-    public readonly userId: string,   // ✓ Matches 'userId' → entityId
-    public readonly name: string,
+    public accountId: string,     // Magic might pick this
+    public toAccountId: string,   // Or this - depending on property order!
+    public amount: number,
   ) {}
 }
 ```
+
+With explicit `@EntityId()`, the routing is always clear and refactoring-safe.
 
 ---
 

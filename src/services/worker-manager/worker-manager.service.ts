@@ -99,6 +99,8 @@ export class WorkerManagerService
     this.logger.log(`Creating worker: ${workerName} for queue: ${queueName}`);
 
     const workerConfig = this.mergeWorkerConfig(config);
+    
+    this.logger.log(`Worker ${workerName} config: concurrency=${workerConfig.concurrency}`);
 
     // Create the BullMQ worker
     const worker = new Worker(queueName, processor, {
