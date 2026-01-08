@@ -329,6 +329,12 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
       (entityId) => !activeEntitySet.has(entityId),
     );
 
+    if (entitiesWithWorkersNoLongerActive.length > 0) {
+      this.logger.debug(
+        `[${entityType}] Found ${entitiesWithWorkersNoLongerActive.length} entities with workers but no longer active: ${entitiesWithWorkersNoLongerActive.join(', ')}`,
+      );
+    }
+
     for (const entityId of entitiesWithWorkersNoLongerActive) {
       const decision = await this.handleWorkerClosure(
         entityType,
@@ -445,8 +451,15 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
     const workers = await this.workerManager.getEntityWorkers(entityType, entityId);
 
     if (workers.length === 0) {
+      this.logger.debug(
+        `[handleWorkerClosure] ${entityType}/${entityId} - No workers found, skipping`,
+      );
       return null;
     }
+
+    this.logger.debug(
+      `[handleWorkerClosure] ${entityType}/${entityId} - Found ${workers.length} workers to potentially close: ${workers.join(', ')}`,
+    );
 
     // Check if there are pending or active jobs in the queue
     // Don't terminate workers that might still be processing jobs
@@ -455,17 +468,18 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
     
     if (hasActiveJobs) {
       this.logger.debug(
-        `Skipping worker closure for ${entityType}/${entityId} - queue has active jobs`,
+        `[handleWorkerClosure] ${entityType}/${entityId} - Queue has active jobs, skipping termination`,
       );
       return null;
     }
 
-    this.logger.debug(
-      `Closing ${workers.length} workers for empty ${entityType}/${entityId}`,
+    this.logger.log(
+      `[handleWorkerClosure] Closing ${workers.length} workers for idle ${entityType}/${entityId}`,
     );
 
     // Signal all workers to close
     for (const workerId of workers) {
+      this.logger.debug(`[handleWorkerClosure] Terminating worker: ${workerId}`);
       if (config.onTerminateWorker) {
         await config.onTerminateWorker(entityId, workerId);
       } else {
@@ -485,24 +499,52 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
 
   /**
    * Check if a queue has any waiting or active jobs.
+   * Uses BullMQ's internal key structure with the configured prefix.
+   * 
+   * BullMQ v4+ key structure:
+   * - {prefix}:{queueName}:wait (list) - jobs waiting to be processed
+   * - {prefix}:{queueName}:active (list) - jobs currently being processed
+   * - {prefix}:{queueName}:delayed (sorted set) - jobs scheduled for future
+   * - {prefix}:{queueName}:paused (list) - jobs in paused queue
    */
   private async checkQueueHasJobs(queueName: string): Promise<boolean> {
     try {
-      // Check waiting list
-      const waitingKey = `bull:${queueName}:waiting`;
-      const waitingCount = await this.redis.llen(waitingKey);
-      if (waitingCount > 0) return true;
+      // BullMQ uses 'bull' as default prefix for queue keys
+      const bullPrefix = 'bull';
+      
+      // Check wait list (BullMQ v4+ uses 'wait' not 'waiting')
+      const waitKey = `${bullPrefix}:${queueName}:wait`;
+      const waitCount = await this.redis.llen(waitKey);
+      if (waitCount > 0) {
+        this.logger.debug(`Queue ${queueName} has ${waitCount} waiting jobs`);
+        return true;
+      }
 
       // Check active list
-      const activeKey = `bull:${queueName}:active`;
+      const activeKey = `${bullPrefix}:${queueName}:active`;
       const activeCount = await this.redis.llen(activeKey);
-      if (activeCount > 0) return true;
+      if (activeCount > 0) {
+        this.logger.debug(`Queue ${queueName} has ${activeCount} active jobs`);
+        return true;
+      }
 
       // Check delayed set
-      const delayedKey = `bull:${queueName}:delayed`;
+      const delayedKey = `${bullPrefix}:${queueName}:delayed`;
       const delayedCount = await this.redis.zcard(delayedKey);
-      if (delayedCount > 0) return true;
+      if (delayedCount > 0) {
+        this.logger.debug(`Queue ${queueName} has ${delayedCount} delayed jobs`);
+        return true;
+      }
 
+      // Check paused list (in case queue is paused)
+      const pausedKey = `${bullPrefix}:${queueName}:paused`;
+      const pausedCount = await this.redis.llen(pausedKey);
+      if (pausedCount > 0) {
+        this.logger.debug(`Queue ${queueName} has ${pausedCount} paused jobs`);
+        return true;
+      }
+
+      this.logger.debug(`Queue ${queueName} is empty - no jobs found`);
       return false;
     } catch (error) {
       this.logger.warn(`Error checking queue ${queueName} for jobs: ${(error as Error).message}`);
