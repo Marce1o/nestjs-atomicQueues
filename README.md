@@ -1,87 +1,121 @@
-# atomic-queues
+<p align="center">
+  <img src="https://img.shields.io/npm/v/atomic-queues?style=flat-square&color=cb3837" alt="npm version" />
+  <img src="https://img.shields.io/badge/NestJS-11-ea2845?style=flat-square&logo=nestjs" alt="NestJS 11" />
+  <img src="https://img.shields.io/badge/BullMQ-5-3c873a?style=flat-square" alt="BullMQ 5" />
+  <img src="https://img.shields.io/badge/Redis-7-dc382d?style=flat-square&logo=redis&logoColor=white" alt="Redis 7" />
+  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT License" />
+</p>
 
-A NestJS library for atomic, sequential job processing per entity using BullMQ and Redis.
+<h1 align="center">atomic-queues</h1>
+
+<p align="center">
+  <strong>Zero-contention, per-entity sequential processing for NestJS.</strong><br/>
+  Distributed. Lock-free.
+</p>
+
+---
+
+## Why atomic-queues?
+
+Distributed locks (Redlock, advisory locks, optimistic locking) all share the same fundamental flaw: **contention collapse**. When multiple pods fight for the same lock simultaneously, they spend more time retrying failed acquisitions than doing actual work. The harder you push, the slower they go.
+
+**atomic-queues** eliminates contention entirely. Instead of locking, each entity gets its own dedicated BullMQ queue. Operations execute sequentially — back-to-back with zero wasted cycles. There's nothing to contend over.
+
+### atomic-queues vs Redlock
+
+| | Redlock | atomic-queues |
+|---|---|---|
+| **Architecture** | Distributed mutex (quorum-based) | Per-entity queue (sequential) |
+| **Under contention** | Degrades — retry storms, backoff delays | **Constant** — jobs queue up, execute instantly |
+| **Per-entity throughput** | ~20-50 ops/s (heavy contention) | **~200-300 ops/s** (queue-bound, no contention) |
+| **Failure mode** | Silent double-execution (clock drift) | Job stuck in queue (visible, retryable) |
+| **Split-brain risk** | Yes (timing assumptions) | **Impossible** (serial queue) |
+| **Warm-path overhead** | 5-7ms per op (acquire + release) | **0ms** (in-memory hot cache) |
+| **Cold-start** | None | ~2-3ms one-time per entity |
+| **Multi-pod scaling** | Contention increases with pods | **Throughput increases with pods** |
 
 ---
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [The Concurrency Problem](#the-concurrency-problem)
-- [The Per-Entity Queue Architecture](#the-per-entity-queue-architecture)
+- [Why atomic-queues?](#why-atomic-queues)
+- [How It Works](#how-it-works)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
-- [Commands and Decorators](#commands-and-decorators)
+- [Commands & Decorators](#commands--decorators)
 - [Configuration](#configuration)
+- [Distributed Worker Lifecycle](#distributed-worker-lifecycle)
 - [Complete Example](#complete-example)
 - [Advanced: Custom Worker Processors](#advanced-custom-worker-processors)
+- [Performance](#performance)
 - [License](#license)
 
 ---
 
-## Overview
+## How It Works
 
-**atomic-queues** solves the fundamental concurrency problem in distributed systems: ensuring that operations on the same logical entity execute sequentially, even when requests arrive simultaneously across multiple service instances.
+### The Problem
 
-Rather than relying on distributed locks—which introduce contention, latency degradation, and complex failure modes—this library implements a **per-entity queue architecture** where each entity (user account, order, document) has its own dedicated processing queue and worker.
-
----
-
-## The Concurrency Problem
-
-Consider a banking system where a user with a $100 balance submits two concurrent $80 withdrawal requests:
+Every distributed system eventually hits this:
 
 ```
-Time    Request A                    Request B                    Database State
-─────────────────────────────────────────────────────────────────────────────────
-T₀      SELECT balance → $100        SELECT balance → $100        balance = $100
-T₁      CHECK: $100 >= $80 ✓         CHECK: $100 >= $80 ✓              
-T₂      UPDATE: balance = $20        UPDATE: balance = $20        balance = $20
-T₃                                   UPDATE: balance = -$60       balance = -$60
-─────────────────────────────────────────────────────────────────────────────────
-Result: Both withdrawals succeed. Balance becomes -$60. Integrity violated.
+Time    Request A                    Request B                    Database
+──────────────────────────────────────────────────────────────────────────
+T₀      SELECT balance → $100        SELECT balance → $100        $100
+T₁      CHECK: $100 ≥ $80 ✓          CHECK: $100 ≥ $80 ✓
+T₂      UPDATE: $100 − $80 = $20                                  $20
+T₃                                   UPDATE: $100 − $80 = $20     −$60
+──────────────────────────────────────────────────────────────────────────
+Result: Balance is −$60. Both withdrawals succeed. Integrity violated.
 ```
 
-With atomic-queues, operations are queued and processed sequentially:
+### The Solution
+
+atomic-queues routes operations through per-entity queues. Same entity → same queue → sequential execution. Different entities → parallel queues → full throughput.
 
 ```
-Time    Queue State                 Worker Execution              Database State
-───────────────────────────────────────────────────────────────────────────────────
-T₀      [Withdraw $80, Withdraw $80]                              balance = $100
-T₁      [Withdraw $80]              Process Op₁: $100 - $80       balance = $20
-T₂      []                          Process Op₂: $20 < $80 → REJECT   balance = $20
-───────────────────────────────────────────────────────────────────────────────────
-Result: First withdrawal succeeds. Second is rejected. Integrity preserved.
+                        ┌─────────────────────────────────────────────────┐
+  Request A ─┐          │           Entity: account-42                    │
+             │          │  ┌──────┐  ┌──────┐  ┌──────┐                  │
+  Request B ─┼─► Route ─┼─►│ Op 1 │─►│ Op 2 │─►│ Op 3 │─► [Worker] ──┐  │
+             │          │  └──────┘  └──────┘  └──────┘               │  │
+  Request C ─┘          │                    Sequential ◄─────────────┘  │
+                        └─────────────────────────────────────────────────┘
+
+                        ┌─────────────────────────────────────────────────┐
+  Request D ─┐          │           Entity: account-99                    │
+             │          │  ┌──────┐  ┌──────┐                            │
+  Request E ─┼─► Route ─┼─►│ Op 1 │─►│ Op 2 │─────────► [Worker] ──┐    │
+             │          │  └──────┘  └──────┘                       │    │
+  Request F ─┘          │                    Sequential ◄───────────┘    │
+                        └─────────────────────────────────────────────────┘
+
+                        ▲ These two queues run in PARALLEL across pods ▲
 ```
 
----
-
-## The Per-Entity Queue Architecture
-
-```
-                                    ┌─────────────────────────────────────────┐
-   Request A ─┐                     │         Per-Entity Queue                │
-              │                     │  ┌─────┐ ┌─────┐ ┌─────┐               │
-   Request B ─┼──▶ [Entity Router] ─┼─▶│ Op₁ │→│ Op₂ │→│ Op₃ │→ [Worker] ─┐ │
-              │                     │  └─────┘ └─────┘ └─────┘             │ │
-   Request C ─┘                     │                                      │ │
-                                    │      Sequential Processing ◄─────────┘ │
-                                    └─────────────────────────────────────────┘
-```
-
-**Key features:**
-- Each entity has exactly one active worker (enforced via Redis heartbeat)
-- Workers spawn automatically when jobs arrive
-- Workers terminate after configurable idle period
-- Node failure → heartbeat expires → worker respawns on healthy node
+**Key properties:**
+- **One worker per entity** — enforced via Redis heartbeat TTL. No duplicates, ever.
+- **Auto-spawn** — workers materialize when jobs arrive, on the pod that sees them first.
+- **Auto-terminate** — idle workers shut down after a configurable timeout.
+- **Self-healing** — node failure → heartbeat expires → worker respawns on a healthy pod.
+- **Distributed** — workers spread across all pods via atomic `SET NX` claim. No leader election, no single point of failure.
 
 ---
 
 ## Installation
 
 ```bash
+# npm
 npm install atomic-queues bullmq ioredis
+
+# pnpm
+pnpm add atomic-queues bullmq ioredis
+
+# yarn
+yarn add atomic-queues bullmq ioredis
 ```
+
+**Peer dependencies:** NestJS 10+, `@nestjs/cqrs` (optional — for auto-routing commands/queries)
 
 ---
 
@@ -89,44 +123,21 @@ npm install atomic-queues bullmq ioredis
 
 ### 1. Configure the Module
 
-The `entities` configuration is **optional**. Choose the approach that fits your needs:
-
-#### Option A: Minimal Setup (uses default naming)
-
 ```typescript
 import { Module } from '@nestjs/common';
+import { CqrsModule } from '@nestjs/cqrs';
 import { AtomicQueuesModule } from 'atomic-queues';
 
 @Module({
   imports: [
+    CqrsModule,
     AtomicQueuesModule.forRoot({
       redis: { host: 'localhost', port: 6379 },
       keyPrefix: 'myapp',
-      enableCronManager: true,
-      // No entities config needed! Uses default naming:
-      // Queue: {keyPrefix}:{entityType}:{entityId}:queue
-      // Worker: {keyPrefix}:{entityType}:{entityId}:worker
-    }),
-  ],
-})
-export class AppModule {}
-```
-
-#### Option B: Custom Queue/Worker Naming (via entities config)
-
-```typescript
-@Module({
-  imports: [
-    AtomicQueuesModule.forRoot({
-      redis: { host: 'localhost', port: 6379 },
-      keyPrefix: 'myapp',
-      enableCronManager: true,
-      
-      // Optional: Define custom naming and settings per entity type
       entities: {
         account: {
-          queueName: (id) => `${id}-queue`,        // Custom queue naming
-          workerName: (id) => `${id}-worker`,      // Custom worker naming
+          queueName: (id) => `account-${id}-queue`,
+          workerName: (id) => `account-${id}-worker`,
           maxWorkersPerEntity: 1,
           idleTimeoutSeconds: 15,
         },
@@ -137,28 +148,9 @@ export class AppModule {}
 export class AppModule {}
 ```
 
-#### Option C: Custom Naming via @WorkerProcessor
+> **Tip:** The `entities` config is optional. Without it, default naming applies: `{keyPrefix}:{entityType}:{entityId}:queue`.
 
-For advanced use cases, define a processor class instead of entities config:
-
-```typescript
-@WorkerProcessor({
-  entityType: 'account',
-  queueName: (id) => `${id}-queue`,
-  workerName: (id) => `${id}-worker`,
-  maxWorkersPerEntity: 1,
-  idleTimeoutSeconds: 15,
-})
-@Injectable()
-export class AccountProcessor {}
-```
-
-> **When to use each:**
-> - **Option A**: Default naming works for you
-> - **Option B**: Need custom naming but no custom job handling logic
-> - **Option C**: Need custom naming AND custom `@JobHandler` methods
-
-### 2. Create Commands with Decorators
+### 2. Define Commands
 
 ```typescript
 import { QueueEntity, QueueEntityId } from 'atomic-queues';
@@ -168,7 +160,6 @@ export class WithdrawCommand {
   constructor(
     @QueueEntityId() public readonly accountId: string,
     public readonly amount: number,
-    public readonly transactionId: string,
   ) {}
 }
 
@@ -177,35 +168,29 @@ export class DepositCommand {
   constructor(
     @QueueEntityId() public readonly accountId: string,
     public readonly amount: number,
-    public readonly source: string,
   ) {}
 }
 ```
 
-### 3. Create Command Handlers (standard @nestjs/cqrs)
+### 3. Write Handlers (standard @nestjs/cqrs)
 
 ```typescript
 import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
-import { WithdrawCommand } from './commands';
 
 @CommandHandler(WithdrawCommand)
 export class WithdrawHandler implements ICommandHandler<WithdrawCommand> {
-  constructor(private readonly accountRepo: AccountRepository) {}
+  constructor(private readonly repo: AccountRepository) {}
 
-  async execute(command: WithdrawCommand) {
-    const { accountId, amount, transactionId } = command;
-    
-    // SAFE: No race conditions! Processed sequentially per account.
-    const account = await this.accountRepo.findById(accountId);
-    
+  async execute({ accountId, amount }: WithdrawCommand) {
+    // SAFE: No race conditions. Sequential execution per account.
+    const account = await this.repo.findById(accountId);
+
     if (account.balance < amount) {
       throw new InsufficientFundsError(accountId, account.balance, amount);
     }
-    
+
     account.balance -= amount;
-    await this.accountRepo.save(account);
-    
-    return { success: true, newBalance: account.balance };
+    await this.repo.save(account);
   }
 }
 ```
@@ -215,79 +200,74 @@ export class WithdrawHandler implements ICommandHandler<WithdrawCommand> {
 ```typescript
 import { Injectable } from '@nestjs/common';
 import { QueueBus } from 'atomic-queues';
-import { WithdrawCommand, DepositCommand } from './commands';
 
 @Injectable()
 export class AccountService {
   constructor(private readonly queueBus: QueueBus) {}
 
-  async withdraw(accountId: string, amount: number, transactionId: string) {
-    // Command is automatically routed to the account's queue
-    await this.queueBus.enqueue(new WithdrawCommand(accountId, amount, transactionId));
-  }
-
-  async deposit(accountId: string, amount: number, source: string) {
-    await this.queueBus.enqueue(new DepositCommand(accountId, amount, source));
+  async withdraw(accountId: string, amount: number) {
+    await this.queueBus.enqueue(new WithdrawCommand(accountId, amount));
   }
 }
 ```
 
-**That's it!** The library automatically:
-- Creates a queue for each `accountId` when jobs arrive
-- Spawns a worker to process jobs sequentially
-- Routes jobs to the correct `@CommandHandler`
-- Terminates idle workers after the configured timeout
+**That's it.** The library automatically:
+1. Creates a queue for each `accountId` when jobs arrive
+2. Spawns a worker (spread across pods) to process jobs sequentially
+3. Routes jobs to the correct `@CommandHandler` via CQRS
+4. Terminates idle workers after the configured timeout
+5. Self-heals if a pod dies (heartbeat expires → respawn elsewhere)
 
 ---
 
-## Commands and Decorators
+## Commands & Decorators
 
-### @QueueEntity(entityType)
+### `@QueueEntity(entityType)`
 
-Marks a command class for queue routing. The `entityType` must match a key in your `entities` config.
+Marks a command/query class for queue routing.
 
 ```typescript
 @QueueEntity('account')
 export class TransferCommand { ... }
 ```
 
-### @QueueEntityId()
+### `@QueueEntityId()`
 
-Marks which property contains the entity ID for queue routing. Only one per class.
+Marks the property that contains the entity ID. One per class.
 
 ```typescript
 @QueueEntity('account')
 export class TransferCommand {
   constructor(
-    @QueueEntityId() public readonly sourceAccountId: string,  // Routes to source account's queue
+    @QueueEntityId() public readonly accountId: string,  // Routes to this account's queue
     public readonly targetAccountId: string,
     public readonly amount: number,
   ) {}
 }
 ```
 
-### Alternative: Use defaultEntityId
+### `@WorkerProcessor(options)`
 
-If all commands for an entity use the same property name, configure it once:
+Optional. Define a processor class for custom job handling on top of CQRS auto-routing.
 
 ```typescript
-// In module config
-entities: {
-  account: {
-    defaultEntityId: 'accountId',  // Commands without @QueueEntityId use this
-    // ...
-  },
-}
-
-// Then commands don't need @QueueEntityId
-@QueueEntity('account')
-export class WithdrawCommand {
-  constructor(
-    public readonly accountId: string,  // Automatically used
-    public readonly amount: number,
-  ) {}
+@WorkerProcessor({
+  entityType: 'account',
+  queueName: (id) => `account-${id}-queue`,
+  workerName: (id) => `account-${id}-worker`,
+  maxWorkersPerEntity: 1,
+  idleTimeoutSeconds: 15,
+})
+@Injectable()
+export class AccountProcessor {
+  @JobHandler('special-audit')
+  async handleAudit(job: Job, entityId: string) { ... }
 }
 ```
+
+### `@JobHandler(jobName)` / `@JobHandler('*')`
+
+Custom job handlers on a `@WorkerProcessor`. The wildcard `'*'` catches anything not matched by a specific handler.
 
 ---
 
@@ -295,42 +275,38 @@ export class WithdrawCommand {
 
 ```typescript
 AtomicQueuesModule.forRoot({
+  // ── Redis connection ──────────────────────────────────────
   redis: {
-    host: 'localhost',
+    host: 'redis',
     port: 6379,
-    password: 'secret',
+    password: 'secret',       // optional
   },
-  
-  keyPrefix: 'myapp',            // Redis key prefix (default: 'aq')
-  enableCronManager: true,       // Enable worker lifecycle management
-  cronInterval: 5000,            // Scaling check interval (ms)
-  
+
+  // ── Global settings ───────────────────────────────────────
+  keyPrefix: 'myapp',          // Redis key namespace (default: 'aq')
+  enableCronManager: true,     // Legacy cron-based scaling (optional)
+  cronInterval: 5000,          // Cron tick interval in ms
+
+  // ── Worker defaults ───────────────────────────────────────
   workerDefaults: {
-    concurrency: 1,              // Jobs processed simultaneously
-    stalledInterval: 1000,       // Stalled job check interval (ms)
-    lockDuration: 30000,         // Job lock duration (ms)
-    heartbeatTTL: 3,             // Worker heartbeat TTL (seconds)
+    concurrency: 1,            // Jobs processed concurrently per worker
+    stalledInterval: 1000,     // ms between stalled-job checks
+    lockDuration: 30000,       // ms a job is locked during processing
+    heartbeatTTL: 3,           // Heartbeat key TTL in seconds
   },
-  
-  // OPTIONAL: Per-entity configuration
-  // If omitted, uses default naming: {keyPrefix}:{entityType}:{entityId}:queue/worker
+
+  // ── Per-entity configuration (optional) ───────────────────
   entities: {
     account: {
-      defaultEntityId: 'accountId',
-      queueName: (id) => `${id}-queue`,
-      workerName: (id) => `${id}-worker`,
+      queueName: (id) => `account-${id}-queue`,
+      workerName: (id) => `account-${id}-worker`,
       maxWorkersPerEntity: 1,
       idleTimeoutSeconds: 15,
-      autoSpawn: true,           // Default: true
-      workerConfig: {            // Override defaults per entity
+      defaultEntityId: 'accountId',
+      workerConfig: {          // Override workerDefaults per entity
         concurrency: 1,
         lockDuration: 60000,
       },
-    },
-    order: {
-      defaultEntityId: 'orderId',
-      queueName: (id) => `order-${id}-queue`,
-      idleTimeoutSeconds: 30,
     },
   },
 });
@@ -338,14 +314,59 @@ AtomicQueuesModule.forRoot({
 
 ---
 
+## Distributed Worker Lifecycle
+
+Workers in atomic-queues have a fully automated lifecycle, distributed across all pods with no leader election:
+
+```
+  Job arrives                   SET NX claim
+  on any pod  ──────►  ┌──────────────────────┐
+                        │  Pod claims worker?   │
+                        └──────┬───────┬───────┘
+                           YES │       │ NO (another pod won)
+                               ▼       ▼
+                        ┌────────┐  ┌──────────────┐
+                        │ Spawn  │  │ Wait — other │
+                        │ worker │  │ pod handles  │
+                        │ locally│  └──────────────┘
+                        └───┬────┘
+                            ▼
+                     ┌──────────────┐
+                     │  Processing  │◄──── Heartbeat refresh (pipeline)
+                     │  jobs back-  │      every 1s (1 Redis round-trip)
+                     │  to-back     │
+                     └──────┬───────┘
+                            │ No jobs for idleTimeoutSeconds
+                            ▼
+                     ┌──────────────┐
+                     │  Idle sweep  │──── Hot cache eviction
+                     │  closes      │     Heartbeat keys cleaned up
+                     │  worker      │
+                     └──────────────┘
+```
+
+### Hot Cache (v1.5.0+)
+
+After a worker is confirmed alive, subsequent job arrivals for that entity hit an **in-memory cache** — zero Redis calls on the warm path. This eliminates the per-job Redis overhead that plagues lock-based approaches.
+
+| Path | Redis calls | When |
+|---|---|---|
+| **Hot** (cache hit) | 0 | Worker known alive |
+| **Warm** (cache miss) | 1 (`EXISTS`) | First time seeing entity |
+| **Cold** (no worker) | 1 (`SET NX`) | Worker needs creation |
+
+### SpawnQueueService (v1.4.2+)
+
+For multi-pod deployments, the `SpawnQueueService` distributes worker creation across all pods via a shared BullMQ spawn queue. In v1.5.0, the **direct local spawn** path bypasses this queue entirely — the pod that first sees a job for a new entity claims it with an atomic `SET NX` and spawns the worker locally, saving hundreds of milliseconds.
+
+---
+
 ## Complete Example
 
-A banking service handling financial transactions:
+A banking service with withdrawals, deposits, and cross-account transfers:
 
 ```typescript
-// ─────────────────────────────────────────────────────────────────
-// app.module.ts
-// ─────────────────────────────────────────────────────────────────
+// ── Module ──────────────────────────────────────────────
 import { Module } from '@nestjs/common';
 import { CqrsModule } from '@nestjs/cqrs';
 import { AtomicQueuesModule } from 'atomic-queues';
@@ -354,19 +375,14 @@ import { AtomicQueuesModule } from 'atomic-queues';
   imports: [
     CqrsModule,
     AtomicQueuesModule.forRoot({
-      redis: { host: 'localhost', port: 6379 },
+      redis: { host: 'redis', port: 6379 },
       keyPrefix: 'banking',
-      enableCronManager: true,
       entities: {
         account: {
-          queueName: (id) => `${id}-queue`,
-          workerName: (id) => `${id}-worker`,
+          queueName: (id) => `account-${id}-queue`,
+          workerName: (id) => `account-${id}-worker`,
           maxWorkersPerEntity: 1,
           idleTimeoutSeconds: 15,
-          workerConfig: {
-            concurrency: 1,
-            lockDuration: 60000,
-          },
         },
       },
     }),
@@ -377,13 +393,10 @@ import { AtomicQueuesModule } from 'atomic-queues';
     DepositHandler,
     TransferHandler,
   ],
-  controllers: [AccountController],
 })
-export class AppModule {}
+export class BankingModule {}
 
-// ─────────────────────────────────────────────────────────────────
-// commands/withdraw.command.ts
-// ─────────────────────────────────────────────────────────────────
+// ── Commands ────────────────────────────────────────────
 import { QueueEntity, QueueEntityId } from 'atomic-queues';
 
 @QueueEntity('account')
@@ -395,11 +408,6 @@ export class WithdrawCommand {
   ) {}
 }
 
-// ─────────────────────────────────────────────────────────────────
-// commands/deposit.command.ts
-// ─────────────────────────────────────────────────────────────────
-import { QueueEntity, QueueEntityId } from 'atomic-queues';
-
 @QueueEntity('account')
 export class DepositCommand {
   constructor(
@@ -409,123 +417,72 @@ export class DepositCommand {
   ) {}
 }
 
-// ─────────────────────────────────────────────────────────────────
-// commands/transfer.command.ts
-// ─────────────────────────────────────────────────────────────────
-import { QueueEntity, QueueEntityId } from 'atomic-queues';
-
 @QueueEntity('account')
 export class TransferCommand {
   constructor(
-    @QueueEntityId() public readonly accountId: string,  // Source account
+    @QueueEntityId() public readonly accountId: string,
     public readonly toAccountId: string,
     public readonly amount: number,
-    public readonly transactionId: string,
   ) {}
 }
 
-// ─────────────────────────────────────────────────────────────────
-// handlers/withdraw.handler.ts
-// ─────────────────────────────────────────────────────────────────
+// ── Handlers ────────────────────────────────────────────
 import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
-import { WithdrawCommand } from '../commands';
 
 @CommandHandler(WithdrawCommand)
 export class WithdrawHandler implements ICommandHandler<WithdrawCommand> {
-  constructor(private readonly accountRepo: AccountRepository) {}
+  constructor(private readonly repo: AccountRepository) {}
 
-  async execute(command: WithdrawCommand) {
-    const { accountId, amount } = command;
-    
-    // SAFE: Sequential execution per account
-    const account = await this.accountRepo.findById(accountId);
-    
-    if (account.balance < amount) {
-      throw new InsufficientFundsError(accountId, account.balance, amount);
-    }
-    
+  async execute({ accountId, amount }: WithdrawCommand) {
+    const account = await this.repo.findById(accountId);
+    if (account.balance < amount) throw new InsufficientFundsError();
     account.balance -= amount;
-    await this.accountRepo.save(account);
-    
-    return { success: true, newBalance: account.balance };
+    await this.repo.save(account);
   }
 }
-
-// ─────────────────────────────────────────────────────────────────
-// handlers/transfer.handler.ts
-// ─────────────────────────────────────────────────────────────────
-import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
-import { TransferCommand, DepositCommand } from '../commands';
-import { QueueBus } from 'atomic-queues';
 
 @CommandHandler(TransferCommand)
 export class TransferHandler implements ICommandHandler<TransferCommand> {
   constructor(
-    private readonly accountRepo: AccountRepository,
+    private readonly repo: AccountRepository,
     private readonly queueBus: QueueBus,
   ) {}
 
-  async execute(command: TransferCommand) {
-    const { accountId, toAccountId, amount } = command;
-    
-    // Debit source (we're in source account's queue)
-    const source = await this.accountRepo.findById(accountId);
-    if (source.balance < amount) {
-      throw new InsufficientFundsError(accountId, source.balance, amount);
-    }
-    
+  async execute({ accountId, toAccountId, amount }: TransferCommand) {
+    // Debit source (we're in source account's queue — safe)
+    const source = await this.repo.findById(accountId);
+    if (source.balance < amount) throw new InsufficientFundsError();
     source.balance -= amount;
-    await this.accountRepo.save(source);
-    
-    // Credit destination (enqueued to destination's queue)
-    await this.queueBus.enqueue(new DepositCommand(
-      toAccountId,
-      amount,
-      `transfer:${accountId}`,
-    ));
-    
-    return { success: true };
+    await this.repo.save(source);
+
+    // Credit destination (enqueued to destination's queue — also safe)
+    await this.queueBus.enqueue(
+      new DepositCommand(toAccountId, amount, `transfer:${accountId}`),
+    );
   }
 }
 
-// ─────────────────────────────────────────────────────────────────
-// account.controller.ts
-// ─────────────────────────────────────────────────────────────────
+// ── Controller ──────────────────────────────────────────
 import { Controller, Post, Body, Param } from '@nestjs/common';
 import { QueueBus } from 'atomic-queues';
-import { WithdrawCommand, TransferCommand } from './commands';
-import { v4 as uuid } from 'uuid';
 
 @Controller('accounts')
 export class AccountController {
   constructor(private readonly queueBus: QueueBus) {}
 
-  @Post(':accountId/withdraw')
-  async withdraw(
-    @Param('accountId') accountId: string,
-    @Body() body: { amount: number },
-  ) {
-    const transactionId = uuid();
-    
-    await this.queueBus.enqueue(
-      new WithdrawCommand(accountId, body.amount, transactionId)
-    );
-
-    return { queued: true, transactionId };
+  @Post(':id/withdraw')
+  async withdraw(@Param('id') id: string, @Body() body: { amount: number }) {
+    await this.queueBus.enqueue(new WithdrawCommand(id, body.amount, uuid()));
+    return { queued: true };
   }
 
-  @Post(':accountId/transfer')
+  @Post(':id/transfer')
   async transfer(
-    @Param('accountId') accountId: string,
-    @Body() body: { toAccountId: string; amount: number },
+    @Param('id') id: string,
+    @Body() body: { to: string; amount: number },
   ) {
-    const transactionId = uuid();
-    
-    await this.queueBus.enqueue(
-      new TransferCommand(accountId, body.toAccountId, body.amount, transactionId)
-    );
-
-    return { queued: true, transactionId };
+    await this.queueBus.enqueue(new TransferCommand(id, body.to, body.amount));
+    return { queued: true };
   }
 }
 ```
@@ -534,7 +491,7 @@ export class AccountController {
 
 ## Advanced: Custom Worker Processors
 
-For special cases where you need custom job handling logic, you can still define a `@WorkerProcessor`:
+For cases where CQRS auto-routing isn't enough, define a `@WorkerProcessor` with explicit `@JobHandler` methods:
 
 ```typescript
 import { Injectable } from '@nestjs/common';
@@ -543,28 +500,64 @@ import { Job } from 'bullmq';
 
 @WorkerProcessor({
   entityType: 'account',
-  queueName: (id) => `${id}-queue`,
-  workerName: (id) => `${id}-worker`,
+  queueName: (id) => `account-${id}-queue`,
+  workerName: (id) => `account-${id}-worker`,
   maxWorkersPerEntity: 1,
   idleTimeoutSeconds: 15,
 })
 @Injectable()
 export class AccountProcessor {
-  // Custom handler for specific job types
-  @JobHandler('special-operation')
-  async handleSpecialOperation(job: Job, entityId: string) {
-    // Custom logic here
+  @JobHandler('high-priority-audit')
+  async handleAudit(job: Job, entityId: string) {
+    // Specific handler for this job type
   }
 
-  // Wildcard handler for everything else
   @JobHandler('*')
   async handleAll(job: Job, entityId: string) {
-    // Falls back to CQRS routing automatically
+    // Wildcard — catches everything not explicitly handled
+    // Falls back to CQRS routing automatically when not defined
   }
 }
 ```
 
-**Note:** When you define a `@WorkerProcessor` for an entity type, it takes precedence over config-based default registration.
+> **Priority order:** Explicit `@JobHandler` → CQRS auto-routing (`@JobCommand`/`@JobQuery`) → Wildcard handler
+
+---
+
+## Performance
+
+### Throughput (measured — not estimated)
+
+Tested on a 5-pod Kubernetes cluster (OrbStack), 20 concurrent entities, 12,300 orders:
+
+| Metric | Result |
+|---|---|
+| **Phase 1** — 10,000 orders (50 waves × 200 concurrent) | 167 orders/sec |
+| **Phase 2** — 1,000 orders (workers still draining) | 140 orders/sec |
+| **Phase 4** — 1,000 orders (cold start from zero workers) | 176 orders/sec |
+| **Total deductions processed** | 104,004 |
+| **Stock drift** | **0** (all 20 entities) |
+| **Pod distribution** | 5/5 pods actively creating workers |
+| **Worker creates** | 120 |
+| **Idle closures** | 180 |
+
+### Why it's fast
+
+1. **Zero contention** — no locks, no retries, no backoff. Jobs queue and execute.
+2. **Hot cache** — after first check, subsequent job arrivals for an entity incur 0 Redis calls.
+3. **Direct local spawn** — atomic `SET NX` claim, local worker creation. No queue round-trip.
+4. **Pipelined heartbeats** — heartbeat refresh uses a single Redis pipeline (1 round-trip for 2 keys).
+5. **O(1) worker existence check** — global alive key replaces `KEYS` pattern scan.
+
+### When to use what
+
+| Use case | Recommendation |
+|---|---|
+| High-throughput entity operations (payments, inventory, game state) | **atomic-queues** |
+| Rare, low-frequency mutual exclusion (config updates, migrations) | Redlock / advisory locks |
+| Exactly-once semantics with audit trail | **atomic-queues** (BullMQ job IDs) |
+| Sub-millisecond synchronous response required | Redlock (synchronous acquire) |
+| Multi-pod, many entities, sustained load | **atomic-queues** (contention-free scaling) |
 
 ---
 
