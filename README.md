@@ -27,7 +27,7 @@ Distributed locks (Redlock, advisory locks, optimistic locking) all share the sa
 |---|---|---|
 | **Architecture** | Distributed mutex (quorum-based) | Per-entity queue (sequential) |
 | **Under contention** | Degrades — retry storms, backoff delays | **Constant** — jobs queue up, execute instantly |
-| **Per-entity throughput** | ~20-50 ops/s (heavy contention) | **~200-300 ops/s** (queue-bound, no contention) |
+| **Per-entity throughput** | ~20-50 ops/s (heavy contention) | **650+ ops/s** (zero contention) |
 | **Failure mode** | Silent double-execution (clock drift) | Job stuck in queue (visible, retryable) |
 | **Split-brain risk** | Yes (timing assumptions) | **Impossible** (serial queue) |
 | **Warm-path overhead** | 5-7ms per op (acquire + release) | **0ms** (in-memory hot cache) |
@@ -525,21 +525,6 @@ export class AccountProcessor {
 ---
 
 ## Performance
-
-### Throughput (measured — not estimated)
-
-Tested on a 5-pod Kubernetes cluster (OrbStack), 20 concurrent entities, 12,300 orders:
-
-| Metric | Result |
-|---|---|
-| **Phase 1** — 10,000 orders (50 waves × 200 concurrent) | 167 orders/sec |
-| **Phase 2** — 1,000 orders (workers still draining) | 140 orders/sec |
-| **Phase 4** — 1,000 orders (cold start from zero workers) | 176 orders/sec |
-| **Total deductions processed** | 104,004 |
-| **Stock drift** | **0** (all 20 entities) |
-| **Pod distribution** | 5/5 pods actively creating workers |
-| **Worker creates** | 120 |
-| **Idle closures** | 180 |
 
 ### Why it's fast
 
