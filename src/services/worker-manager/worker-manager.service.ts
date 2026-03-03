@@ -146,15 +146,27 @@ export class WorkerManagerService
 
   /**
    * Check if a worker exists and is alive (has valid heartbeat).
-   * Checks across ALL nodes, not just the current node, to prevent
-   * multiple nodes from creating duplicate workers for the same entity.
+   * Uses a global alive key for O(1) lookup instead of KEYS scan.
+   * The alive key is maintained alongside the per-node heartbeat key.
    */
   async workerExists(workerName: string): Promise<boolean> {
-    // Check across all nodes, not just this node
-    // Pattern: {prefix}:worker:*:{workerName}
-    const pattern = `${this.keyPrefix}:worker:*:${workerName}`;
-    const keys = await this.redis.keys(pattern);
-    return keys.length > 0;
+    const aliveKey = this.getGlobalAliveKey(workerName);
+    const exists = await this.redis.exists(aliveKey);
+    return exists === 1;
+  }
+
+  /**
+   * Atomically claim a worker slot using SET NX.
+   * Returns true if this pod claimed the slot (and should create the worker).
+   * Returns false if another pod already claimed it.
+   * Uses a separate claim key (not the alive key) so that workerExists()
+   * doesn't see the claim as an existing worker before creation finishes.
+   */
+  async claimWorkerSlot(workerName: string, ttlSeconds: number = 10): Promise<boolean> {
+    const claimKey = `${this.keyPrefix}:worker-claim:${workerName}`;
+    // SET NX — only succeeds if key doesn't exist (atomic claim)
+    const result = await this.redis.set(claimKey, this.nodeId, 'EX', ttlSeconds, 'NX');
+    return result === 'OK';
   }
 
   /**
@@ -278,14 +290,14 @@ export class WorkerManagerService
     ttlSeconds?: number,
   ): Promise<void> {
     const ttl = ttlSeconds || this.config.workerDefaults?.heartbeatTTL || 3;
-    const key = this.getWorkerKey(workerName);
+    const nodeKey = this.getWorkerKey(workerName);
+    const aliveKey = this.getGlobalAliveKey(workerName);
 
-    const exists = await this.redis.exists(key);
-    if (exists) {
-      await this.redis.expire(key, ttl);
-    } else {
-      await this.redis.set(key, '1', 'EX', ttl);
-    }
+    // Pipeline: refresh both keys in a single Redis round-trip
+    const pipeline = this.redis.pipeline();
+    pipeline.set(nodeKey, '1', 'EX', ttl);
+    pipeline.set(aliveKey, this.nodeId, 'EX', ttl);
+    await pipeline.exec();
 
     // Update local state
     const state = this.workerStates.get(workerName);
@@ -298,10 +310,15 @@ export class WorkerManagerService
    * Remove worker heartbeat (mark as dead).
    */
   async removeWorkerHeartbeat(workerName: string): Promise<void> {
-    const key = this.getWorkerKey(workerName);
-    await this.redis.del(key);
-    // Also remove idle counter
-    await this.removeWorkerIdleCounter(workerName);
+    const nodeKey = this.getWorkerKey(workerName);
+    const aliveKey = this.getGlobalAliveKey(workerName);
+    const idleKey = this.getWorkerIdleKey(workerName);
+    // Pipeline: remove all keys in a single round-trip
+    const pipeline = this.redis.pipeline();
+    pipeline.del(nodeKey);
+    pipeline.del(aliveKey);
+    pipeline.del(idleKey);
+    await pipeline.exec();
     this.logger.debug(`Removed heartbeat for worker: ${workerName}`);
   }
 
@@ -471,10 +488,20 @@ export class WorkerManagerService
   }
 
   /**
-   * Get the Redis key for a worker's heartbeat.
+   * Get the Redis key for a worker's heartbeat (per-node).
    */
   private getWorkerKey(workerName: string): string {
     return `${this.keyPrefix}:worker:${this.nodeId}:${workerName}`;
+  }
+
+  /**
+   * Get the global alive key for O(1) worker existence check.
+   * This key has the same TTL as the per-node heartbeat and is
+   * refreshed in the same pipeline. It replaces the O(N) KEYS scan
+   * with a single O(1) EXISTS call.
+   */
+  private getGlobalAliveKey(workerName: string): string {
+    return `${this.keyPrefix}:worker-alive:${workerName}`;
   }
 
   /**

@@ -11,6 +11,7 @@ import { ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG } from '../constants';
 import { IAtomicQueuesModuleConfig } from '../../domain';
 import { WorkerManagerService } from '../worker-manager';
 import { ServiceQueueManager, ServiceQueueJobNames } from '../service-queue';
+import { SpawnQueueService } from '../spawn-queue';
 
 /**
  * Callback for spawning a worker for an entity.
@@ -78,11 +79,20 @@ export class QueueEventsManagerService implements OnModuleDestroy {
   // Global callback for spawning workers
   private onJobArrivedCallback: OnJobArrivedCallback | null = null;
 
+  // =========================================================================
+  // HOT CACHE — eliminates Redis calls on the warm path entirely.
+  // Once we know a worker exists (via Redis check or local creation),
+  // we cache the worker name. Subsequent job arrivals for that entity
+  // short-circuit without touching Redis at all.
+  // =========================================================================
+  private readonly hotCache: Set<string> = new Set();
+
   constructor(
     @Inject(ATOMIC_QUEUES_REDIS) private readonly redis: Redis,
     @Inject(ATOMIC_QUEUES_CONFIG)
     private readonly config: IAtomicQueuesModuleConfig,
     private readonly workerManager: WorkerManagerService,
+    @Optional() private readonly spawnQueueService?: SpawnQueueService,
     @Optional() private readonly serviceQueueManager?: ServiceQueueManager,
   ) {
     this.keyPrefix = config.keyPrefix || 'aq';
@@ -193,7 +203,15 @@ export class QueueEventsManagerService implements OnModuleDestroy {
   }
 
   /**
-   * Handle job arrival - check if worker exists and spawn if needed.
+   * Handle job arrival — ultra-low-latency path.
+   *
+   * Hot path (worker exists in cache): 0 Redis calls. Instant return.
+   * Warm path (worker exists in Redis): 1 Redis EXISTS call (O(1)).
+   * Cold path (no worker): 1 SET NX claim + direct local creation.
+   *
+   * This replaces the old flow of: KEYS scan → spawn queue enqueue →
+   * spawn queue dequeue → create worker (multiple seconds) with:
+   * cache hit → 0ms, or SET NX + local create → ~10ms.
    */
   private async handleJobArrived(
     queueName: string,
@@ -202,56 +220,72 @@ export class QueueEventsManagerService implements OnModuleDestroy {
     jobId: string,
   ): Promise<void> {
     const entityId = extractEntityId(queueName);
-    this.logger.debug(
-      `[QueueEvents] Job ${jobId} waiting in ${queueName} (entity: ${entityType}/${entityId})`,
-    );
 
     // Check if worker already exists for this entity
     const pattern = this.entityPatterns.get(entityType);
-    if (!pattern) {
-      this.logger.warn(`No pattern registered for entity type: ${entityType}`);
-      return;
-    }
+    if (!pattern) return;
 
     const workerName = pattern.workerNameFn(entityId);
-    const workerExists = await this.workerManager.workerExists(workerName);
 
+    // ── HOT CACHE (0 Redis calls) ────────────────────────────────
+    if (this.hotCache.has(workerName)) return;
+
+    // ── WARM PATH (1 Redis EXISTS — O(1)) ────────────────────────
+    const workerExists = await this.workerManager.workerExists(workerName);
     if (workerExists) {
-      this.logger.debug(
-        `[QueueEvents] Worker ${workerName} already exists, job will be processed`,
-      );
+      this.hotCache.add(workerName);
       return;
     }
 
-    this.logger.log(
-      `[QueueEvents] No worker for ${entityType}/${entityId}, triggering spawn`,
-    );
+    // ── COLD PATH — Direct local spawn ───────────────────────────
+    // Atomic claim via SET NX: if this pod wins, it creates the
+    // worker locally (no spawn queue round-trip). If another pod
+    // already claimed it, we skip (that pod is creating it).
+    const claimed = await this.workerManager.claimWorkerSlot(workerName);
+    if (claimed) {
+      this.logger.log(
+        `[QueueEvents] Claimed ${entityType}/${entityId} — creating worker locally`,
+      );
 
-    // Trigger worker spawn through service queue for distributed coordination
-    if (this.useServiceQueue && this.serviceQueueManager) {
+      // Direct local spawn (same-pod, no BullMQ round-trip)
       try {
-        await this.serviceQueueManager.requestSpawnEntityWorker(entityType, entityId);
-        this.logger.debug(
-          `[QueueEvents] Worker spawn triggered via service queue for ${entityType}/${entityId}`,
-        );
+        if (this.onJobArrivedCallback) {
+          await this.onJobArrivedCallback(entityType, entityId, queueName);
+        } else if (this.spawnQueueService) {
+          // If only spawn handler is registered, invoke it directly
+          await (this.spawnQueueService as any).handleSpawnJobDirect?.(entityType, entityId);
+        }
+        this.hotCache.add(workerName);
       } catch (error) {
         this.logger.error(
-          `[QueueEvents] Failed to trigger worker spawn: ${(error as Error).message}`,
+          `[QueueEvents] Direct spawn failed for ${entityType}/${entityId}: ${(error as Error).message}`,
         );
+        // Fall back to spawn queue if direct creation failed
+        if (this.spawnQueueService) {
+          await this.spawnQueueService.requestSpawn(entityType, entityId);
+        }
       }
-    } else if (this.onJobArrivedCallback) {
-      // Direct spawn (single instance mode)
-      try {
-        await this.onJobArrivedCallback(entityType, entityId, queueName);
-        this.logger.debug(
-          `[QueueEvents] Worker spawned directly for ${entityType}/${entityId}`,
-        );
-      } catch (error) {
-        this.logger.error(
-          `[QueueEvents] Failed to spawn worker: ${(error as Error).message}`,
-        );
-      }
+    } else {
+      // Another pod claimed it — it'll be created there.
+      // Add to cache after a short delay (the other pod needs time to create).
+      setTimeout(() => this.hotCache.add(workerName), 500);
     }
+  }
+
+  /**
+   * Evict a worker from the hot cache.
+   * Called by SpawnQueueService when idle sweep closes a worker,
+   * so the next job arrival will trigger a fresh spawn.
+   */
+  evictFromHotCache(workerName: string): void {
+    this.hotCache.delete(workerName);
+  }
+
+  /**
+   * Get the hot cache size (for diagnostics).
+   */
+  getHotCacheSize(): number {
+    return this.hotCache.size;
   }
 
   /**

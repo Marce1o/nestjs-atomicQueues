@@ -32,6 +32,7 @@ import { CommandDiscoveryService } from '../command-discovery';
 import { ServiceQueueManager } from '../service-queue';
 import { QueueBus } from '../queue-bus';
 import { QueueEventsManagerService } from '../queue-events-manager';
+import { SpawnQueueService } from '../spawn-queue';
 import { ATOMIC_QUEUES_CONFIG } from '../constants';
 import { IAtomicQueuesModuleConfig } from '../../domain';
 
@@ -122,6 +123,7 @@ export class ProcessorDiscoveryService implements OnModuleInit {
     @Optional() private readonly commandDiscovery: CommandDiscoveryService,
     @Optional() private readonly serviceQueueManager: ServiceQueueManager,
     @Optional() private readonly queueEventsManager: QueueEventsManagerService,
+    @Optional() private readonly spawnQueueService: SpawnQueueService,
     @Inject(ATOMIC_QUEUES_CONFIG)
     private readonly config: IAtomicQueuesModuleConfig,
   ) {}
@@ -162,11 +164,56 @@ export class ProcessorDiscoveryService implements OnModuleInit {
     await this.registerScalersWithCronManager();
     await this.registerScalerlessProcessors();
     await this.registerSpawnWorkerHandler();
+    await this.registerWithSpawnQueue();
     await this.setupQueueEventsListening();
     
     // Auto-register commands from CQRS handlers (default: true)
     if (this.config.autoRegisterCommands !== false) {
       this.autoRegisterCommandsFromCqrs();
+    }
+
+    // Auto-wire CommandBus/QueryBus from @nestjs/cqrs if available
+    this.autoWireCqrsBuses();
+  }
+
+  /**
+   * Attempt to resolve CommandBus and QueryBus from the DI container.
+   * This allows config-driven mode to work out of the box when the
+   * consuming app imports CqrsModule, without requiring a manual bridge.
+   */
+  private autoWireCqrsBuses(): void {
+    if (!this.discoveryService) return;
+
+    const providers = this.discoveryService.getProviders();
+
+    if (!this.commandBus) {
+      const commandBusWrapper = providers.find(
+        (w) => w.metatype?.name === 'CommandBus' && w.instance,
+      );
+      if (commandBusWrapper?.instance) {
+        this.setCommandBus(commandBusWrapper.instance as ICommandBus);
+        this.logger.log('Auto-wired CommandBus from @nestjs/cqrs');
+      } else {
+        this.logger.debug(
+          'CommandBus not found in DI container. ' +
+            'Import CqrsModule in your app or call setCommandBus() manually.',
+        );
+      }
+    }
+
+    if (!this.queryBus) {
+      const queryBusWrapper = providers.find(
+        (w) => w.metatype?.name === 'QueryBus' && w.instance,
+      );
+      if (queryBusWrapper?.instance) {
+        this.setQueryBus(queryBusWrapper.instance as IQueryBus);
+        this.logger.log('Auto-wired QueryBus from @nestjs/cqrs');
+      } else {
+        this.logger.debug(
+          'QueryBus not found in DI container. ' +
+            'Import CqrsModule in your app or call setQueryBus() manually.',
+        );
+      }
     }
   }
   
@@ -239,8 +286,24 @@ export class ProcessorDiscoveryService implements OnModuleInit {
    * Register processors that don't have an EntityScaler (scalerless mode).
    * These processors will auto-spawn workers when jobs arrive and
    * auto-terminate when idle.
+   *
+   * When SpawnQueueService is available, this registration is SKIPPED
+   * because the spawn queue handles both on-demand worker creation
+   * (distributed across pods) and idle cleanup (local sweep).
+   * The old CronManager path creates workers eagerly via polling,
+   * which defeats the purpose of distributed spawn.
    */
   private async registerScalerlessProcessors(): Promise<void> {
+    // When SpawnQueueService is available, skip CronManager registration entirely.
+    // The spawn queue + idle sweep replaces the cron-based scaling for scalerless processors.
+    if (this.spawnQueueService) {
+      this.logger.log(
+        'SpawnQueueService detected — skipping CronManager registration for scalerless processors ' +
+        '(spawn queue handles on-demand creation + idle sweep)',
+      );
+      return;
+    }
+
     if (!this.cronManager) {
       this.logger.debug('CronManager not available, skipping scalerless processor registration');
       return;
@@ -290,6 +353,60 @@ export class ProcessorDiscoveryService implements OnModuleInit {
       this.logger.log(
         `Registered scalerless config for '${entityType}' (idleTimeout: ${scalingConfig.idleTimeoutSeconds}s)`,
       );
+    }
+  }
+
+  /**
+   * Register with SpawnQueueService for distributed worker creation.
+   * This replaces the cron-based approach: every pod's SpawnQueueService
+   * worker can pick up spawn jobs and create entity workers locally.
+   */
+  private async registerWithSpawnQueue(): Promise<void> {
+    if (!this.spawnQueueService) {
+      this.logger.debug('SpawnQueueService not available, skipping spawn queue registration');
+      return;
+    }
+
+    // Register the spawn handler — this is what runs on the pod that picks up the spawn job
+    this.spawnQueueService.registerSpawnHandler(
+      async (entityType: string, entityId: string) => {
+        const scaler = this.scalers.get(entityType);
+        const processor = this.processors.get(entityType);
+
+        // Call custom spawn handler if scaler has @OnSpawnWorker defined
+        if (scaler?.methods.onSpawnWorker) {
+          await scaler.scalerInstance[scaler.methods.onSpawnWorker](entityId);
+        }
+
+        // Auto-create worker if processor is registered
+        if (processor) {
+          await this.createWorkerForEntity(entityType, entityId);
+        }
+
+        if (!scaler?.methods.onSpawnWorker && !processor) {
+          this.logger.warn(
+            `No spawn handler for entity type '${entityType}'. ` +
+            `Register a @WorkerProcessor or configure in entities config.`,
+          );
+        }
+      },
+    );
+
+    // Register idle timeouts for each entity type
+    for (const [entityType, processor] of this.processors) {
+      const idleTimeout = processor.options.idleTimeoutSeconds ?? 15;
+      this.spawnQueueService.registerIdleTimeout(entityType, idleTimeout);
+    }
+    for (const [entityType, scaler] of this.scalers) {
+      const idleTimeout = scaler.options.idleTimeoutSeconds ?? 15;
+      this.spawnQueueService.registerIdleTimeout(entityType, idleTimeout);
+    }
+
+    this.logger.log('Registered with SpawnQueueService for distributed worker creation');
+
+    // Wire QueueEventsManager reference for hot-cache eviction on idle close
+    if (this.queueEventsManager) {
+      this.spawnQueueService.setQueueEventsManager(this.queueEventsManager);
     }
   }
 

@@ -11,3 +11,4 @@ export * from './processor-discovery';
 export * from './command-discovery';
 export * from './queue-bus';
 export * from './queue-events-manager';
+export * from './spawn-queue';
