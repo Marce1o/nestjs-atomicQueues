@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { QueueManagerService } from '../queue-manager/queue-manager.service';
+import { QueueEventsManagerService } from '../queue-events-manager/queue-events-manager.service';
 import { IEntityConfig } from '../../domain/interfaces';
 import { EnqueueOptions } from './queue-bus.types';
 import { getJobName, extractData, extractEntityIdExplicit } from './queue-bus.utils';
@@ -25,6 +26,7 @@ export class EntityTarget {
     private readonly entityType: string,
     private readonly entityConfig: IEntityConfig | undefined,
     private readonly keyPrefix: string,
+    private readonly queueEventsManager?: QueueEventsManagerService,
   ) {}
 
   /**
@@ -82,9 +84,8 @@ export class EntityTarget {
 
     // Get queue and ensure event listening
     const queue = this.queueManager.getOrCreateQueue(queueName);
-    const queueEventsManager = (this.queueManager as any).queueEventsManager;
-    if (queueEventsManager) {
-      await queueEventsManager.ensureListening(queueName, this.entityType);
+    if (this.queueEventsManager) {
+      await this.queueEventsManager.ensureListening(queueName, this.entityType);
     }
 
     // Add job to queue
@@ -128,9 +129,8 @@ export class EntityTarget {
     const queue = this.queueManager.getOrCreateQueue(queueName);
 
     // Ensure listening is set up for auto-spawn
-    const queueEventsManager = (this.queueManager as any).queueEventsManager;
-    if (queueEventsManager) {
-      await queueEventsManager.ensureListening(queueName, this.entityType);
+    if (this.queueEventsManager) {
+      await this.queueEventsManager.ensureListening(queueName, this.entityType);
     }
 
     const bulkJobs = commandsOrQueries.map((cmd) => ({
