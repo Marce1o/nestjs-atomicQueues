@@ -135,7 +135,7 @@ describe('QueueBus.forProcessor()', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    bus = new QueueBus(mockQueueManager as any, mockConfig);
+    bus = new QueueBus(mockQueueManager as any, undefined, mockConfig);
   });
 
   it('should return a QueueTarget for a valid @WorkerProcessor class', () => {
@@ -199,7 +199,7 @@ describe('QueueBus.forEntity()', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    bus = new QueueBus(mockQueueManager as any, mockConfig);
+    bus = new QueueBus(mockQueueManager as any, undefined, mockConfig);
   });
 
   it('should use entity config queueName function when available', async () => {
@@ -234,7 +234,7 @@ describe('QueueBus.enqueue() (direct)', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    bus = new QueueBus(mockQueueManager as any, mockConfig);
+    bus = new QueueBus(mockQueueManager as any, undefined, mockConfig);
   });
 
   it('should route to the correct entity type queue', async () => {
@@ -258,7 +258,7 @@ describe('QueueBus.execute() (legacy)', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    bus = new QueueBus(mockQueueManager as any, mockConfig);
+    bus = new QueueBus(mockQueueManager as any, undefined, mockConfig);
   });
 
   it('should resolve queue pattern with entityId', async () => {
