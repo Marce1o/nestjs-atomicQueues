@@ -27,11 +27,10 @@ Distributed locks (Redlock, advisory locks, optimistic locking) all share the sa
 |---|---|---|
 | **Architecture** | Distributed mutex (quorum-based) | Per-entity queue (sequential) |
 | **Under contention** | Degrades — retry storms, backoff delays | **Constant** — jobs queue up, execute instantly |
-| **Per-entity throughput** | ~20-50 ops/s (heavy contention) | **650+ ops/s** (zero contention) |
 | **Failure mode** | Silent double-execution (clock drift) | Job stuck in queue (visible, retryable) |
 | **Split-brain risk** | Yes (timing assumptions) | **Impossible** (serial queue) |
-| **Warm-path overhead** | 5-7ms per op (acquire + release) | **0ms** (in-memory hot cache) |
-| **Cold-start** | None | ~2-3ms one-time per entity |
+| **Warm-path overhead** | Acquire + release per op | **0 Redis calls** (in-memory hot cache) |
+| **Cold-start** | None | One-time per entity |
 | **Multi-pod scaling** | Contention increases with pods | **Throughput increases with pods** |
 
 ---
@@ -105,17 +104,12 @@ atomic-queues routes operations through per-entity queues. Same entity → same 
 ## Installation
 
 ```bash
-# npm
-npm install atomic-queues bullmq ioredis
-
-# pnpm
-pnpm add atomic-queues bullmq ioredis
-
-# yarn
-yarn add atomic-queues bullmq ioredis
+npm install atomic-queues
 ```
 
-**Peer dependencies:** NestJS 10+, `@nestjs/cqrs` (optional — for auto-routing commands/queries)
+BullMQ, ioredis, and `@nestjs/bullmq` are bundled — no extra installs needed.
+
+**Peer dependencies** (provided by your NestJS app): `@nestjs/common` 10+, `@nestjs/core` 10+, `reflect-metadata`, `rxjs` 7+. Optional: `@nestjs/cqrs` (for auto-routing commands/queries).
 
 ---
 
@@ -149,6 +143,28 @@ export class AppModule {}
 ```
 
 > **Tip:** The `entities` config is optional. Without it, default naming applies: `{keyPrefix}:{entityType}:{entityId}:queue`.
+
+<details>
+<summary><strong>Async configuration (ConfigService)</strong></summary>
+
+```typescript
+AtomicQueuesModule.forRootAsync({
+  imports: [ConfigModule],
+  useFactory: (config: ConfigService) => ({
+    redis: { url: config.get('REDIS_URL') },
+    keyPrefix: 'myapp',
+    entities: {
+      account: {
+        queueName: (id) => `account-${id}-queue`,
+        workerName: (id) => `account-${id}-worker`,
+      },
+    },
+  }),
+  inject: [ConfigService],
+}),
+```
+
+</details>
 
 ### 2. Define Commands
 
@@ -222,18 +238,34 @@ export class AccountService {
 
 ## Commands & Decorators
 
-### `@QueueEntity(entityType)`
+### `@QueueEntity(entityType, entityIdProperty?)`
 
-Marks a command/query class for queue routing.
+Marks a command/query class for queue routing. The optional second argument specifies which property holds the entity ID — this is the simplest approach when you don't want to decorate individual properties.
 
 ```typescript
+// Option 1: Explicit property name (no @QueueEntityId needed)
+@QueueEntity('account', 'accountId')
+export class TransferCommand {
+  constructor(
+    public readonly accountId: string,
+    public readonly toAccountId: string,
+    public readonly amount: number,
+  ) {}
+}
+
+// Option 2: Rely on module-level defaultEntityId from entities config
 @QueueEntity('account')
-export class TransferCommand { ... }
+export class DepositCommand {
+  constructor(
+    public readonly accountId: string,  // Matched by entities.account.defaultEntityId
+    public readonly amount: number,
+  ) {}
+}
 ```
 
 ### `@QueueEntityId()`
 
-Marks the property that contains the entity ID. One per class.
+Marks the property that contains the entity ID. One per class. Use this when you need per-command control over which property is the entity ID, or when you can't use the two-argument `@QueueEntity` shorthand.
 
 ```typescript
 @QueueEntity('account')
@@ -245,6 +277,8 @@ export class TransferCommand {
   ) {}
 }
 ```
+
+> **Entity ID resolution order:** `@QueueEntityId()` decorator > `@QueueEntity('type', 'prop')` second argument > `@WorkerProcessor({ defaultEntityId })` > `entities[type].defaultEntityId` in module config.
 
 ### `@WorkerProcessor(options)`
 
@@ -302,7 +336,12 @@ AtomicQueuesModule.forRoot({
       workerName: (id) => `account-${id}-worker`,
       maxWorkersPerEntity: 1,
       idleTimeoutSeconds: 15,
+
+      // Fallback property name for entity ID extraction.
+      // Used when a command has no @QueueEntityId() decorator
+      // and no second argument to @QueueEntity().
       defaultEntityId: 'accountId',
+
       workerConfig: {          // Override workerDefaults per entity
         concurrency: 1,
         lockDuration: 60000,
@@ -345,7 +384,7 @@ Workers in atomic-queues have a fully automated lifecycle, distributed across al
                      └──────────────┘
 ```
 
-### Hot Cache (v1.5.0+)
+### Hot Cache
 
 After a worker is confirmed alive, subsequent job arrivals for that entity hit an **in-memory cache** — zero Redis calls on the warm path. This eliminates the per-job Redis overhead that plagues lock-based approaches.
 
@@ -355,9 +394,9 @@ After a worker is confirmed alive, subsequent job arrivals for that entity hit a
 | **Warm** (cache miss) | 1 (`EXISTS`) | First time seeing entity |
 | **Cold** (no worker) | 1 (`SET NX`) | Worker needs creation |
 
-### SpawnQueueService (v1.4.2+)
+### SpawnQueueService
 
-For multi-pod deployments, the `SpawnQueueService` distributes worker creation across all pods via a shared BullMQ spawn queue. In v1.5.0, the **direct local spawn** path bypasses this queue entirely — the pod that first sees a job for a new entity claims it with an atomic `SET NX` and spawns the worker locally, saving hundreds of milliseconds.
+For multi-pod deployments, the `SpawnQueueService` distributes worker creation across all pods via a shared BullMQ spawn queue. The **direct local spawn** path bypasses this queue entirely — the pod that first sees a job for a new entity claims it with an atomic `SET NX` and spawns the worker locally.
 
 ---
 
@@ -538,7 +577,7 @@ export class AccountProcessor {
 
 | Use case | Recommendation |
 |---|---|
-| High-throughput entity operations (payments, inventory, game state) | **atomic-queues** |
+| Per-entity operations that must be serialized (payments, inventory, game state) | **atomic-queues** |
 | Rare, low-frequency mutual exclusion (config updates, migrations) | Redlock / advisory locks |
 | Exactly-once semantics with audit trail | **atomic-queues** (BullMQ job IDs) |
 | Sub-millisecond synchronous response required | Redlock (synchronous acquire) |

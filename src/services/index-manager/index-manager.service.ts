@@ -4,6 +4,7 @@ import {
   IIndexManager,
   IAtomicQueuesModuleConfig,
 } from '../../domain';
+import { scanKeys, resolveKeyPrefix } from '../../utils';
 import { ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG } from '../constants';
 
 /**
@@ -35,7 +36,7 @@ export class IndexManagerService implements IIndexManager {
     @Inject(ATOMIC_QUEUES_CONFIG)
     private readonly config: IAtomicQueuesModuleConfig,
   ) {
-    this.keyPrefix = config.keyPrefix || 'aq';
+    this.keyPrefix = resolveKeyPrefix(config);
   }
 
   // =========================================================================
@@ -92,7 +93,7 @@ export class IndexManagerService implements IIndexManager {
     entityType: string,
   ): Promise<Record<string, number>> {
     const pattern = `${this.keyPrefix}:jobs-index:${entityType}:*:jobs`;
-    const keys = await this.scanKeys(pattern);
+    const keys = await scanKeys(this.redis, pattern);
     const result: Record<string, number> = {};
 
     for (const key of keys) {
@@ -184,7 +185,7 @@ export class IndexManagerService implements IIndexManager {
     entityType: string,
   ): Promise<string[]> {
     const pattern = `${this.keyPrefix}:workerDeaths-index:${entityType}:*:deaths`;
-    const keys = await this.scanKeys(pattern);
+    const keys = await scanKeys(this.redis, pattern);
     return keys
       .map((key) => this.extractEntityIdFromKey(key, entityType))
       .filter((id): id is string => id !== null);
@@ -425,25 +426,4 @@ export class IndexManagerService implements IIndexManager {
     return null;
   }
 
-  /**
-   * Scan Redis keys matching a pattern.
-   */
-  private async scanKeys(pattern: string): Promise<string[]> {
-    let cursor = '0';
-    const keys: string[] = [];
-
-    do {
-      const [nextCursor, scanKeys] = await this.redis.scan(
-        cursor,
-        'MATCH',
-        pattern,
-        'COUNT',
-        100,
-      );
-      cursor = nextCursor;
-      keys.push(...scanKeys);
-    } while (cursor !== '0');
-
-    return keys;
-  }
 }

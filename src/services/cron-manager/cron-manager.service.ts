@@ -6,6 +6,7 @@ import {
   IScalingDecision,
   IAtomicQueuesModuleConfig,
 } from '../../domain';
+import { scanKeys, resolveKeyPrefix } from '../../utils';
 import { ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG } from '../constants';
 import { WorkerManagerService } from '../worker-manager';
 import { IndexManagerService } from '../index-manager';
@@ -72,7 +73,7 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
     private readonly indexManager: IndexManagerService,
     @Optional() private readonly serviceQueueManager?: ServiceQueueManager,
   ) {
-    this.keyPrefix = config.keyPrefix || 'aq';
+    this.keyPrefix = resolveKeyPrefix(config);
     // Use service queue for atomic operations if enabled
     this.useServiceQueue = config.serviceQueue?.enabled !== false;
     
@@ -482,51 +483,7 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
     entityId: string,
     config: IEntityScalingConfig,
   ): Promise<IScalingDecision | null> {
-    const workers = await this.workerManager.getEntityWorkers(entityType, entityId);
-
-    if (workers.length === 0) {
-      return null;
-    }
-
-    // Get idle timeout threshold (default: 15 seconds)
-    const idleTimeoutSeconds = config.idleTimeoutSeconds ?? 15;
-
-    // Check each worker's idle time
-    const idleWorkers: string[] = [];
-    for (const workerName of workers) {
-      const isIdle = await this.workerManager.isWorkerIdle(workerName, idleTimeoutSeconds);
-      if (isIdle) {
-        idleWorkers.push(workerName);
-      }
-    }
-
-    if (idleWorkers.length === 0) {
-      return null;
-    }
-
-    this.logger.log(
-      `[handleIdleWorkers] Terminating ${idleWorkers.length} idle workers for active ${entityType}/${entityId} (idle >= ${idleTimeoutSeconds}s)`,
-    );
-
-    // Signal idle workers to close
-    for (const workerName of idleWorkers) {
-      const idleSeconds = await this.workerManager.getWorkerIdleSeconds(workerName);
-      this.logger.debug(`[handleIdleWorkers] Terminating idle worker: ${workerName} (idle: ${idleSeconds}s)`);
-      if (config.onTerminateWorker) {
-        await config.onTerminateWorker(entityId, workerName);
-      } else {
-        await this.workerManager.signalWorkerClose(workerName);
-      }
-    }
-
-    return {
-      entityId,
-      entityType,
-      currentWorkers: workers.length,
-      desiredWorkers: workers.length - idleWorkers.length,
-      action: 'terminate',
-      count: idleWorkers.length,
-    };
+    return this.terminateIdleWorkers(entityType, entityId, config, 'active-entity');
   }
 
   /**
@@ -539,18 +496,36 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
     entityId: string,
     config: IEntityScalingConfig,
   ): Promise<IScalingDecision | null> {
+    return this.terminateIdleWorkers(entityType, entityId, config, 'orphaned-entity');
+  }
+
+  /**
+   * Shared logic for terminating idle workers.
+   * Used by both handleIdleWorkersForActiveEntity and handleWorkerClosure.
+   */
+  private async terminateIdleWorkers(
+    entityType: string,
+    entityId: string,
+    config: IEntityScalingConfig,
+    context: 'active-entity' | 'orphaned-entity',
+  ): Promise<IScalingDecision | null> {
+    const logTag = context === 'active-entity' ? 'handleIdleWorkers' : 'handleWorkerClosure';
     const workers = await this.workerManager.getEntityWorkers(entityType, entityId);
 
     if (workers.length === 0) {
-      this.logger.debug(
-        `[handleWorkerClosure] ${entityType}/${entityId} - No workers found, skipping`,
-      );
+      if (context === 'orphaned-entity') {
+        this.logger.debug(
+          `[${logTag}] ${entityType}/${entityId} - No workers found, skipping`,
+        );
+      }
       return null;
     }
 
-    this.logger.debug(
-      `[handleWorkerClosure] ${entityType}/${entityId} - Found ${workers.length} workers to potentially close: ${workers.join(', ')}`,
-    );
+    if (context === 'orphaned-entity') {
+      this.logger.debug(
+        `[${logTag}] ${entityType}/${entityId} - Found ${workers.length} workers to potentially close: ${workers.join(', ')}`,
+      );
+    }
 
     // Get idle timeout threshold (default: 15 seconds)
     const idleTimeoutSeconds = config.idleTimeoutSeconds ?? 15;
@@ -565,20 +540,26 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
     }
 
     if (idleWorkers.length === 0) {
-      this.logger.debug(
-        `[handleWorkerClosure] ${entityType}/${entityId} - No idle workers (threshold: ${idleTimeoutSeconds}s), skipping termination`,
-      );
+      if (context === 'orphaned-entity') {
+        this.logger.debug(
+          `[${logTag}] ${entityType}/${entityId} - No idle workers (threshold: ${idleTimeoutSeconds}s), skipping termination`,
+        );
+      }
       return null;
     }
 
+    const actionLabel = context === 'active-entity'
+      ? `Terminating ${idleWorkers.length} idle workers for active ${entityType}/${entityId}`
+      : `Closing ${idleWorkers.length} idle workers for ${entityType}/${entityId}`;
+
     this.logger.log(
-      `[handleWorkerClosure] Closing ${idleWorkers.length} idle workers for ${entityType}/${entityId} (idle >= ${idleTimeoutSeconds}s)`,
+      `[${logTag}] ${actionLabel} (idle >= ${idleTimeoutSeconds}s)`,
     );
 
     // Signal idle workers to close
     for (const workerName of idleWorkers) {
       const idleSeconds = await this.workerManager.getWorkerIdleSeconds(workerName);
-      this.logger.debug(`[handleWorkerClosure] Terminating worker: ${workerName} (idle: ${idleSeconds}s)`);
+      this.logger.debug(`[${logTag}] Terminating worker: ${workerName} (idle: ${idleSeconds}s)`);
       if (config.onTerminateWorker) {
         await config.onTerminateWorker(entityId, workerName);
       } else {
@@ -720,7 +701,7 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
   private async getEntitiesWithWorkers(entityType: string): Promise<Set<string>> {
     // Worker heartbeat keys follow pattern: {prefix}:worker:{nodeId}:{entityId}-worker
     const pattern = `${this.keyPrefix}:worker:*:*-worker`;
-    const keys = await this.scanKeys(pattern);
+    const keys = await scanKeys(this.redis, pattern);
     const entities = new Set<string>();
 
     for (const key of keys) {
@@ -750,25 +731,4 @@ export class CronManagerService implements ICronManager, OnModuleDestroy {
     return 'none';
   }
 
-  /**
-   * Scan Redis keys matching a pattern.
-   */
-  private async scanKeys(pattern: string): Promise<string[]> {
-    let cursor = '0';
-    const keys: string[] = [];
-
-    do {
-      const [nextCursor, scanKeys] = await this.redis.scan(
-        cursor,
-        'MATCH',
-        pattern,
-        'COUNT',
-        100,
-      );
-      cursor = nextCursor;
-      keys.push(...scanKeys);
-    } while (cursor !== '0');
-
-    return keys;
-  }
 }

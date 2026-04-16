@@ -9,40 +9,11 @@ import { Queue, Worker, Job } from 'bullmq';
 import Redis from 'ioredis';
 import { v4 as uuidv4 } from 'uuid';
 import { IAtomicQueuesModuleConfig } from '../../domain';
+import { scanKeys, resolveKeyPrefix } from '../../utils';
 import { ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG } from '../constants';
+import { ServiceQueueJobNames, IServiceQueueJobData } from './service-queue.types';
 
-/**
- * Service-level job names for global atomic operations.
- * These operations MUST be processed by exactly ONE worker across the entire distributed system.
- */
-export enum ServiceQueueJobNames {
-  /** Get the count of all workers across all nodes */
-  GET_GLOBAL_WORKER_COUNT = 'get-global-worker-count',
-  /** Get workers for a specific entity across all nodes */
-  GET_ENTITY_WORKERS = 'get-entity-workers',
-  /** Verify ownership of a resource */
-  VERIFY_OWNERSHIP = 'verify-ownership',
-  /** Acquire global lock */
-  ACQUIRE_GLOBAL_LOCK = 'acquire-global-lock',
-  /** Release global lock */
-  RELEASE_GLOBAL_LOCK = 'release-global-lock',
-  /** Run scaling cycle for CronManager - triggers worker spawn/terminate decisions */
-  RUN_SCALING_CYCLE = 'run-scaling-cycle',
-  /** Spawn a worker for a specific entity - used when opening a table/entity */
-  SPAWN_ENTITY_WORKER = 'spawn-entity-worker',
-  /** Custom service operation */
-  CUSTOM = 'custom',
-}
-
-/**
- * Job data for service queue operations
- */
-export interface IServiceQueueJobData<T = unknown> {
-  uuid: string;
-  jobName: ServiceQueueJobNames;
-  payload: T;
-  responseChannel?: string;
-}
+export { ServiceQueueJobNames, IServiceQueueJobData } from './service-queue.types';
 
 /**
  * ServiceQueueManager
@@ -113,7 +84,7 @@ export class ServiceQueueManager implements OnModuleInit, OnApplicationShutdown 
     @Inject(ATOMIC_QUEUES_CONFIG)
     private readonly config: IAtomicQueuesModuleConfig,
   ) {
-    this.keyPrefix = config.keyPrefix || 'aq';
+    this.keyPrefix = resolveKeyPrefix(config);
     this.serviceQueueName =
       config.serviceQueue?.queueName || `${this.keyPrefix}-service-queue`;
     this.serviceWorkerName =
@@ -661,7 +632,7 @@ export class ServiceQueueManager implements OnModuleInit, OnApplicationShutdown 
       ? `${this.keyPrefix}:worker:*:${entityType}-*`
       : `${this.keyPrefix}:worker:*:*`;
 
-    const keys = await this.scanKeys(pattern);
+    const keys = await scanKeys(this.redis, pattern);
     return keys.length;
   }
 
@@ -680,7 +651,7 @@ export class ServiceQueueManager implements OnModuleInit, OnApplicationShutdown 
     // Worker names follow pattern: {entityId}-worker
     const workerName = `${entityId}-worker`;
     const pattern = `${this.keyPrefix}:worker:*:${workerName}`;
-    const keys = await this.scanKeys(pattern);
+    const keys = await scanKeys(this.redis, pattern);
     return keys.map((key) => key.split(':').pop()!);
   }
 
@@ -818,25 +789,4 @@ export class ServiceQueueManager implements OnModuleInit, OnApplicationShutdown 
     }
   }
 
-  /**
-   * Scan Redis keys matching a pattern.
-   */
-  private async scanKeys(pattern: string): Promise<string[]> {
-    let cursor = '0';
-    const keys: string[] = [];
-
-    do {
-      const [nextCursor, scanKeys] = await this.redis.scan(
-        cursor,
-        'MATCH',
-        pattern,
-        'COUNT',
-        100,
-      );
-      cursor = nextCursor;
-      keys.push(...scanKeys);
-    } while (cursor !== '0');
-
-    return keys;
-  }
 }

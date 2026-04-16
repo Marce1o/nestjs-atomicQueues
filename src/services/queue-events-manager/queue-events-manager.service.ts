@@ -9,6 +9,7 @@ import { QueueEvents } from 'bullmq';
 import Redis from 'ioredis';
 import { ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG } from '../constants';
 import { IAtomicQueuesModuleConfig } from '../../domain';
+import { scanKeys, resolveKeyPrefix } from '../../utils';
 import { WorkerManagerService } from '../worker-manager';
 import { ServiceQueueManager, ServiceQueueJobNames } from '../service-queue';
 import { SpawnQueueService } from '../spawn-queue';
@@ -95,7 +96,7 @@ export class QueueEventsManagerService implements OnModuleDestroy {
     @Optional() private readonly spawnQueueService?: SpawnQueueService,
     @Optional() private readonly serviceQueueManager?: ServiceQueueManager,
   ) {
-    this.keyPrefix = config.keyPrefix || 'aq';
+    this.keyPrefix = resolveKeyPrefix(config);
     this.useServiceQueue = config.serviceQueue?.enabled !== false;
   }
 
@@ -305,7 +306,7 @@ export class QueueEventsManagerService implements OnModuleDestroy {
     const bulkQueuePattern = `bull:${this.keyPrefix}:${entityType}:*:queue:*`;
 
     // Scan for existing BullMQ queue keys
-    const keys = await this.scanKeys(bulkQueuePattern);
+    const keys = await scanKeys(this.redis, bulkQueuePattern);
     const queueNames = new Set<string>();
 
     for (const key of keys) {
@@ -384,28 +385,6 @@ export class QueueEventsManagerService implements OnModuleDestroy {
    */
   getRegisteredQueues(): string[] {
     return Array.from(this.registeredQueues.keys());
-  }
-
-  /**
-   * Scan Redis keys matching a pattern.
-   */
-  private async scanKeys(pattern: string): Promise<string[]> {
-    let cursor = '0';
-    const keys: string[] = [];
-
-    do {
-      const [nextCursor, scanKeys] = await this.redis.scan(
-        cursor,
-        'MATCH',
-        pattern,
-        'COUNT',
-        100,
-      );
-      cursor = nextCursor;
-      keys.push(...scanKeys);
-    } while (cursor !== '0');
-
-    return keys;
   }
 
   /**

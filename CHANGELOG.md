@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-04-16
+
+### Added
+
+- **Comprehensive test suite** — 237 tests across 10 suites covering all utilities, decorators, and services
+- **Shared `scanKeys()` utility** (`utils/redis.utils.ts`) — replaces 5 identical private copies across services
+- **Shared `resolveKeyPrefix()`** (`utils/naming.utils.ts`) — centralizes `config.keyPrefix || 'aq'` resolution
+- **Shared `ICommandBus` / `IQueryBus`** (`domain/interfaces/cqrs.interfaces.ts`) — eliminates duplicate definitions
+
+### Changed
+
+- **Modular project structure** — split 3 god-files into focused, single-responsibility modules:
+  - `domain/interfaces.ts` (950 lines) → 11 focused interface files under `domain/interfaces/`
+  - `decorators/decorators.ts` (915 lines) → 11 focused files (constants, interfaces, entity/worker/scaler/job/legacy decorators, metadata readers, type guards)
+  - `helpers.ts` (286 lines) → `job.utils.ts`, `async.utils.ts`, `naming.utils.ts`, `rate-limit.utils.ts`
+- **Decomposed `ProcessorDiscoveryService`** (968-line god class) into 5 focused services:
+  - `ProcessorRegistry` — state management for processors/scalers/active workers
+  - `DecoratorDiscoveryService` — NestJS provider scanning for decorated classes
+  - `WorkerFactoryService` — worker creation and job processing pipeline
+  - `ScalingRegistrationService` — cron/spawn/queue-events registration
+  - `ProcessorDiscoveryService` — slim orchestrator (~250 lines)
+- **Split `queue-bus.service.ts`** (855 lines) into `queue-bus.types.ts`, `queue-bus.utils.ts`, `queue-target.ts`, `entity-target.ts`, `queue-bus.service.ts`
+- **Split `service-queue`** types into `service-queue.types.ts`
+- **DRY cron-manager** — unified duplicated idle worker termination logic into `terminateIdleWorkers()`
+- **Bundled BullMQ/ioredis/\@nestjs/bullmq** as regular dependencies — install is now just `npm install atomic-queues`
+- **README improvements** — removed unsubstantiated benchmark numbers, added `forRootAsync` example, documented `@QueueEntity` two-argument shorthand, explained `defaultEntityId` fallback, simplified install instructions
+
+### Fixed
+
+- **QueueBus `keyPrefix` defaulting to `'atomic'`** instead of `'aq'` — now uses `resolveKeyPrefix()` consistently
+
+### Upgraded
+
+- `@nestjs/bullmq` 10 → 11, `@nestjs/common` 10 → 11, `@nestjs/core` 10 → 11, `@nestjs/cqrs` 10 → 11
+- `bullmq` 5.1 → 5.74, `ioredis` 5.3 → 5.10, `typescript` 5.3 → 5.9
+- `ts-jest` 29.1 → 29.4, `@types/node` 20 → 25, `rxjs` 7.8.0 → 7.8.2
+
 ## [1.3.0] - 2026-01-06
 
 ### Added

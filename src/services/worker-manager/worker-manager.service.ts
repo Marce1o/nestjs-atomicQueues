@@ -15,6 +15,7 @@ import {
   IWorkerConfig,
   IAtomicQueuesModuleConfig,
 } from '../../domain';
+import { resolveKeyPrefix } from '../../utils';
 import { ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG } from '../constants';
 
 /**
@@ -66,7 +67,7 @@ export class WorkerManagerService
     private readonly config: IAtomicQueuesModuleConfig,
   ) {
     this.nodeId = this.generateNodeId();
-    this.keyPrefix = config.keyPrefix || 'aq';
+    this.keyPrefix = resolveKeyPrefix(config);
     this.logger.log(`WorkerManager initialized with nodeId: ${this.nodeId}`);
   }
 

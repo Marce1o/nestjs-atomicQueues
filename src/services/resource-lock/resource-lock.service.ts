@@ -6,6 +6,7 @@ import {
   ILockResult,
   IAtomicQueuesModuleConfig,
 } from '../../domain';
+import { scanKeys, resolveKeyPrefix } from '../../utils';
 import { ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG } from '../constants';
 
 /**
@@ -112,7 +113,7 @@ export class ResourceLockService implements IResourceLockService {
     @Inject(ATOMIC_QUEUES_CONFIG)
     private readonly config: IAtomicQueuesModuleConfig,
   ) {
-    this.keyPrefix = config.keyPrefix || 'aq';
+    this.keyPrefix = resolveKeyPrefix(config);
   }
 
   /**
@@ -280,7 +281,7 @@ export class ResourceLockService implements IResourceLockService {
   ): Promise<IResourceLock[]> {
     // Scan for all locks and filter by owner
     const pattern = `${this.keyPrefix}:lock:*`;
-    const keys = await this.scanKeys(pattern);
+    const keys = await scanKeys(this.redis, pattern);
     const locks: IResourceLock[] = [];
 
     for (const key of keys) {
@@ -387,7 +388,7 @@ export class ResourceLockService implements IResourceLockService {
     free: string[];
   }> {
     const pattern = `${this.keyPrefix}:lock:${resourceType}:*`;
-    const keys = await this.scanKeys(pattern);
+    const keys = await scanKeys(this.redis, pattern);
     const locked: IResourceLock[] = [];
 
     for (const key of keys) {
@@ -453,28 +454,6 @@ export class ResourceLockService implements IResourceLockService {
    */
   private getLockKey(resourceType: string, resourceId: string): string {
     return `${this.keyPrefix}:lock:${resourceType}:${resourceId}`;
-  }
-
-  /**
-   * Scan Redis keys matching a pattern.
-   */
-  private async scanKeys(pattern: string): Promise<string[]> {
-    let cursor = '0';
-    const keys: string[] = [];
-
-    do {
-      const [nextCursor, scanKeys] = await this.redis.scan(
-        cursor,
-        'MATCH',
-        pattern,
-        'COUNT',
-        100,
-      );
-      cursor = nextCursor;
-      keys.push(...scanKeys);
-    } while (cursor !== '0');
-
-    return keys;
   }
 
   /**

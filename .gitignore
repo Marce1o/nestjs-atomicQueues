@@ -3,7 +3,7 @@ node_modules/
 
 # Build output
 dist/
-
+candy-shop/
 # IDE
 .idea/
 .vscode/
