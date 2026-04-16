@@ -33,7 +33,23 @@ jobs:
         run: npm test
         continue-on-error: true
 
+      - name: Check if version already published
+        id: version-check
+        run: |
+          LOCAL_VERSION=$(node -p "require('./package.json').version")
+          PUBLISHED=$(npm view atomic-queues version 2>/dev/null || echo "0.0.0")
+          echo "local=$LOCAL_VERSION" >> $GITHUB_OUTPUT
+          echo "published=$PUBLISHED" >> $GITHUB_OUTPUT
+          if [ "$LOCAL_VERSION" = "$PUBLISHED" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Version $LOCAL_VERSION already published — skipping"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "Publishing $LOCAL_VERSION (current: $PUBLISHED)"
+          fi
+
       - name: Publish to npm
+        if: steps.version-check.outputs.skip == 'false'
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
