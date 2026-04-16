@@ -1,16 +1,19 @@
-<pre align="center">
-
-  ╔═╗ ╔════╗ ╔═══╗ ╔══╗╔══╗ ╔╗ ╔═══╗
-  ╠═╣   ╠╣   ║   ║ ║  ╚╝  ║ ║║ ║
-  ║ ║   ╚╝   ╚═══╝ ║      ║ ║║ ╚═══╝
-  ╔═══╗ ╔╗ ╔╗ ╔═══╗ ╔╗ ╔╗ ╔═══╗ ╔═══╗
-  ║   ║ ║║ ║║ ╠═══╝ ║║ ║║ ╠═══╝ ╚══╗║
-  ╚═══╝ ╚═══╝ ╚═══╝ ╚═══╝ ╚═══╝ ╚══╝╝
-
-  zero-contention · per-entity · lock-free
-  sequential processing for NestJS
-
+<div align="center">
+<table><tr><td>
+<pre>
+ ╔═╗ ╔════╗ ╔═══╗ ╔══╗╔══╗ ╔╗ ╔═══╗
+ ╠═╣   ╠╣   ║   ║ ║  ╚╝  ║ ║║ ║
+ ║ ║   ╚╝   ╚═══╝ ║      ║ ║║ ╚═══╝
+ ╔═══╗ ╔╗ ╔╗ ╔═══╗ ╔╗ ╔╗ ╔═══╗ ╔═══╗
+ ║   ║ ║║ ║║ ╠═══╝ ║║ ║║ ╠═══╝ ╚══╗║
+ ╚═══╝ ╚═══╝ ╚═══╝ ╚═══╝ ╚═══╝ ╚══╝╝
 </pre>
+</td></tr></table>
+
+<strong>zero-contention · per-entity · lock-free</strong><br>
+sequential processing for NestJS
+
+</div>
 
 <p align="center">
   <img src="https://img.shields.io/npm/v/atomic-queues?style=flat-square&color=cb3837" alt="npm version" />
