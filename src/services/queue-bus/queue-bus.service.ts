@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger, Optional, Type } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { QueueManagerService } from '../queue-manager/queue-manager.service';
+import { QueueEventsManagerService } from '../queue-events-manager/queue-events-manager.service';
 import {
   getWorkerProcessorMetadata,
   WorkerProcessorOptions,
@@ -72,6 +73,7 @@ export class QueueBus {
 
   constructor(
     private readonly queueManager: QueueManagerService,
+    @Optional() private readonly queueEventsManager?: QueueEventsManagerService,
     @Optional() @Inject(ATOMIC_QUEUES_CONFIG) config?: IAtomicQueuesModuleConfig,
   ) {
     this.config = config;
@@ -125,7 +127,7 @@ export class QueueBus {
     // Get entity config for this processor's entityType
     const entityConfig = this.getEntityConfig(options.entityType);
 
-    return new QueueTarget(this.queueManager, processorClass, options, entityConfig);
+    return new QueueTarget(this.queueManager, processorClass, options, entityConfig, this.queueEventsManager);
   }
 
   /**
@@ -146,7 +148,7 @@ export class QueueBus {
    */
   forEntity(entityType: string): EntityTarget {
     const entityConfig = this.getEntityConfig(entityType);
-    return new EntityTarget(this.queueManager, entityType, entityConfig, this.keyPrefix);
+    return new EntityTarget(this.queueManager, entityType, entityConfig, this.keyPrefix, this.queueEventsManager);
   }
 
   /**
