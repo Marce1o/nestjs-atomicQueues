@@ -1,16 +1,23 @@
+<pre align="center">
+
+  ╔═╗ ╔════╗ ╔═══╗ ╔══╗╔══╗ ╔╗ ╔═══╗
+  ╠═╣   ╠╣   ║   ║ ║  ╚╝  ║ ║║ ║
+  ║ ║   ╚╝   ╚═══╝ ║      ║ ║║ ╚═══╝
+  ╔═══╗ ╔╗ ╔╗ ╔═══╗ ╔╗ ╔╗ ╔═══╗ ╔═══╗
+  ║   ║ ║║ ║║ ╠═══╝ ║║ ║║ ╠═══╝ ╚══╗║
+  ╚═══╝ ╚═══╝ ╚═══╝ ╚═══╝ ╚═══╝ ╚══╝╝
+
+  zero-contention · per-entity · lock-free
+  sequential processing for NestJS
+
+</pre>
+
 <p align="center">
   <img src="https://img.shields.io/npm/v/atomic-queues?style=flat-square&color=cb3837" alt="npm version" />
   <img src="https://img.shields.io/badge/NestJS-11-ea2845?style=flat-square&logo=nestjs" alt="NestJS 11" />
   <img src="https://img.shields.io/badge/BullMQ-5-3c873a?style=flat-square" alt="BullMQ 5" />
   <img src="https://img.shields.io/badge/Redis-7-dc382d?style=flat-square&logo=redis&logoColor=white" alt="Redis 7" />
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT License" />
-</p>
-
-<h1 align="center">atomic-queues</h1>
-
-<p align="center">
-  <strong>Zero-contention, per-entity sequential processing for NestJS.</strong><br/>
-  Distributed. Lock-free.
 </p>
 
 ---
