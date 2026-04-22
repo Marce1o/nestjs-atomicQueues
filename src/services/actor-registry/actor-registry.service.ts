@@ -89,15 +89,11 @@ export class ActorRegistry implements OnModuleInit, OnApplicationShutdown {
 
   private registerWithExecutor(): void {
     for (const [entityType, def] of this.definitions) {
-      const proxy: Record<string, Function> = {};
-
-      for (const [msgName, methodName] of def.handlerMap) {
-        proxy[methodName] = async (msgData: any) => {
-          return msgData;
-        };
-      }
-
-      this.handlerExecutor.registerActor(entityType, proxy, def.handlerMap);
+      this.handlerExecutor.registerActor(
+        entityType,
+        { _placeholder: true },
+        def.handlerMap,
+      );
     }
   }
 
@@ -109,7 +105,9 @@ export class ActorRegistry implements OnModuleInit, OnApplicationShutdown {
     let entry = this.instances.get(entityKey);
 
     if (!entry) {
-      const instance = Object.create(definition.targetClass.prototype);
+      // Use Reflect.construct to properly run the constructor so class field
+      // initializers (e.g. `private balance = 0`) are executed.
+      const instance = Reflect.construct(definition.targetClass, []);
 
       const persisted = this.config.entities?.[entityType]?.statePersistence !== false;
       if (persisted) {
