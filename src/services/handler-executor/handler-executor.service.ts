@@ -1,0 +1,164 @@
+import { Injectable, Logger, Type, OnModuleInit } from '@nestjs/common';
+import { DiscoveryService, ModuleRef } from '@nestjs/core';
+import { ISerializedMessage } from '../../domain';
+import { CommandDiscoveryService } from '../command-discovery';
+
+interface ICommandBus {
+  execute<T>(command: T): Promise<any>;
+}
+
+interface IQueryBus {
+  execute<T>(query: T): Promise<any>;
+}
+
+@Injectable()
+export class HandlerExecutor implements OnModuleInit {
+  private readonly logger = new Logger(HandlerExecutor.name);
+
+  private commandBus: ICommandBus | null = null;
+  private queryBus: IQueryBus | null = null;
+
+  private actorFactories = new Map<string, { create: () => any; handlers: Map<string, string> }>();
+  private commandRegistry = new Map<string, { targetClass: Type<any>; isQuery: boolean }>();
+  private commandDiscovery: any = null;
+
+  constructor(
+    private readonly commandDiscoveryService: CommandDiscoveryService,
+    private readonly discoveryService: DiscoveryService,
+    private readonly moduleRef: ModuleRef,
+  ) {}
+
+  async onModuleInit(): Promise<void> {
+    this.commandDiscovery = this.commandDiscoveryService;
+
+    try {
+      const { CommandBus, QueryBus } = await import('@nestjs/cqrs');
+      try {
+        const commandBus = this.moduleRef.get(CommandBus, { strict: false });
+        if (commandBus) {
+          this.commandBus = commandBus;
+          this.commandDiscoveryService.setCommandBus(commandBus);
+        }
+      } catch {}
+      try {
+        const queryBus = this.moduleRef.get(QueryBus, { strict: false });
+        if (queryBus) {
+          this.queryBus = queryBus;
+          this.commandDiscoveryService.setQueryBus(queryBus);
+        }
+      } catch {}
+    } catch {
+      this.logger.debug('@nestjs/cqrs not available — CQRS auto-wiring skipped');
+    }
+
+    this.discoverCqrsHandlers();
+  }
+
+  private discoverCqrsHandlers(): void {
+    const COMMAND_HANDLER_METADATA = '__commandHandler__';
+    const QUERY_HANDLER_METADATA = '__queryHandler__';
+    let commandCount = 0;
+    let queryCount = 0;
+
+    const providers = this.discoveryService.getProviders();
+    for (const wrapper of providers) {
+      const { metatype } = wrapper;
+      if (!metatype) continue;
+
+      const commandClass = Reflect.getMetadata(COMMAND_HANDLER_METADATA, metatype);
+      if (commandClass && typeof commandClass === 'function') {
+        if (!this.commandRegistry.has(commandClass.name)) {
+          this.registerCommand(commandClass.name, commandClass, false);
+          commandCount++;
+        }
+      }
+
+      const queryClass = Reflect.getMetadata(QUERY_HANDLER_METADATA, metatype);
+      if (queryClass && typeof queryClass === 'function') {
+        if (!this.commandRegistry.has(queryClass.name)) {
+          this.registerCommand(queryClass.name, queryClass, true);
+          queryCount++;
+        }
+      }
+    }
+
+    if (commandCount > 0 || queryCount > 0) {
+      this.logger.log(`Auto-discovered ${commandCount} CQRS commands and ${queryCount} queries`);
+    }
+  }
+
+  setCommandBus(bus: ICommandBus): void {
+    this.commandBus = bus;
+  }
+
+  setQueryBus(bus: IQueryBus): void {
+    this.queryBus = bus;
+  }
+
+  setCommandDiscovery(discovery: any): void {
+    this.commandDiscovery = discovery;
+  }
+
+  registerActor(
+    entityType: string,
+    actorInstance: any,
+    handlers: Map<string, string>,
+  ): void {
+    this.actorFactories.set(entityType, {
+      create: () => actorInstance,
+      handlers,
+    });
+  }
+
+  registerCommand(className: string, targetClass: Type<any>, isQuery: boolean): void {
+    this.commandRegistry.set(className, { targetClass, isQuery });
+  }
+
+  async execute(message: ISerializedMessage, entityKey: string): Promise<unknown> {
+    const { name, data, entityType, entityId } = message;
+
+    // 1. Try actor handler
+    const actorEntry = this.actorFactories.get(entityType);
+    if (actorEntry) {
+      const methodName = actorEntry.handlers.get(name);
+      if (methodName) {
+        const actor = actorEntry.create();
+        const msgInstance = { ...data };
+        return actor[methodName](msgInstance);
+      }
+    }
+
+    // 2. Try CommandDiscovery (@JobCommand / @JobQuery)
+    if (this.commandDiscovery) {
+      const fakeJob = { name, data, id: message.id };
+      const result = await this.commandDiscovery.executeJob(fakeJob, entityId, entityType);
+      if (result !== undefined || this.commandDiscovery.hasHandler(name, entityType)) {
+        return result;
+      }
+    }
+
+    // 3. Try QueueBus registry
+    const registryEntry = this.commandRegistry.get(name);
+    if (registryEntry) {
+      const { targetClass, isQuery } = registryEntry;
+      const instance = Object.assign(new targetClass(), data);
+
+      if (isQuery) {
+        if (!this.queryBus) {
+          this.logger.error(`QueryBus not set. Cannot execute query ${name}.`);
+          return null;
+        }
+        return this.queryBus.execute(instance);
+      } else {
+        if (!this.commandBus) {
+          this.logger.error(`CommandBus not set. Cannot execute command ${name}.`);
+          return null;
+        }
+        return this.commandBus.execute(instance);
+      }
+    }
+
+    this.logger.warn(`No handler found for message '${name}' on entity type '${entityType}'`);
+    return null;
+  }
+}

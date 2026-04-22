@@ -1,91 +1,44 @@
-import { Job } from 'bullmq';
-
 /**
- * Job data structure for atomic processing
+ * Serialized message stored in the entity log
  */
-export interface IAtomicJobData<T = unknown> {
-  /** Unique job identifier */
-  uuid: string;
-  /** Entity ID this job belongs to */
-  entityId: string;
-  /** Entity type (user, table, etc.) */
+export interface ISerializedMessage {
+  /** Unique message ID */
+  id: string;
+  /** Message class name (e.g., 'WithdrawCommand') */
+  name: string;
+  /** Serialized message data */
+  data: Record<string, any>;
+  /** Entity type */
   entityType: string;
-  /** Command/Query class name to execute */
-  commandName?: string;
-  /** Type of operation */
-  type: 'command' | 'query' | 'custom';
-  /** Payload data */
-  payload: T;
-  /** Additional metadata */
-  metadata?: Record<string, unknown>;
+  /** Entity ID */
+  entityId: string;
+  /** Whether this is a query (expects a reply) */
+  isQuery?: boolean;
+  /** Correlation ID for reply delivery */
+  correlationId?: string;
+  /** Timestamp when enqueued */
+  enqueuedAt: number;
+  /** Number of attempts so far */
+  attempts: number;
+  /** Max attempts allowed */
+  maxAttempts: number;
 }
 
 /**
- * Job processing result
+ * Reference returned from enqueue operations
  */
-export interface IJobResult<T = unknown> {
-  success: boolean;
-  result?: T;
-  error?: string;
-  processingTime: number;
+export interface IMessageRef {
+  /** Unique message ID */
+  id: string;
+  /** Entity key (entityType:entityId) */
+  entityKey: string;
 }
 
 /**
- * Job processor function type
+ * Result of a dispatched message
  */
-export type JobProcessor<T = unknown, R = unknown> = (
-  job: Job<IAtomicJobData<T>>,
-) => Promise<R>;
-
-/**
- * Job processor registry interface
- */
-export interface IJobProcessorRegistry {
-  /**
-   * Register a processor for a job type
-   */
-  registerProcessor<T, R>(
-    jobType: string,
-    processor: JobProcessor<T, R>,
-  ): void;
-
-  /**
-   * Get processor for a job type
-   */
-  getProcessor<T, R>(jobType: string): JobProcessor<T, R> | undefined;
-
-  /**
-   * Check if processor exists
-   */
-  hasProcessor(jobType: string): boolean;
-
-  /**
-   * Get all registered job types
-   */
-  getRegisteredTypes(): string[];
-}
-
-/**
- * Dynamic command/query executor interface
- */
-export interface IDynamicExecutor {
-  /**
-   * Execute a command by class name
-   */
-  executeCommand<T>(commandName: string, payload: T): Promise<unknown>;
-
-  /**
-   * Execute a query by class name
-   */
-  executeQuery<T>(queryName: string, payload: T): Promise<unknown>;
-
-  /**
-   * Register command module for dynamic loading
-   */
-  registerCommandModule(modulePath: string): void;
-
-  /**
-   * Register query module for dynamic loading
-   */
-  registerQueryModule(modulePath: string): void;
+export interface IDispatchResult {
+  entityKey: string;
+  message: ISerializedMessage;
+  ownerToken: string;
 }

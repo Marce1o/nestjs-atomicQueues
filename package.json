@@ -1,7 +1,7 @@
 {
   "name": "atomic-queues",
-  "version": "1.6.2",
-  "description": "A plug-and-play NestJS library for atomic process handling per entity with BullMQ, Redis distributed locking, and dynamic worker management",
+  "version": "2.0.0",
+  "description": "Distributed virtual actor runtime for Node.js — sequential per entity, parallel across entities, zero contention",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
@@ -32,11 +32,11 @@
   "keywords": [
     "nestjs",
     "queue",
-    "bullmq",
     "redis",
     "atomic",
-    "distributed-lock",
-    "worker-management",
+    "virtual-actor",
+    "actor-model",
+    "distributed",
     "cqrs"
   ],
   "author": "",
@@ -44,12 +44,18 @@
   "peerDependencies": {
     "@nestjs/common": ">=10.0.0",
     "@nestjs/core": ">=10.0.0",
-    "@nestjs/cqrs": ">=10.0.0",
     "reflect-metadata": ">=0.1.13",
     "rxjs": ">=7.0.0"
   },
+  "peerDependenciesMeta": {
+    "@nestjs/cqrs": {
+      "optional": true
+    },
+    "zod": {
+      "optional": true
+    }
+  },
   "devDependencies": {
-    "@nestjs/bullmq": "^11.0.4",
     "@nestjs/common": "^11.1.19",
     "@nestjs/core": "^11.1.19",
     "@nestjs/cqrs": "^11.0.3",
@@ -58,7 +64,6 @@
     "@types/uuid": "^10.0.0",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
     "@typescript-eslint/parser": "^6.0.0",
-    "bullmq": "^5.74.1",
     "eslint": "^8.0.0",
     "ioredis": "^5.10.1",
     "jest": "^29.5.0",
@@ -71,9 +76,6 @@
     "uuid": "^9.0.1"
   },
   "dependencies": {
-    "@nestjs/bullmq": "^11.0.4",
-    "bullmq": "^5.74.1",
-    "class-transformer": "^0.5.1",
     "ioredis": "^5.10.1",
     "uuid": "^9.0.1"
   }

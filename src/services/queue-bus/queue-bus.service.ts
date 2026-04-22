@@ -1,305 +1,137 @@
-import { Inject, Injectable, Logger, Optional, Type } from '@nestjs/common';
-import { Job } from 'bullmq';
-import { QueueManagerService } from '../queue-manager/queue-manager.service';
-import { QueueEventsManagerService } from '../queue-events-manager/queue-events-manager.service';
+import { Injectable, Logger, Inject, Type } from '@nestjs/common';
+import Redis from 'ioredis';
+import { v4 as uuidv4 } from 'uuid';
 import {
-  getWorkerProcessorMetadata,
-  WorkerProcessorOptions,
-  getEntityType,
-} from '../../decorators';
-import { IAtomicQueuesModuleConfig } from '../../domain/interfaces';
-import { ATOMIC_QUEUES_CONFIG } from '../constants';
+  IAtomicQueuesModuleConfig,
+  ISerializedMessage,
+  IMessageRef,
+} from '../../domain';
+import { getEntityType } from '../../decorators';
 import { resolveKeyPrefix } from '../../utils';
-import { QueueBusExecuteOptions, EnqueueOptions, CommandRegistryEntry } from './queue-bus.types';
-import { getJobName, extractData, extractEntityId } from './queue-bus.utils';
-import { QueueTarget } from './queue-target';
-import { EntityTarget } from './entity-target';
+import { LogService } from '../log';
+import { ExecutorPoolService } from '../executor-pool';
+import { HandlerExecutor } from '../handler-executor';
+import { ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG } from '../constants';
+import { getJobName, extractData, extractEntityIdExplicit } from './queue-bus.utils';
 
-/**
- * QueueBus
- *
- * A bus that works like CommandBus/QueryBus but instead of executing
- * commands/queries directly, it adds them to a BullMQ queue for
- * async processing by a worker.
- *
- * Key Features:
- * - No decorators needed on commands/queries
- * - Job name = class name (MakeBetCommand)
- * - Worker looks up class by name and instantiates from job.data
- * - Works with @nestjs/cqrs CommandBus/QueryBus on worker side
- * - Fluent API: queueBus.forProcessor(Processor).enqueue(command)
- * - Zero-boilerplate API: queueBus.forEntity('type').enqueue(command)
- * - Direct routing: queueBus.enqueue(command) with @EntityType decorator
- *
- * @example
- * ```typescript
- * // Option 1: With @WorkerProcessor class (full control)
- * await this.queueBus
- *   .forProcessor(TableWorkerProcessor)
- *   .enqueue(new MakeBetCommand(tableId, bets, player));
- *
- * // Option 2: With entity type (zero boilerplate)
- * await this.queueBus
- *   .forEntity('table')
- *   .enqueue(new MakeBetCommand(tableId, bets, player));
- *
- * // Option 3: Direct enqueue with @EntityType on command
- * @EntityType('table')
- * class MakeBetCommand { ... }
- *
- * await this.queueBus.enqueue(new MakeBetCommand(tableId, bets, player));
- * ```
- */
 @Injectable()
 export class QueueBus {
   private readonly logger = new Logger(QueueBus.name);
-
-  /**
-   * Cache of processor options by class
-   */
-  private readonly processorCache = new Map<Type<any>, WorkerProcessorOptions>();
-
-  /**
-   * Global registry of command/query classes
-   * Key: class name (e.g., 'MakeBetCommand')
-   * Value: registry entry with class reference
-   */
-  private static readonly globalRegistry = new Map<string, CommandRegistryEntry>();
-
-  /**
-   * Module config for entity defaults
-   */
-  private readonly config: IAtomicQueuesModuleConfig | undefined;
+  private readonly keyPrefix: string;
 
   constructor(
-    private readonly queueManager: QueueManagerService,
-    @Optional() private readonly queueEventsManager?: QueueEventsManagerService,
-    @Optional() @Inject(ATOMIC_QUEUES_CONFIG) config?: IAtomicQueuesModuleConfig,
+    @Inject(ATOMIC_QUEUES_REDIS) private readonly redis: Redis,
+    @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
+    private readonly logService: LogService,
+    private readonly executorPool: ExecutorPoolService,
+    private readonly handlerExecutor: HandlerExecutor,
   ) {
-    this.config = config;
+    this.keyPrefix = resolveKeyPrefix(config);
   }
 
-  /**
-   * Get key prefix from config using resolveKeyPrefix utility
-   */
-  private get keyPrefix(): string {
-    return resolveKeyPrefix(this.config ?? {});
-  }
-
-  /**
-   * Get entity config from module config
-   */
-  private getEntityConfig(entityType: string) {
-    return this.config?.entities?.[entityType];
-  }
-
-  /**
-   * Target a specific processor's queue for enqueueing commands.
-   * Use this when you have a @WorkerProcessor class with full config control.
-   *
-   * @param processorClass - The @WorkerProcessor decorated class
-   * @returns QueueTarget builder for fluent API
-   *
-   * @example
-   * await this.queueBus
-   *   .forProcessor(TableWorkerProcessor)
-   *   .enqueue(new MakeBetCommand(tableId, bets, player));
-   */
-  forProcessor(processorClass: Type<any>): QueueTarget {
-    // Check cache first
-    let options = this.processorCache.get(processorClass);
-
-    if (!options) {
-      // Get metadata from @WorkerProcessor decorator
-      options = getWorkerProcessorMetadata(processorClass);
-
-      if (!options) {
-        throw new Error(
-          `Class ${processorClass.name} is not decorated with @WorkerProcessor. ` +
-          `Cannot determine queue configuration.`,
-        );
-      }
-
-      // Cache for future use
-      this.processorCache.set(processorClass, options);
-    }
-
-    // Get entity config for this processor's entityType
-    const entityConfig = this.getEntityConfig(options.entityType);
-
-    return new QueueTarget(this.queueManager, processorClass, options, entityConfig, this.queueEventsManager);
-  }
-
-  /**
-   * Target a specific entity type's queue without needing a @WorkerProcessor class.
-   * This is the zero-boilerplate approach when you've configured entity defaults
-   * in the module config.
-   *
-   * @param entityType - The entity type (e.g., 'table', 'account')
-   * @returns EntityTarget builder for fluent API
-   *
-   * @example
-   * // With module config:
-   * // entities: { table: { defaultEntityId: 'tableId' } }
-   *
-   * await this.queueBus
-   *   .forEntity('table')
-   *   .enqueue(new MakeBetCommand(tableId, bets, player));
-   */
-  forEntity(entityType: string): EntityTarget {
-    const entityConfig = this.getEntityConfig(entityType);
-    return new EntityTarget(this.queueManager, entityType, entityConfig, this.keyPrefix, this.queueEventsManager);
-  }
-
-  /**
-   * Direct enqueue using @EntityType decorator on the command class.
-   * This is the most ergonomic approach for commands that have explicit routing.
-   *
-   * @param commandOrQuery - The command or query instance (must have @EntityType decorator)
-   * @param options - Optional settings (entityId override, jobOptions)
-   * @returns The created BullMQ job
-   *
-   * @example
-   * @EntityType('account')
-   * class WithdrawCommand {
-   *   @QueueEntityId()
-   *   accountId: string;
-   *   // ...
-   * }
-   *
-   * await this.queueBus.enqueue(new WithdrawCommand(accountId, amount));
-   */
   async enqueue<T extends object>(
     commandOrQuery: T,
-    options?: EnqueueOptions,
-  ): Promise<Job> {
+    options?: { entityId?: string },
+  ): Promise<IMessageRef> {
     const entityType = getEntityType(commandOrQuery.constructor);
-
     if (!entityType) {
       throw new Error(
-        `Cannot enqueue ${commandOrQuery.constructor.name} directly. ` +
-        `Add @EntityType('type') decorator to the class, ` +
-        `or use .forProcessor(ProcessorClass).enqueue() or .forEntity('type').enqueue() instead.`,
+        `Cannot enqueue ${commandOrQuery.constructor.name}. Add @EntityType('type') decorator.`,
       );
     }
 
-    return this.forEntity(entityType).enqueue(commandOrQuery, options);
+    return this._enqueue(entityType, commandOrQuery, options?.entityId);
   }
 
-  /**
-   * Direct enqueue and wait using @EntityType decorator on the command class.
-   */
+  forEntity(entityType: string) {
+    const self = this;
+    return {
+      async enqueue<T extends object>(
+        commandOrQuery: T,
+        options?: { entityId?: string },
+      ): Promise<IMessageRef> {
+        return self._enqueue(entityType, commandOrQuery, options?.entityId);
+      },
+
+      async enqueueAndWait<T extends object, R = any>(
+        commandOrQuery: T,
+        options?: { entityId?: string; timeout?: number },
+      ): Promise<R> {
+        return self._enqueueAndWait(entityType, commandOrQuery, options?.entityId, options?.timeout);
+      },
+
+      async enqueueBulk<T extends object>(
+        commands: T[],
+        options?: { entityId?: string },
+      ): Promise<IMessageRef[]> {
+        const refs: IMessageRef[] = [];
+        for (const cmd of commands) {
+          refs.push(await self._enqueue(entityType, cmd, options?.entityId));
+        }
+        await self.executorPool.tickle();
+        return refs;
+      },
+    };
+  }
+
   async enqueueAndWait<T extends object, R = any>(
     commandOrQuery: T,
-    options?: EnqueueOptions & { timeout?: number },
+    options?: { entityId?: string; timeout?: number },
   ): Promise<R> {
     const entityType = getEntityType(commandOrQuery.constructor);
-
     if (!entityType) {
       throw new Error(
-        `Cannot enqueue ${commandOrQuery.constructor.name} directly. ` +
-        `Add @EntityType('type') decorator to the class, ` +
-        `or use .forProcessor(ProcessorClass).enqueueAndWait() or .forEntity('type').enqueueAndWait() instead.`,
+        `Cannot enqueue ${commandOrQuery.constructor.name}. Add @EntityType('type') decorator.`,
       );
     }
-
-    return this.forEntity(entityType).enqueueAndWait(commandOrQuery, options);
+    return this._enqueueAndWait(entityType, commandOrQuery, options?.entityId, options?.timeout);
   }
 
-  /**
-   * Register a command class for worker-side instantiation
-   *
-   * @example
-   * QueueBus.register(MakeBetCommand);
-   * QueueBus.register(GetTableStateQuery, true); // isQuery = true
-   */
+  // =========================================================================
+  // STATIC REGISTRY
+  // =========================================================================
+
+  private static readonly globalRegistry = new Map<string, { className: string; targetClass: Type<any>; isQuery: boolean }>();
+
   static register(targetClass: Type<any>, isQuery = false): void {
-    const entry: CommandRegistryEntry = {
+    QueueBus.globalRegistry.set(targetClass.name, {
       className: targetClass.name,
       targetClass,
       isQuery,
-    };
-    QueueBus.globalRegistry.set(targetClass.name, entry);
+    });
   }
 
-  /**
-   * Register multiple commands at once
-   */
   static registerCommands(...commands: Type<any>[]): void {
-    for (const cmd of commands) {
-      QueueBus.register(cmd, false);
-    }
+    commands.forEach(cmd => QueueBus.register(cmd, false));
   }
 
-  /**
-   * Register multiple queries at once
-   */
   static registerQueries(...queries: Type<any>[]): void {
-    for (const query of queries) {
-      QueueBus.register(query, true);
-    }
+    queries.forEach(q => QueueBus.register(q, true));
   }
 
-  /**
-   * Get a registered class by name
-   */
-  static getRegistered(className: string): CommandRegistryEntry | undefined {
+  static getRegistered(className: string) {
     return QueueBus.globalRegistry.get(className);
   }
 
-  /**
-   * Check if a class name is registered
-   */
   static isRegistered(className: string): boolean {
     return QueueBus.globalRegistry.has(className);
   }
 
-  /**
-   * Get all registered entries
-   */
-  static getAllRegistered(): Map<string, CommandRegistryEntry> {
+  static getAllRegistered() {
     return new Map(QueueBus.globalRegistry);
   }
 
-  /**
-   * Auto-discover and register all commands/queries from CQRS handlers
-   *
-   * This method discovers all classes decorated with @CommandHandler and @QueryHandler
-   * from @nestjs/cqrs and automatically registers them with QueueBus.
-   *
-   * Call this during module init to enable zero-config command registration.
-   *
-   * @param discoveryService - NestJS DiscoveryService
-   * @returns Number of commands and queries discovered
-   *
-   * @example
-   * ```typescript
-   * @Module({})
-   * export class MyModule implements OnModuleInit {
-   *   constructor(private discoveryService: DiscoveryService) {}
-   *
-   *   onModuleInit() {
-   *     const { commands, queries } = QueueBus.discoverFromCqrs(this.discoveryService);
-   *     console.log(`Auto-registered ${commands} commands, ${queries} queries`);
-   *   }
-   * }
-   * ```
-   */
   static discoverFromCqrs(discoveryService: any): { commands: number; queries: number } {
-    // CQRS metadata keys (from @nestjs/cqrs)
     const COMMAND_HANDLER_METADATA = '__commandHandler__';
     const QUERY_HANDLER_METADATA = '__queryHandler__';
-
     let commandCount = 0;
     let queryCount = 0;
 
     const providers = discoveryService.getProviders?.() ?? [];
-
     for (const wrapper of providers) {
       const { metatype } = wrapper;
       if (!metatype) continue;
 
-      // Check for @CommandHandler
       const commandClass = Reflect.getMetadata(COMMAND_HANDLER_METADATA, metatype);
       if (commandClass && typeof commandClass === 'function') {
         if (!QueueBus.globalRegistry.has(commandClass.name)) {
@@ -308,7 +140,6 @@ export class QueueBus {
         }
       }
 
-      // Check for @QueryHandler
       const queryClass = Reflect.getMetadata(QUERY_HANDLER_METADATA, metatype);
       if (queryClass && typeof queryClass === 'function') {
         if (!QueueBus.globalRegistry.has(queryClass.name)) {
@@ -321,94 +152,109 @@ export class QueueBus {
     return { commands: commandCount, queries: queryCount };
   }
 
-  /**
-   * Execute a command/query by adding it to a queue
-   *
-   * @deprecated Use .forProcessor(ProcessorClass).enqueue(command) instead
-   *
-   * @param queuePattern - Queue name pattern with {entityId} placeholder
-   * @param commandOrQuery - The command/query instance to execute
-   * @param options - Optional settings (entityId, jobOptions)
-   * @returns The created BullMQ job
-   */
-  async execute<T extends object>(
-    queuePattern: string,
+  // =========================================================================
+  // PRIVATE
+  // =========================================================================
+
+  private async _enqueue<T extends object>(
+    entityType: string,
     commandOrQuery: T,
-    options?: QueueBusExecuteOptions,
-  ): Promise<Job> {
+    entityIdOverride?: string,
+  ): Promise<IMessageRef> {
     const jobName = getJobName(commandOrQuery);
     const data = extractData(commandOrQuery);
-    const entityId = options?.entityId ?? extractEntityId(data, this.logger);
-
-    // Resolve queue name with entityId
-    const queueName = this.resolveQueueName(queuePattern, entityId);
-
-    // Get or create the queue
-    const queue = this.queueManager.getOrCreateQueue(queueName);
-
-    this.logger.debug(
-      `Adding job ${jobName} to queue ${queueName} with entityId=${entityId}`,
-    );
-
-    // Add job to queue
-    return queue.add(jobName, data, options?.jobOptions);
-  }
-
-  /**
-   * Execute and wait for result (if supported by worker)
-   * Uses BullMQ's waitUntilFinished
-   *
-   * @deprecated Use .forProcessor(ProcessorClass).enqueueAndWait(command) instead
-   */
-  async executeAndWait<T extends object, R = any>(
-    queuePattern: string,
-    commandOrQuery: T,
-    options?: QueueBusExecuteOptions & { timeout?: number },
-  ): Promise<R> {
-    const job = await this.execute(queuePattern, commandOrQuery, options);
-
-    const queueEvents = await this.queueManager.getQueueEvents(
-      this.resolveQueueName(
-        queuePattern,
-        options?.entityId ?? extractEntityId(extractData(commandOrQuery), this.logger),
-      ),
-    );
-
-    return job.waitUntilFinished(queueEvents, options?.timeout) as Promise<R>;
-  }
-
-  /**
-   * Add multiple commands/queries to the same queue in bulk
-   *
-   * @deprecated Use .forProcessor(ProcessorClass).enqueueBulk(commands) instead
-   */
-  async executeBulk<T extends object>(
-    queuePattern: string,
-    commandsOrQueries: T[],
-    options?: QueueBusExecuteOptions,
-  ): Promise<Job[]> {
-    if (commandsOrQueries.length === 0) return [];
-
-    const entityId = options?.entityId ?? extractEntityId(
-      extractData(commandsOrQueries[0]),
+    const entityConfig = this.config.entities?.[entityType];
+    const entityId = entityIdOverride ?? extractEntityIdExplicit(
+      commandOrQuery,
+      data,
+      undefined,
+      entityConfig,
       this.logger,
     );
-    const queueName = this.resolveQueueName(queuePattern, entityId);
-    const queue = this.queueManager.getOrCreateQueue(queueName);
 
-    const bulkJobs = commandsOrQueries.map((cmd) => ({
-      name: getJobName(cmd),
-      data: extractData(cmd),
-      opts: options?.jobOptions,
-    }));
+    const entityKey = `${entityType}:${entityId}`;
+    const retryConfig = entityConfig?.retry ?? this.config.retry;
 
-    return queue.addBulk(bulkJobs);
+    const message: ISerializedMessage = {
+      id: uuidv4(),
+      name: jobName,
+      data,
+      entityType,
+      entityId,
+      enqueuedAt: Date.now(),
+      attempts: 0,
+      maxAttempts: retryConfig?.maxAttempts ?? 3,
+    };
+
+    await this.logService.append(entityKey, message);
+    await this.executorPool.tickle();
+
+    return { id: message.id, entityKey };
   }
 
-  /**
-   * Resolve queue name by replacing {entityId} placeholder
-   */
-  private resolveQueueName(pattern: string, entityId: string): string {
-    return pattern.replace('{entityId}', entityId);
+  private async _enqueueAndWait<T extends object, R = any>(
+    entityType: string,
+    commandOrQuery: T,
+    entityIdOverride?: string,
+    timeout = 30000,
+  ): Promise<R> {
+    const jobName = getJobName(commandOrQuery);
+    const data = extractData(commandOrQuery);
+    const entityConfig = this.config.entities?.[entityType];
+    const entityId = entityIdOverride ?? extractEntityIdExplicit(
+      commandOrQuery,
+      data,
+      undefined,
+      entityConfig,
+      this.logger,
+    );
+
+    const entityKey = `${entityType}:${entityId}`;
+    const correlationId = uuidv4();
+    const retryConfig = entityConfig?.retry ?? this.config.retry;
+
+    const message: ISerializedMessage = {
+      id: uuidv4(),
+      name: jobName,
+      data,
+      entityType,
+      entityId,
+      isQuery: true,
+      correlationId,
+      enqueuedAt: Date.now(),
+      attempts: 0,
+      maxAttempts: retryConfig?.maxAttempts ?? 3,
+    };
+
+    const resultChannel = `${this.keyPrefix}:results:${correlationId}`;
+    const subscriber = this.redis.duplicate();
+
+    try {
+      const resultPromise = new Promise<R>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(new Error(`enqueueAndWait timeout after ${timeout}ms for ${jobName} on ${entityKey}`));
+        }, timeout);
+
+        subscriber.subscribe(resultChannel).then(() => {
+          subscriber.on('message', (_ch: string, payload: string) => {
+            clearTimeout(timer);
+            const parsed = JSON.parse(payload);
+            if (parsed.error) {
+              reject(new Error(parsed.error));
+            } else {
+              resolve(parsed.result);
+            }
+          });
+        });
+      });
+
+      await this.logService.append(entityKey, message);
+      await this.executorPool.tickle();
+
+      return await resultPromise;
+    } finally {
+      await subscriber.unsubscribe(resultChannel);
+      await subscriber.quit();
+    }
   }
 }
