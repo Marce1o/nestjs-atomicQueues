@@ -5,6 +5,72 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-04-22
+
+### ⚠ BREAKING CHANGES
+
+- **BullMQ removed entirely.** The library no longer depends on `bullmq` or `@nestjs/bullmq`. All queue operations are now pure Redis (lists + Lua scripts + pub/sub).
+- **Workers removed.** There are no per-entity workers, no heartbeats, no idle timeouts, no scaling cycles. A shared executor pool dispatches messages via atomic Redis gates.
+- **`@WorkerProcessor` removed.** Use `@Actor` for stateful entity processing or configure entity defaults in the module config for stateless handlers.
+- **`@EntityScaler` and all scaling decorators removed.** `@GetActiveEntities`, `@GetDesiredWorkerCount`, `@OnSpawnWorker`, `@OnTerminateWorker` — all gone. No workers means nothing to scale.
+- **`@JobHandler` removed.** Use `@On(MessageClass)` on actor methods, or `@CommandHandler`/`@QueryHandler` from `@nestjs/cqrs`.
+- **`.forProcessor(ProcessorClass)` removed from QueueBus.** Use `.forEntity('type')` instead.
+- **`@nestjs/cqrs` is now an optional peer dependency.** Only required if using the CQRS surface (`@JobCommand`, `@JobQuery`, `@CommandHandler`, `@QueryHandler`).
+- **Return type of `enqueue()` changed.** Returns `IMessageRef` (`{ id, entityKey }`) instead of a BullMQ `Job` object.
+- **16 services reduced to 12.** Deleted: `WorkerManagerService`, `CronManagerService`, `SpawnQueueService`, `ServiceQueueManager`, `IndexManagerService`, `QueueEventsManagerService`, `ScalingRegistrationService`, `WorkerFactoryService`, `QueueManagerService`, `ResourceLockService`.
+
+### Added
+
+- **Dispatch-gate execution model.** Per-entity Redis gates (`SET NX EX`) ensure single-writer semantics cluster-wide. No contention, no retry storms, no split-brain.
+- **Shared executor pool (`ExecutorPoolService`).** A configurable pool of concurrent executors per node, dispatching messages from any ready entity. No per-entity workers to spawn or manage.
+- **Atomic Lua scheduler (`SchedulerService`).** A single Lua script atomically picks an entity from the ready set, acquires its gate, and pops the next message. Zero race conditions.
+- **Virtual actor surface (`@Actor`, `@On`).** Stateful entity classes with per-message-type handlers. Actor instances are virtual — activated on demand, evicted on idle, state persisted to Redis by default.
+- **`ActorSystem` service.** Public API for the actor surface: `send()`, `sendAndWait()`.
+- **`ActorRegistry` service.** Discovers `@Actor` classes at boot, manages per-entity instances, handles state persistence and idle eviction.
+- **`ResultCollector` service.** Single multiplexed Redis subscriber for all `enqueueAndWait`/`sendAndWait` calls. Replaces the previous per-call `redis.duplicate()` pattern. One connection handles unlimited concurrent result waits.
+- **Distributed contract registry (`RegistryService`).** Optional. On enable, each node publishes its entity types and accepted messages to Redis. Other nodes discover and validate messages at the call site before enqueue. Supports co-ownership (multiple services handling the same entity type).
+- **`@Schema(zodSchema)` decorator.** Attaches a Zod schema to message classes. The registry serializes it to JSON Schema and validates payloads on send when `schemaValidation: true`.
+- **Codegen CLI (`npx atomic-queues generate`).** Reads the live registry from Redis and generates TypeScript interfaces (`--ts`) or JSON Schema (`--json-schema`) for all registered entities and messages. Also supports `--snapshot` for full registry export.
+- **Wire protocol documentation (`WIRE-PROTOCOL.md`).** Complete specification of the Redis key layout and command sequences. Any language with a Redis client can be a first-class citizen — three Redis commands to enqueue a message.
+- **Per-entity-type configuration.** `gateTTL`, `retry`, `actorIdleTimeout`, `statePersistence` — configurable per entity type in the module config.
+- **`HandlerExecutor` service.** Unified handler routing: tries `@Actor` → `@JobCommand`/`@JobQuery` → `QueueBus` registry → CQRS `CommandBus`/`QueryBus`. Single dispatch pipeline for all three surfaces.
+
+### Changed
+
+- **`QueueBus.enqueue()` internals.** Now writes to a Redis list (message log) instead of a BullMQ queue. Public API unchanged.
+- **`QueueBus.enqueueAndWait()` internals.** Now uses `ResultCollector` (shared subscriber) instead of spawning a per-call Redis connection.
+- **`IAtomicQueuesModuleConfig` simplified.** Removed `enableCronManager`, `cronInterval`, `workerDefaults`, `serviceQueue`. Added `executor`, `registry`, `retry`.
+- **`IEntityConfig` simplified.** Removed `queueName`, `workerName`, `workerConfig`, `maxWorkersPerEntity`, `idleTimeoutSeconds`, `autoSpawn`. Added `gateTTL`, `retry`, `actorIdleTimeout`, `statePersistence`.
+- **Handler discovery.** `HandlerExecutor` now auto-discovers `@CommandHandler`/`@QueryHandler` from `@nestjs/cqrs` and wires `CommandBus`/`QueryBus` automatically if the CQRS module is present.
+
+### Removed
+
+- `bullmq` dependency
+- `@nestjs/bullmq` dependency
+- `WorkerManagerService` — no workers
+- `CronManagerService` — no scaling cycles
+- `SpawnQueueService` — no worker spawning
+- `ServiceQueueManager` — no service queue
+- `IndexManagerService` — no indices to track
+- `QueueEventsManagerService` — no BullMQ events
+- `ScalingRegistrationService` — no scaling
+- `WorkerFactoryService` — no workers to create
+- `QueueManagerService` — replaced by `LogService`
+- `ResourceLockService` — removed (was standalone utility)
+- `@WorkerProcessor` decorator
+- `@JobHandler` decorator
+- `@EntityScaler` decorator
+- `@GetActiveEntities` decorator
+- `@GetDesiredWorkerCount` decorator
+- `@OnSpawnWorker` decorator
+- `@OnTerminateWorker` decorator
+- `@AtomicProcessor` legacy decorator
+- `@JobType` legacy decorator
+- `@InjectAtomicQueue` legacy decorator
+- All worker, scaling, lock, queue, event, process, and index-tracking interfaces from `domain/interfaces/`
+
+---
+
 ## [1.6.0] - 2026-04-16
 
 ### Added
@@ -16,178 +82,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Modular project structure** — split 3 god-files into focused, single-responsibility modules:
-  - `domain/interfaces.ts` (950 lines) → 11 focused interface files under `domain/interfaces/`
-  - `decorators/decorators.ts` (915 lines) → 11 focused files (constants, interfaces, entity/worker/scaler/job/legacy decorators, metadata readers, type guards)
-  - `helpers.ts` (286 lines) → `job.utils.ts`, `async.utils.ts`, `naming.utils.ts`, `rate-limit.utils.ts`
-- **Decomposed `ProcessorDiscoveryService`** (968-line god class) into 5 focused services:
-  - `ProcessorRegistry` — state management for processors/scalers/active workers
-  - `DecoratorDiscoveryService` — NestJS provider scanning for decorated classes
-  - `WorkerFactoryService` — worker creation and job processing pipeline
-  - `ScalingRegistrationService` — cron/spawn/queue-events registration
-  - `ProcessorDiscoveryService` — slim orchestrator (~250 lines)
-- **Split `queue-bus.service.ts`** (855 lines) into `queue-bus.types.ts`, `queue-bus.utils.ts`, `queue-target.ts`, `entity-target.ts`, `queue-bus.service.ts`
-- **Split `service-queue`** types into `service-queue.types.ts`
-- **DRY cron-manager** — unified duplicated idle worker termination logic into `terminateIdleWorkers()`
-- **Bundled BullMQ/ioredis/\@nestjs/bullmq** as regular dependencies — install is now just `npm install atomic-queues`
-- **README improvements** — removed unsubstantiated benchmark numbers, added `forRootAsync` example, documented `@QueueEntity` two-argument shorthand, explained `defaultEntityId` fallback, simplified install instructions
+- **Modular project structure** — split 3 god-files into focused, single-responsibility modules
+- **Decomposed `ProcessorDiscoveryService`** (968-line god class) into 5 focused services
+- **Split `queue-bus.service.ts`** (855 lines) into focused modules
+- **Bundled BullMQ/ioredis/@nestjs/bullmq** as regular dependencies
 
 ### Fixed
 
-- **QueueBus `keyPrefix` defaulting to `'atomic'`** instead of `'aq'` — now uses `resolveKeyPrefix()` consistently
+- **QueueBus `keyPrefix` defaulting to `'atomic'`** instead of `'aq'`
 
 ### Upgraded
 
 - `@nestjs/bullmq` 10 → 11, `@nestjs/common` 10 → 11, `@nestjs/core` 10 → 11, `@nestjs/cqrs` 10 → 11
 - `bullmq` 5.1 → 5.74, `ioredis` 5.3 → 5.10, `typescript` 5.3 → 5.9
-- `ts-jest` 29.1 → 29.4, `@types/node` 20 → 25, `rxjs` 7.8.0 → 7.8.2
 
 ## [1.3.0] - 2026-01-06
 
 ### Added
 
-- **QueueBus** - A CQRS-style bus for adding commands/queries to queues
-  - `QueueBus.forProcessor(Processor).enqueue(command)` - Fluent API for enqueueing commands
-  - `QueueBus.registerCommands(...classes)` - Static registration of command classes
-  - `QueueBus.registerQueries(...classes)` - Static registration of query classes
-  - Queue name derived from `@WorkerProcessor` decorator - no manual patterns needed
-  - Job name automatically derived from class name (e.g., `MyCommand` → `'MyCommand'`)
-  - Full integration with `ProcessorDiscoveryService` for worker-side routing
+- **QueueBus** — CQRS-style bus for adding commands/queries to queues
+- **QueueTarget** — fluent builder for processor-targeted enqueueing
+- **EntityTarget** — zero-boilerplate entity-targeted enqueueing
+- **`@QueueEntity('type', 'prop')`** — combined decorator for entity type + ID
+- **`@QueueEntityId()`** — constructor parameter decorator support
+- **`@JobCommand` / `@JobQuery`** — auto-routing decorators
+- **`CommandDiscoveryService`** — auto-discovers `@JobCommand`/`@JobQuery` classes
+- **`QueueBus.discoverFromCqrs()`** — auto-registers `@CommandHandler`/`@QueryHandler`
 
-- **QueueTarget** - Fluent builder returned by `forProcessor()`
-  - `.enqueue(command, options?)` - Add single command to queue
-  - `.enqueueAndWait(command, options?)` - Add and wait for result
-  - `.enqueueBulk(commands[], options?)` - Add multiple commands
-
-- **QueueManagerService.getQueueEvents(name)** - Get `QueueEvents` instance for a queue
-
-### Changed
-
-- **ProcessorDiscoveryService** now supports QueueBus registry as additional routing option
-  - Job processing priority: `@JobHandler` → `@JobCommand`/`@JobQuery` → QueueBus registry → wildcard
-  - Commands in QueueBus registry are instantiated with entityId + job.data
-  - `setCommandBus()` / `setQueryBus()` methods for CQRS integration
-
-### Migration
-
-With QueueBus, you no longer need `@JobCommand` decorators OR job name enums:
-
-**Before (v1.2.0) - Manual queue patterns:**
-```typescript
-await queueBus.execute(
-  'entity:{entityId}:queue',
-  new MyCommand(entityId, data),
-  { entityId }
-);
-```
-
-**After (v1.3.0) - Fluent API with processor reference:**
-```typescript
-// Queue config pulled from @WorkerProcessor decorator
-await queueBus
-  .forProcessor(MyProcessor)
-  .enqueue(new MyCommand(entityId, data));
-// entityId auto-extracted from command properties
-```
-
-## [1.2.0] - 2026-01-06
+## [1.0.0] - 2025-11-28
 
 ### Added
 
-- **Zero-boilerplate CQRS integration** with `@JobCommand` and `@JobQuery` decorators
-  - `@JobCommand('job-name')` - Class decorator to route jobs directly to command classes
-  - `@JobQuery('job-name')` - Class decorator to route jobs directly to query classes
-  - Auto-derives job names from class names (e.g., `MySuperCommand` → `'my-super'`)
-  - Supports explicit job names and entity type scoping
-  - Constructor parameter extraction for automatic command instantiation
-
-- **CommandDiscoveryService** - Discovers and routes `@JobCommand`/`@JobQuery` decorated classes
-  - Automatic discovery of decorated command/query classes
-  - Job-to-command routing with automatic instantiation
-  - Entity ID injection as first constructor parameter
-  - Job data mapping to remaining constructor parameters
-  - Scoped routing support for entity-type-specific commands
-  - `setCommandBus()` / `setQueryBus()` for CQRS integration
-  - `getRegisteredJobNames()` for debugging/documentation
-
-### Changed
-
-- **ProcessorDiscoveryService** now integrates with `CommandDiscoveryService`
-  - Job processing priority: explicit `@JobHandler` → `@JobCommand`/`@JobQuery` → wildcard handler
-  - Seamless fallback to auto-routed commands when no explicit handler exists
-
-### Migration
-
-Commands decorated with `@JobCommand` no longer need explicit `@JobHandler` methods in processors:
-
-**Before (v1.1.0):**
-```typescript
-// In processor file - BOILERPLATE
-@JobHandler('process-order')
-async handleProcessOrder(job: Job, entityId: string) {
-  return this.commandBus.execute(
-    new ProcessOrderCommand(entityId, job.data.items, job.data.user)
-  );
-}
-```
-
-**After (v1.2.0):**
-```typescript
-// In command file - just add decorator
-@JobCommand('process-order')
-export class ProcessOrderCommand {
-  constructor(
-    public readonly entityId: string,  // ← entityId (auto-injected)
-    public readonly items: any[],      // ← from job.data.items
-    public readonly user: any,         // ← from job.data.user
-  ) {}
-}
-
-// Processor becomes nearly empty - just configuration
-@WorkerProcessor({ entityType: 'order', ... })
-export class OrderProcessor {
-  @JobHandler('*')
-  handleUnmapped(job: Job) { /* fallback */ }
-}
-```
-
-## [1.1.0] - 2026-01-06
-
-### Added
-
-- **Decorator-based API** for declarative worker and job handler configuration
-  - `@WorkerProcessor(options)` - Class decorator to define a worker processor for an entity type
-  - `@JobHandler(jobName)` - Method decorator to route jobs to specific handler methods
-  - `@JobHandler('*')` - Wildcard handler support for fallback/catch-all processing
-  - `@EntityScaler(options)` - Class decorator for entity scaling configuration
-  - `@GetActiveEntities()` - Method decorator for active entity discovery
-  - `@GetDesiredWorkerCount()` - Method decorator for worker count calculation
-  - `@OnSpawnWorker()` - Method decorator for custom spawn logic
-  - `@OnTerminateWorker()` - Method decorator for custom termination logic
-
-- **ProcessorDiscoveryService** - Automatic discovery and registration of decorated classes
-  - Auto-discovers `@WorkerProcessor` and `@EntityScaler` decorated providers
-  - Registers job handlers with `WorkerManagerService`
-  - Integrates scalers with `CronManagerService`
-  - Supports manual registration via `registerProcessorClass()` and `registerScalerClass()`
-
-- **Utility functions** for metadata retrieval
-  - `getWorkerProcessorMetadata()`
-  - `getJobHandlerMetadata()`
-  - `getEntityScalerMetadata()`
-  - `isWorkerProcessor()`
-  - `isEntityScaler()`
-
-### Changed
-
-- Module now imports `DiscoveryModule` from `@nestjs/core` for provider scanning
-
-### Deprecated
-
-- `@AtomicProcessor` - Use `@WorkerProcessor` class decorator with `@JobHandler` method decorators
-- `@EntityType` - Use `@WorkerProcessor` or `@EntityScaler` class decorators
-- `@JobType` - Use `@JobHandler` method decorator
-
-## [1.0.16] - Previous
-
-- Initial stable release with manual registration API
+- Initial release
+- Per-entity BullMQ queue creation
+- Worker lifecycle management with heartbeat TTL
+- Distributed resource locking via Redis Lua scripts
+- Graceful shutdown coordination via pub/sub
+- Cron-based worker spawning and cleanup
+- `@WorkerProcessor` and `@EntityScaler` decorators
+- Index tracking for jobs, workers, and queues
