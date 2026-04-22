@@ -36,7 +36,7 @@
 
 **A distributed virtual actor runtime for Node.js, built entirely on Redis primitives.**
 
-Think [Microsoft Orleans](https://learn.microsoft.com/en-us/dotnet/orleans/) or [Akka](https://akka.io/) — but for the NestJS ecosystem, requiring nothing beyond a Redis instance you probably already have.
+Think Orleans or Akka — but for the NestJS ecosystem, requiring nothing beyond a Redis instance you probably already have.
 
 Messages addressed to the same entity execute sequentially. Messages addressed to different entities execute in parallel. No distributed locks. No worker processes. No message broker. No BullMQ.
 
