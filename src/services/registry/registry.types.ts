@@ -2,6 +2,7 @@ export interface MessageSpec {
   kind: 'command' | 'query';
   schema?: Record<string, any>;
   replySchema?: Record<string, any>;
+  entityIdField?: string;
 }
 
 export interface EntityContract {

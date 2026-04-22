@@ -5,6 +5,7 @@ import { IAtomicQueuesModuleConfig } from '../../domain';
 import { resolveKeyPrefix } from '../../utils';
 import {
   getEntityType,
+  getEntityIdProperty,
   getActorMetadata,
   getActorHandlers,
   getJobCommandMetadata,
@@ -272,8 +273,11 @@ export class RegistryService implements OnModuleInit, OnApplicationShutdown {
     const zodSchema = getSchemaMetadata(msgClass);
     const zodReplySchema = getReplySchemaMetadata(msgClass);
 
+    // If no explicit kind given, infer 'query' when a reply schema is present
+    const inferredKind = kind ?? (zodReplySchema ? 'query' : 'command');
+
     const spec: MessageSpec = {
-      kind: kind ?? 'command',
+      kind: inferredKind,
     };
 
     if (zodSchema) {
@@ -285,6 +289,9 @@ export class RegistryService implements OnModuleInit, OnApplicationShutdown {
       const jsonReplySchema = convertZodToJsonSchema(zodReplySchema);
       if (jsonReplySchema) spec.replySchema = jsonReplySchema;
     }
+
+    const entityIdField = getEntityIdProperty(msgClass);
+    if (entityIdField) spec.entityIdField = entityIdField;
 
     return spec;
   }

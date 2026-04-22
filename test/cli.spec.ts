@@ -1,5 +1,6 @@
 import { generateTypeScript } from '../src/cli/generators/typescript';
 import { generateJsonSchema } from '../src/cli/generators/json-schema';
+import { generateClasses } from '../src/cli/generators/classes';
 import { RegistrySnapshot } from '../src/services/registry/registry.types';
 
 function createSnapshot(overrides?: Partial<RegistrySnapshot>): RegistrySnapshot {
@@ -243,6 +244,148 @@ describe('CLI Generators', () => {
 
       const output = generateJsonSchema(snapshot);
       expect(output.definitions['order.PlaceOrder'].type).toBe('object');
+    });
+  });
+
+  describe('Classes generator', () => {
+    it('should produce decorated class files per entity type', () => {
+      const snapshot = createSnapshot({
+        entities: [
+          {
+            entityType: 'warehouse',
+            serviceName: 'warehouse-svc',
+            version: '1.0.0',
+            messages: {
+              ReserveStockCommand: {
+                kind: 'command',
+                schema: {
+                  type: 'object',
+                  required: ['sku', 'quantity'],
+                  properties: {
+                    sku: { type: 'string' },
+                    quantity: { type: 'integer' },
+                  },
+                },
+                entityIdField: 'sku',
+              },
+            },
+            registeredAt: Date.now(),
+            lastHeartbeat: Date.now(),
+          },
+        ],
+      });
+
+      const files = generateClasses(snapshot);
+      expect(files).toHaveLength(2); // warehouse.ts + index.ts
+
+      const warehouseFile = files.find(f => f.filename === 'warehouse.ts')!;
+      expect(warehouseFile).toBeDefined();
+      expect(warehouseFile.content).toContain("@EntityType('warehouse')");
+      expect(warehouseFile.content).toContain('export class ReserveStockCommand');
+      expect(warehouseFile.content).toContain('@QueueEntityId() readonly sku!: string;');
+      expect(warehouseFile.content).toContain('readonly quantity!: number;');
+      expect(warehouseFile.content).toContain('export interface ReserveStockCommandData');
+      expect(warehouseFile.content).toContain('constructor(data: ReserveStockCommandData)');
+      expect(warehouseFile.content).toContain("import { EntityType, QueueEntityId } from 'atomic-queues';");
+
+      const indexFile = files.find(f => f.filename === 'index.ts')!;
+      expect(indexFile).toBeDefined();
+      expect(indexFile.content).toContain("export * from './warehouse';");
+    });
+
+    it('should generate Reply-branded queries with reply interfaces', () => {
+      const snapshot = createSnapshot({
+        entities: [
+          {
+            entityType: 'warehouse',
+            serviceName: 'warehouse-svc',
+            version: '1.0.0',
+            messages: {
+              GetStockQuery: {
+                kind: 'query',
+                schema: {
+                  type: 'object',
+                  required: ['sku'],
+                  properties: { sku: { type: 'string' } },
+                },
+                replySchema: {
+                  type: 'object',
+                  required: ['sku', 'available'],
+                  properties: {
+                    sku: { type: 'string' },
+                    available: { type: 'integer' },
+                  },
+                },
+                entityIdField: 'sku',
+              },
+            },
+            registeredAt: Date.now(),
+            lastHeartbeat: Date.now(),
+          },
+        ],
+      });
+
+      const files = generateClasses(snapshot);
+      const warehouseFile = files.find(f => f.filename === 'warehouse.ts')!;
+
+      expect(warehouseFile.content).toContain('export interface GetStockQueryReply');
+      expect(warehouseFile.content).toContain('available: number;');
+      expect(warehouseFile.content).toContain('implements Reply<GetStockQueryReply>');
+      expect(warehouseFile.content).toContain('declare readonly __reply: GetStockQueryReply;');
+      expect(warehouseFile.content).toContain("import type { Reply } from 'atomic-queues';");
+    });
+
+    it('should handle entities with no schemas', () => {
+      const snapshot = createSnapshot({
+        entities: [
+          {
+            entityType: 'order',
+            serviceName: 'shop-svc',
+            version: '1.0.0',
+            messages: {
+              PlaceOrder: { kind: 'command' },
+            },
+            registeredAt: Date.now(),
+            lastHeartbeat: Date.now(),
+          },
+        ],
+      });
+
+      const files = generateClasses(snapshot);
+      const orderFile = files.find(f => f.filename === 'order.ts')!;
+      expect(orderFile).toBeDefined();
+      expect(orderFile.content).toContain('export class PlaceOrder');
+      expect(orderFile.content).toContain('export interface PlaceOrderData');
+    });
+
+    it('should generate multiple entity files and barrel index', () => {
+      const snapshot = createSnapshot({
+        entities: [
+          {
+            entityType: 'warehouse',
+            serviceName: 'warehouse-svc',
+            version: '1.0.0',
+            messages: { Reserve: { kind: 'command' } },
+            registeredAt: Date.now(),
+            lastHeartbeat: Date.now(),
+          },
+          {
+            entityType: 'billing',
+            serviceName: 'billing-svc',
+            version: '1.0.0',
+            messages: { Charge: { kind: 'command' } },
+            registeredAt: Date.now(),
+            lastHeartbeat: Date.now(),
+          },
+        ],
+      });
+
+      const files = generateClasses(snapshot);
+      expect(files).toHaveLength(3); // warehouse.ts, billing.ts, index.ts
+
+      const index = files.find(f => f.filename === 'index.ts')!;
+      expect(index.content).toContain("export * from './warehouse';");
+      expect(index.content).toContain("export * from './billing';");
     });
   });
 });

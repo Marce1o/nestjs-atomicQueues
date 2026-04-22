@@ -114,6 +114,23 @@ export class HandlerExecutor implements OnModuleInit {
     this.commandRegistry.set(className, { targetClass, isQuery });
   }
 
+  canHandle(entityType: string, messageName: string): boolean {
+    // 1. Actor handler
+    const actorEntry = this.actorFactories.get(entityType);
+    if (actorEntry && actorEntry.handlers.has(messageName)) return true;
+
+    // 2. CommandDiscovery (@JobCommand / @JobQuery)
+    if (this.commandDiscovery?.hasHandler(messageName, entityType)) return true;
+
+    // 3. QueueBus static registry
+    if (this.commandRegistry.has(messageName)) return true;
+
+    // 4. CQRS auto-discovered handlers
+    if (this.commandRegistry.has(messageName)) return true;
+
+    return false;
+  }
+
   async execute(message: ISerializedMessage, entityKey: string): Promise<unknown> {
     const { name, data, entityType, entityId } = message;
 

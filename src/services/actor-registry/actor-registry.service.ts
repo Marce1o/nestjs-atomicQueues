@@ -172,9 +172,11 @@ export class ActorRegistry implements OnModuleInit, OnApplicationShutdown {
     const state: Record<string, any> = {};
     for (const key of Object.keys(instance)) {
       const val = instance[key];
-      if (typeof val !== 'function') {
-        state[key] = val;
-      }
+      if (typeof val === 'function') continue;
+      // Skip non-serializable values: class instances (Logger, services, etc.)
+      // Only persist primitives, plain objects, and arrays
+      if (val !== null && typeof val === 'object' && Object.getPrototypeOf(val) !== Object.prototype && !Array.isArray(val)) continue;
+      state[key] = val;
     }
     return state;
   }

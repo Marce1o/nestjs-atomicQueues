@@ -38,6 +38,8 @@ export interface IEntityConfig {
   actorIdleTimeout?: number;
   /** Persist actor state to Redis on eviction (default: true) */
   statePersistence?: boolean;
+  /** Default timeout in ms for enqueueAndWait on this entity type */
+  replyTimeout?: number;
 }
 
 /**
@@ -50,6 +52,8 @@ export interface IExecutorConfig {
   gateTTL?: number;
   /** Gate refresh interval in ms (default: gateTTL * 500) */
   gateRefreshInterval?: number;
+  /** Global default timeout in ms for enqueueAndWait (default: gateTTL * 2 * 1000) */
+  defaultReplyTimeout?: number;
 }
 
 /**

@@ -17,6 +17,7 @@ export class ExecutorPoolService implements OnModuleInit, OnApplicationShutdown 
   private activeExecutors = 0;
   private running = false;
   private subscriberClient: Redis | null = null;
+  private ownedEntityTypes: string[] | undefined;
 
   constructor(
     @Inject(ATOMIC_QUEUES_REDIS) private readonly redis: Redis,
@@ -33,6 +34,12 @@ export class ExecutorPoolService implements OnModuleInit, OnApplicationShutdown 
 
   async onModuleInit(): Promise<void> {
     this.running = true;
+
+    // Collect entity types this node can handle (actors + config).
+    // When the list is non-empty the Lua script only picks matching keys,
+    // so foreign entity types are never stolen from other services.
+    this.ownedEntityTypes = this.collectOwnedEntityTypes();
+
     this.subscriberClient = this.redis.duplicate();
 
     const tickleChannel = `${this.keyPrefix}:tickle`;
@@ -69,8 +76,11 @@ export class ExecutorPoolService implements OnModuleInit, OnApplicationShutdown 
   }
 
   private async tryDispatch(): Promise<void> {
+    // Multi-service node with no handlers — don't compete for messages
+    if (this.ownedEntityTypes !== undefined && this.ownedEntityTypes.length === 0) return;
+
     while (this.running && this.activeExecutors < this.poolSize) {
-      const result = await this.scheduler.pickNext();
+      const result = await this.scheduler.pickNext(this.ownedEntityTypes);
       if (!result) break;
 
       this.activeExecutors++;
@@ -132,5 +142,35 @@ export class ExecutorPoolService implements OnModuleInit, OnApplicationShutdown 
       ? JSON.stringify({ error: error.message })
       : JSON.stringify({ result });
     await this.redis.publish(channel, payload);
+  }
+
+  /**
+   * Build the list of entity types this node owns handlers for.
+   * Returns undefined (accept-all) when no specific handlers are registered,
+   * which keeps single-service deployments zero-config.
+   */
+  private collectOwnedEntityTypes(): string[] | undefined {
+    const types = new Set<string>();
+
+    // Actor entity types
+    for (const et of this.actorRegistry.getRegisteredEntityTypes()) {
+      types.add(et);
+    }
+
+    // Entity types declared in config
+    if (this.config.entities) {
+      for (const et of Object.keys(this.config.entities)) {
+        types.add(et);
+      }
+    }
+
+    if (types.size > 0) return Array.from(types);
+
+    // In multi-service mode (registry enabled), no handlers means
+    // this node is a pure client — return empty array to accept nothing.
+    if (this.config.registry?.enabled) return [];
+
+    // Single-service setup — return undefined to accept all.
+    return undefined;
   }
 }

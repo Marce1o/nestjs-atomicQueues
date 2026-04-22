@@ -14,6 +14,9 @@ local logPrefix = ARGV[2]
 local ownerToken = ARGV[3]
 local defaultTTL = tonumber(ARGV[4])
 local batchSize = tonumber(ARGV[5]) or 32
+-- ARGV[6..N] = owned entity type prefixes (e.g. "warehouse:", "candy:")
+-- If none provided, this node accepts all entity types (single-service mode).
+local numFilters = #ARGV - 5
 
 local members = redis.call("SRANDMEMBER", readySetKey, batchSize)
 if not members or #members == 0 then
@@ -21,20 +24,37 @@ if not members or #members == 0 then
 end
 
 for _, entityKey in ipairs(members) do
-  local gateKey = gatePrefix .. entityKey
-  local acquired = redis.call("SET", gateKey, ownerToken, "EX", defaultTTL, "NX")
-  if acquired then
-    local logKey = logPrefix .. entityKey
-    local msg = redis.call("RPOP", logKey)
-    if msg then
-      local remaining = redis.call("LLEN", logKey)
-      if remaining == 0 then
+  -- If entity-type filters are active, skip keys this node doesn't own
+  local dominated = false
+  if numFilters > 0 then
+    local owned = false
+    for i = 6, #ARGV do
+      if string.sub(entityKey, 1, #ARGV[i]) == ARGV[i] then
+        owned = true
+        break
+      end
+    end
+    if not owned then
+      dominated = true
+    end
+  end
+
+  if not dominated then
+    local gateKey = gatePrefix .. entityKey
+    local acquired = redis.call("SET", gateKey, ownerToken, "EX", defaultTTL, "NX")
+    if acquired then
+      local logKey = logPrefix .. entityKey
+      local msg = redis.call("RPOP", logKey)
+      if msg then
+        local remaining = redis.call("LLEN", logKey)
+        if remaining == 0 then
+          redis.call("SREM", readySetKey, entityKey)
+        end
+        return {entityKey, msg, ownerToken}
+      else
+        redis.call("DEL", gateKey)
         redis.call("SREM", readySetKey, entityKey)
       end
-      return {entityKey, msg, ownerToken}
-    else
-      redis.call("DEL", gateKey)
-      redis.call("SREM", readySetKey, entityKey)
     end
   end
 end
@@ -56,12 +76,15 @@ export class SchedulerService {
     this.keyPrefix = resolveKeyPrefix(config);
   }
 
-  async pickNext(): Promise<IDispatchResult | null> {
+  async pickNext(ownedEntityTypes?: string[]): Promise<IDispatchResult | null> {
     const readySetKey = this.logService.getReadySetKey();
     const gatePrefix = `${this.keyPrefix}:gate:`;
     const logPrefix = `${this.keyPrefix}:log:`;
     const ownerToken = uuidv4();
     const defaultTTL = this.config.executor?.gateTTL ?? 30;
+
+    // Entity type prefixes for Lua filtering (e.g. "warehouse:", "candy:")
+    const prefixes = (ownedEntityTypes ?? []).map(t => `${t}:`);
 
     const result = await this.redis.eval(
       PICK_DISPATCHABLE_SCRIPT,
@@ -72,6 +95,7 @@ export class SchedulerService {
       ownerToken,
       defaultTTL.toString(),
       '32',
+      ...prefixes,
     ) as [string, string, string] | null;
 
     if (!result) return null;

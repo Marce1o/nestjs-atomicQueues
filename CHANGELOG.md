@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-04-22
+
+### Added
+
+- **Runtime introspection API (`queueBus.introspect()`).** Returns a `ClusterContracts` object with methods like `entityTypes()`, `hasEntity()`, `messagesFor()`, `schemaFor()`, `replySchemaFor()`, `accepts()`, and a human-readable `toString()`. Lets any service discover the full cluster topology at runtime without importing code from other services.
+- **Raw cross-service enqueue (string-based API).** `queueBus.enqueue('warehouse', 'ReserveStockCommand', entityId, { ... })` and the matching `enqueueAndWait()` overload send messages to entities owned by other services — no class import, no code dependency. Also available via `queueBus.forEntity('warehouse').enqueue(...)`.
+- **`Reply<T>` phantom type.** Zero-runtime-cost brand that carries the reply type at compile time. Generated query classes implement `Reply<R>`, so `enqueueAndWait(new GetStockQuery(...))` returns the correct type without an explicit generic.
+- **`InferReply<T>` utility type.** Conditional type that extracts `R` from `Reply<R>` — used internally by `enqueueAndWait` overloads.
+- **Class codegen (`npx atomic-queues generate --classes`).** Reads the live registry and generates one decorated TypeScript file per entity type plus a barrel `index.ts`. Each file contains data interfaces, reply interfaces, `@EntityType`/`@QueueEntityId` decorated classes, and `Reply<T>` branding for queries. Import and use like regular CQRS — no string API, no timeout, full autocomplete.
+- **Config-driven timeout resolution.** `enqueueAndWait` no longer requires an explicit timeout. Resolution chain: explicit arg → per-entity `replyTimeout` → global `defaultReplyTimeout` → `gateTTL * 2 * 1000` → 60s fallback.
+- **`replyTimeout` per-entity config.** `entities.warehouse.replyTimeout: 5000` sets the default reply timeout for all `enqueueAndWait` calls targeting that entity type.
+- **`defaultReplyTimeout` executor config.** `executor.defaultReplyTimeout: 10000` sets a global default when no per-entity timeout is configured.
+- **Entity-type dispatch routing (Lua).** The Lua scheduler now accepts entity-type prefix filters so each node only dispatches messages for entity types it owns handlers for. Eliminates message stealing in multi-service deployments where services share the same Redis.
+- **Pure-client node detection.** Services with `registry.enabled` but no handlers (e.g. API gateways) return `[]` for owned entity types, making the executor pool skip dispatch entirely instead of stealing messages from handler-owning services.
+- **`ClusterContracts` class.** Structured API wrapping `RegistrySnapshot` with typed accessors for entity types, messages, schemas, and reply schemas.
+- **`TypedEnqueue<TMap>` / `TypedEnqueueAndWait<TMap, TReplyMap>` utility types.** Enable full autocomplete on entity types, message names, and payloads when used with the generated `DispatchMap`.
+- **Registry `entityIdField` metadata.** The registry now publishes which field is the entity ID for each message, so class codegen can apply `@QueueEntityId()` to the correct property.
+- **Registry kind inference.** `buildMessageSpec` infers `kind: 'query'` when a reply schema is present, so `@Actor` handlers don't need to explicitly specify the message kind.
+- **`--entities` filter for CLI generate.** `npx atomic-queues generate --classes --entities warehouse,billing` limits codegen to specific entity types.
+- **`-o` shorthand for `--output`** in the CLI.
+
+### Fixed
+
+- **Lua 5.1 compatibility.** Replaced `goto`/`::continue::` (Lua 5.2+) with a boolean flag pattern for Lua 5.1, which is what Redis uses.
+
+---
+
 ## [2.0.0] - 2026-04-22
 
 ### ⚠ BREAKING CHANGES

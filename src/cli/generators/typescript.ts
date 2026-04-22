@@ -9,6 +9,8 @@ export function generateTypeScript(snapshot: RegistrySnapshot): string {
   lines.push('// DO NOT EDIT — regenerate with: npx atomic-queues generate --ts');
   lines.push('');
 
+  // ── Per-entity namespaces with message interfaces ──────────────────────
+
   for (const entity of snapshot.entities) {
     const namespace = pascalCase(entity.entityType) + 'Entity';
     lines.push(`export namespace ${namespace} {`);
@@ -37,6 +39,56 @@ export function generateTypeScript(snapshot: RegistrySnapshot): string {
         }
         lines.push('  }');
         lines.push('');
+      }
+    }
+
+    lines.push('}');
+    lines.push('');
+  }
+
+  // ── DispatchMap — maps entity type → message name → payload type ───────
+
+  lines.push('// ── Dispatch type maps (for use with TypedDispatch / TypedDispatchAndWait) ──');
+  lines.push('');
+  lines.push('export interface DispatchMap {');
+
+  for (const entity of snapshot.entities) {
+    const namespace = pascalCase(entity.entityType) + 'Entity';
+    lines.push(`  '${entity.entityType}': {`);
+
+    for (const [msgName, spec] of Object.entries(entity.messages)) {
+      const hasSchema = spec.schema?.properties && Object.keys(spec.schema.properties).length > 0;
+      const type = hasSchema ? `${namespace}.${msgName}` : 'Record<string, any>';
+      lines.push(`    '${msgName}': ${type};`);
+    }
+
+    lines.push('  };');
+  }
+
+  lines.push('}');
+  lines.push('');
+
+  // ── ReplyMap — maps entity type → query name → reply type ─────────────
+
+  const hasAnyReply = snapshot.entities.some(e =>
+    Object.values(e.messages).some(m => m.kind === 'query' && m.replySchema?.properties),
+  );
+
+  if (hasAnyReply) {
+    lines.push('export interface ReplyMap {');
+
+    for (const entity of snapshot.entities) {
+      const namespace = pascalCase(entity.entityType) + 'Entity';
+      const queries = Object.entries(entity.messages).filter(
+        ([, spec]) => spec.kind === 'query' && spec.replySchema?.properties,
+      );
+
+      if (queries.length > 0) {
+        lines.push(`  '${entity.entityType}': {`);
+        for (const [msgName] of queries) {
+          lines.push(`    '${msgName}': ${namespace}.${msgName}Reply;`);
+        }
+        lines.push('  };');
       }
     }
 

@@ -159,11 +159,19 @@ The library auto-discovers `@CommandHandler` and `@QueryHandler` classes at boot
 // Fire-and-forget
 await queueBus.enqueue(new WithdrawCommand(accountId, 100));
 
-// Enqueue and block until result
+// Enqueue and block until result — return type inferred from Reply<T> brand
 const balance = await queueBus.enqueueAndWait(new GetBalanceQuery(accountId));
 
 // Scoped to an entity type
 await queueBus.forEntity('account').enqueueBulk([charge1, charge2, charge3]);
+
+// Cross-service: string-based API — no class import needed
+await queueBus.enqueue('warehouse', 'ReserveStockCommand', 'SKU-001', { sku: 'SKU-001', quantity: 50 });
+const stock = await queueBus.enqueueAndWait('warehouse', 'GetStockQuery', 'SKU-001', { sku: 'SKU-001' });
+
+// Scoped cross-service
+const warehouse = queueBus.forEntity('warehouse');
+await warehouse.enqueue('ReserveStockCommand', 'SKU-001', { sku: 'SKU-001', quantity: 50 });
 
 // Actor-style direct send
 await actorSystem.send('account', accountId, new DepositCommand(100));
@@ -228,17 +236,23 @@ atomic-queues replaces all of that with Redis.
 Enable the distributed registry and any service connected to the same Redis instance can send typed messages to any entity — regardless of which service owns the handler.
 
 ```typescript
-// billing-service: defines and handles the entity
+// warehouse-service: defines and handles the entity
 AtomicQueuesModule.forRoot({
   redis: { url: process.env.REDIS_URL },
-  registry: { enabled: true, serviceName: 'billing-service' },
+  registry: { enabled: true, serviceName: 'warehouse-service' },
 })
 
-// payments-service: sends to it (shared Redis, no code dependency on billing)
-await queueBus.enqueue(new WithdrawCommand(accountId, 100));
+// order-service: generate classes from the live registry, then use them like local CQRS
+import { ReserveStockCommand, GetStockQuery } from './generated';
+
+await queueBus.enqueue(new ReserveStockCommand({ sku: 'SKU-001', quantity: 50 }));
+const stock = await queueBus.enqueueAndWait(new GetStockQuery({ sku: 'SKU-001' }));
+stock.available; // fully typed — no string API, no explicit timeout, no code dependency on warehouse-service
 ```
 
-When `billing-service` starts, it scans its own `@Actor`, `@CommandHandler`, and `@QueryHandler` classes and publishes **entity contracts** to Redis — a JSON document listing the entity type, accepted messages, and optional JSON schemas, refreshed via heartbeat TTL. When `payments-service` enqueues a message, the registry validates it at the call site *before* it enters the log: entity type exists, message name is accepted, payload matches schema. Errors are immediate and descriptive — not silent dead letters discovered hours later in a DLQ dashboard.
+When `warehouse-service` starts, it scans its own `@Actor`, `@CommandHandler`, and `@QueryHandler` classes and publishes **entity contracts** to Redis — a JSON document listing the entity type, accepted messages, optional JSON schemas, and reply schemas, refreshed via heartbeat TTL. When `order-service` enqueues a message, the registry validates it at the call site *before* it enters the log: entity type exists, message name is accepted, payload matches schema. Errors are immediate and descriptive — not silent dead letters discovered hours later in a DLQ dashboard.
+
+The Lua scheduler ensures each node only dispatches messages for entity types it owns handlers for. Services that don't own any handlers (API gateways, pure producers) participate in the registry without stealing messages from handler-owning nodes.
 
 ### What this replaces
 
@@ -252,7 +266,7 @@ Think about what you no longer need:
 
 **No service discovery.** The registry *is* service discovery. When a service starts, it publishes what it handles. When a service stops, its registrations TTL out. Other services discover capabilities by reading the registry.
 
-**No serialization framework.** Messages are JSON. The wire protocol is three Redis commands. No Protobuf compilation step, no `.proto` files, no code generation from IDL. (Though atomic-queues does offer codegen from the live registry — it generates TypeScript interfaces so Service A gets compile-time type safety for messages destined to Service B, without importing Service B's code.)
+**No serialization framework.** Messages are JSON. The wire protocol is three Redis commands. No Protobuf compilation step, no `.proto` files, no code generation from IDL. (Though atomic-queues does offer codegen from the live registry — it generates decorated TypeScript classes so Service A gets compile-time type safety for messages destined to Service B, without importing Service B's code.)
 
 **No separate dead-letter infrastructure.** Failed messages are dead-lettered per entity type in Redis, queryable via the same connection.
 
@@ -281,15 +295,118 @@ The Zod schema serializes to JSON Schema and stores in the registry. Every servi
 
 Multiple services can handle different message types on the same entity. Service A handles `DepositCommand` and `WithdrawCommand` on the `account` entity type. Service B handles `FreezeAccountCommand` on the same entity type. The registry merges their contracts automatically. The dispatch gate still ensures single-writer semantics per entity instance, regardless of which service's executor picks up the message.
 
-### Contract codegen
+### Runtime introspection
 
-Generate typed interfaces from the live registry:
+Any service can discover what the cluster offers at runtime — no config files, no shared code:
 
-```bash
-REDIS_URL=redis://localhost:6379 npx atomic-queues generate --ts --output ./generated/contracts.ts
+```typescript
+const contracts = await queueBus.introspect();
+
+contracts.entityTypes();                              // ['account', 'warehouse', ...]
+contracts.hasEntity('warehouse');                      // true
+contracts.messagesFor('warehouse');                    // ['ReserveStockCommand', 'GetStockQuery']
+contracts.accepts('warehouse', 'ReserveStockCommand'); // true
+contracts.schemaFor('warehouse', 'ReserveStockCommand');  // { properties: { sku: ..., quantity: ... } }
+contracts.replySchemaFor('warehouse', 'GetStockQuery');   // { properties: { sku: ..., available: ... } }
+
+// Human-readable summary for logging/debugging
+console.log(contracts.toString());
 ```
 
-Also supports `--json-schema` for language-agnostic schema export and `--snapshot` for full registry dumps.
+### Raw cross-service API
+
+For quick prototyping or dynamic dispatch, you can also use the string-based API — no classes, no codegen, no imports:
+
+```typescript
+// Fire-and-forget
+await queueBus.enqueue('warehouse', 'ReserveStockCommand', 'SKU-001', {
+  sku: 'SKU-001',
+  quantity: 50,
+});
+
+// Request-reply
+const stock = await queueBus.enqueueAndWait('warehouse', 'GetStockQuery', 'SKU-001', {
+  sku: 'SKU-001',
+});
+
+// Scoped to an entity type
+const warehouse = queueBus.forEntity('warehouse');
+await warehouse.enqueue('ReserveStockCommand', 'SKU-001', { sku: 'SKU-001', quantity: 50 });
+const stock = await warehouse.enqueueAndWait('GetStockQuery', 'SKU-001', { sku: 'SKU-001' });
+```
+
+This works out of the box — the registry validates entity type and message name at the call site. For production services, class codegen gives you full type safety.
+
+### Class codegen (recommended)
+
+Generate fully decorated TypeScript classes from the live registry — import them and use them like local CQRS classes with full autocomplete, type safety, and zero string APIs:
+
+```bash
+npx atomic-queues generate --classes -o src/generated
+```
+
+This produces one file per entity type plus a barrel `index.ts`:
+
+```
+src/generated/
+  warehouse.ts    # ReserveStockCommand, GetStockQuery, data interfaces, reply interfaces
+  billing.ts      # ChargeCommand, GetInvoiceQuery, ...
+  index.ts        # export * from './warehouse'; export * from './billing';
+```
+
+Then use them exactly like local command/query classes:
+
+```typescript
+import { ReserveStockCommand, GetStockQuery } from './generated';
+
+// Fire-and-forget — full autocomplete on constructor fields
+await queueBus.enqueue(new ReserveStockCommand({ sku: 'SKU-001', quantity: 50 }));
+
+// Request-reply — return type inferred from Reply<T> brand, no explicit timeout
+const stock = await queueBus.enqueueAndWait(new GetStockQuery({ sku: 'SKU-001' }));
+stock.available; // typed as number — full IDE support
+```
+
+Generated query classes implement `Reply<T>` via a phantom type brand, so `enqueueAndWait` infers the return type at compile time with zero runtime cost. No explicit generics, no timeout parameter — timeouts are resolved from config.
+
+You can also filter to specific entity types:
+
+```bash
+npx atomic-queues generate --classes -o src/generated --entities warehouse,billing
+```
+
+### Other codegen formats
+
+```bash
+# TypeScript interfaces + DispatchMap (for typed string-based API)
+npx atomic-queues generate --ts --output ./generated/contracts.ts
+
+# JSON Schema (language-agnostic)
+npx atomic-queues generate --json-schema --output ./generated/schema.json
+
+# Full registry snapshot
+npx atomic-queues generate --snapshot --output ./generated/snapshot.json
+```
+
+### Config-driven timeouts
+
+`enqueueAndWait` resolves timeouts automatically — you never need to pass one explicitly:
+
+```typescript
+AtomicQueuesModule.forRoot({
+  executor: {
+    gateTTL: 30,
+    defaultReplyTimeout: 15000,     // global fallback: 15s
+  },
+  entities: {
+    warehouse: {
+      replyTimeout: 5000,           // warehouse-specific: 5s
+    },
+  },
+})
+```
+
+Resolution chain: explicit arg → per-entity `replyTimeout` → global `defaultReplyTimeout` → `gateTTL * 2 * 1000`. If nothing is configured, defaults to 60s.
 
 ---
 
@@ -368,8 +485,9 @@ AtomicQueuesModule.forRoot({
   redis: { host: 'localhost', port: 6379 },
 
   executor: {
-    poolSize: 1,          // concurrent executors per node
-    gateTTL: 30,          // seconds before gate expires (safety net)
+    poolSize: 1,              // concurrent executors per node
+    gateTTL: 30,              // seconds before gate expires (safety net)
+    defaultReplyTimeout: 15000, // global default for enqueueAndWait (ms)
   },
 
   entities: {
@@ -379,6 +497,7 @@ AtomicQueuesModule.forRoot({
       retry: { maxAttempts: 5, backoff: 'exponential', backoffDelay: 2000 },
       actorIdleTimeout: 120000,
       statePersistence: true,
+      replyTimeout: 5000,     // per-entity enqueueAndWait timeout (ms)
     },
   },
 
@@ -446,6 +565,7 @@ npm install zod zod-to-json-schema # for schema validation in the registry
 | `@Actor('type')` | Declare a virtual actor class |
 | `@On(MessageClass)` | Handle a message type on an actor |
 | `@Schema(zodSchema)` | Attach a Zod schema for registry validation |
+| `@ReplySchema(zodSchema)` | Attach a reply schema for query codegen |
 
 ---
 
@@ -457,7 +577,7 @@ V2 is a full rewrite of the internals. BullMQ is removed. Workers are removed. T
 
 **What's removed**: `@WorkerProcessor`, `@JobHandler`, `@EntityScaler`, `@OnSpawnWorker`, `@OnTerminateWorker`, `@GetActiveEntities`, `@GetDesiredWorkerCount`, `.forProcessor()`. All worker and scaling concepts are gone.
 
-**What's new**: `@Actor`, `@On`, `@Schema`, `ActorSystem`, `RegistryService`, distributed registry, codegen CLI.
+**What's new**: `@Actor`, `@On`, `@Schema`, `@ReplySchema`, `ActorSystem`, `RegistryService`, distributed registry, runtime introspection (`queueBus.introspect()`), cross-service string-based API, `Reply<T>` phantom type, class codegen CLI (`--classes`), config-driven timeouts.
 
 **Migration steps**: (1) remove all `@WorkerProcessor` classes — replace with `@Actor` or configure entity defaults in module config; (2) remove all scaling decorators; (3) run the data migration script to drain in-flight BullMQ jobs to the new log format; (4) remove `bullmq` and `@nestjs/bullmq` from your dependencies.
 
