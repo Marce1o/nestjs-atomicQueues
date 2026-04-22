@@ -1,6 +1,6 @@
 {
   "name": "atomic-queues",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Distributed virtual actor runtime for Node.js — sequential per entity, parallel across entities, zero contention",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

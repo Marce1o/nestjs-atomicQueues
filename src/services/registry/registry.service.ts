@@ -172,23 +172,39 @@ export class RegistryService implements OnModuleInit, OnApplicationShutdown {
 
     const providers = this.discoveryService.getProviders();
 
-    // 1. @Actor classes
+    // 1. @Actor classes and auto-discovered @On handlers
     for (const wrapper of providers) {
       const { metatype } = wrapper;
       if (!metatype) continue;
 
-      const actorMeta = getActorMetadata(metatype);
-      if (actorMeta) {
-        const entityType = actorMeta.entityType;
-        const contract = this.getOrCreateContract(contracts, entityType);
-        const handlers = getActorHandlers(metatype);
+      const handlers = getActorHandlers(metatype);
+      if (handlers.length === 0) continue;
 
-        for (const handler of handlers) {
-          const msgClass = handler.messageClass;
-          const msgName = msgClass.name;
-          if (!contract.messages[msgName]) {
-            contract.messages[msgName] = this.buildMessageSpec(msgClass);
+      // If @Actor is present, use its explicit entity type.
+      // Otherwise, infer from the message classes' @EntityType.
+      const actorMeta = getActorMetadata(metatype);
+      let entityType: string | undefined;
+
+      if (actorMeta) {
+        entityType = actorMeta.entityType;
+      } else {
+        for (const h of handlers) {
+          const et = getEntityType(h.messageClass);
+          if (et) {
+            entityType = et;
+            break;
           }
+        }
+      }
+
+      if (!entityType) continue;
+
+      const contract = this.getOrCreateContract(contracts, entityType);
+      for (const handler of handlers) {
+        const msgClass = handler.messageClass;
+        const msgName = msgClass.name;
+        if (!contract.messages[msgName]) {
+          contract.messages[msgName] = this.buildMessageSpec(msgClass);
         }
       }
     }

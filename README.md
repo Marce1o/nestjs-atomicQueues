@@ -108,21 +108,20 @@ That's the entire contract. `@EntityType` says "this message targets the `accoun
 
 atomic-queues gives you two ways to handle messages, and they're not different systems — they're two levels of abstraction over the same dispatch engine.
 
-**Actors** are the foundational primitive. An actor class *is* an entity — its fields are the state, its methods are message handlers. The runtime manages its lifecycle: activate on first message, evict from memory on idle, persist state to Redis automatically, restore on reactivation.
+**Actors** are the foundational primitive. An actor class *is* an entity — its fields are the state, its methods are message handlers. The runtime manages its lifecycle: activate on first message, evict from memory on idle, persist state to Redis automatically, restore on reactivation. The entity type is inferred from the message classes' `@EntityType` decorator — no `@Actor` decorator required.
 
 ```typescript
-@Actor('account')
 @Injectable()
 export class AccountActor {
   private balance = 0;
 
-  @On(DepositCommand)
+  @On(DepositCommand)     // DepositCommand has @EntityType('account')
   async deposit(msg: DepositCommand) {
     this.balance += msg.amount;
     return this.balance;
   }
 
-  @On(WithdrawCommand)
+  @On(WithdrawCommand)    // WithdrawCommand has @EntityType('account')
   async withdraw(msg: WithdrawCommand) {
     if (this.balance < msg.amount) throw new InsufficientFunds();
     this.balance -= msg.amount;
@@ -562,7 +561,7 @@ npm install zod zod-to-json-schema # for schema validation in the registry
 | `@EntityType('type')` | Route a message to an entity type |
 | `@QueueEntityId()` | Mark the property holding the entity ID |
 | `@QueueEntity('type', 'prop')` | Combined entity type + ID |
-| `@Actor('type')` | Declare a virtual actor class |
+| `@Actor('type')` | Explicitly declare an actor (optional — entity type is inferred from `@On` handlers) |
 | `@On(MessageClass)` | Handle a message type on an actor |
 | `@Schema(zodSchema)` | Attach a Zod schema for registry validation |
 | `@ReplySchema(zodSchema)` | Attach a reply schema for query codegen |

@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { Actor, On, getActorMetadata, getActorHandlers } from '../src/decorators';
+import { Actor, On, EntityType, getActorMetadata, getActorHandlers } from '../src/decorators';
 import { ActorRegistry } from '../src/services/actor-registry/actor-registry.service';
 import { HandlerExecutor } from '../src/services/handler-executor/handler-executor.service';
 
@@ -25,6 +25,32 @@ class AccountActor {
   async withdraw(msg: WithdrawCommand) {
     this.balance -= msg.amount;
     return this.balance;
+  }
+}
+
+// --- Auto-discovered actor (no @Actor, entity type inferred from message classes) ---
+
+@EntityType('warehouse')
+class ReserveStockCommand {
+  constructor(public readonly sku: string, public readonly quantity: number) {}
+}
+
+@EntityType('warehouse')
+class GetStockQuery {
+  constructor(public readonly sku: string) {}
+}
+
+class WarehouseHandler {
+  public stock = 1000;
+
+  @On(ReserveStockCommand)
+  reserve(msg: ReserveStockCommand) {
+    this.stock -= msg.quantity;
+  }
+
+  @On(GetStockQuery)
+  getStock(msg: GetStockQuery) {
+    return { sku: msg.sku, available: this.stock };
   }
 }
 
@@ -137,6 +163,70 @@ describe('ActorRegistry', () => {
       mockRedis._store['test:actor-state:account:a-5'] = JSON.stringify({ balance: 500 });
       const instance = await registry.getOrCreateInstance('account', 'a-5');
       expect(instance.balance).toBe(500);
+    });
+  });
+
+  describe('auto-discovery without @Actor', () => {
+    let registry: ActorRegistry;
+    let mockRedis: ReturnType<typeof createMockRedis>;
+    let handlerExecutor: HandlerExecutor;
+
+    beforeEach(async () => {
+      mockRedis = createMockRedis();
+      const mockDiscoveryService = { getProviders: () => [] } as any;
+      const mockModuleRef = { get: () => null } as any;
+      const mockCommandDiscovery = {
+        setCommandBus: jest.fn(),
+        setQueryBus: jest.fn(),
+      } as any;
+      handlerExecutor = new HandlerExecutor(mockCommandDiscovery, mockDiscoveryService, mockModuleRef);
+
+      const mockDiscovery = {
+        getProviders: () => [
+          {
+            metatype: WarehouseHandler,
+            instance: new WarehouseHandler(),
+          },
+        ],
+      };
+
+      registry = new ActorRegistry(
+        mockRedis as any,
+        { redis: {}, keyPrefix: 'test' } as any,
+        mockDiscovery as any,
+        handlerExecutor,
+      );
+
+      await registry.onModuleInit();
+    });
+
+    afterEach(async () => {
+      await registry.onApplicationShutdown();
+    });
+
+    it('should discover handlers without @Actor by inferring entity type from message class', () => {
+      expect(registry.hasActor('warehouse')).toBe(true);
+      expect(registry.getRegisteredEntityTypes()).toContain('warehouse');
+    });
+
+    it('should resolve handler methods for auto-discovered actor', () => {
+      expect(registry.getHandlerMethod('warehouse', 'ReserveStockCommand')).toBe('reserve');
+      expect(registry.getHandlerMethod('warehouse', 'GetStockQuery')).toBe('getStock');
+    });
+
+    it('should create per-entity instances for auto-discovered actor', async () => {
+      const instance = await registry.getOrCreateInstance('warehouse', 'SKU-001');
+      expect(instance).not.toBeNull();
+      expect(instance.stock).toBe(1000);
+    });
+
+    it('should execute handlers on auto-discovered actor', async () => {
+      const instance = await registry.getOrCreateInstance('warehouse', 'SKU-001');
+      instance.reserve({ sku: 'SKU-001', quantity: 200 });
+      expect(instance.stock).toBe(800);
+
+      const result = instance.getStock({ sku: 'SKU-001' });
+      expect(result).toEqual({ sku: 'SKU-001', available: 800 });
     });
   });
 });

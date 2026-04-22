@@ -3,7 +3,7 @@ import { DiscoveryService } from '@nestjs/core';
 import Redis from 'ioredis';
 import { IAtomicQueuesModuleConfig } from '../../domain';
 import { resolveKeyPrefix } from '../../utils';
-import { getActorMetadata, getActorHandlers } from '../../decorators';
+import { getActorMetadata, getActorHandlers, getEntityType } from '../../decorators';
 import { ActorOptions, ActorHandlerMetadata } from '../../decorators/interfaces';
 import { HandlerExecutor } from '../handler-executor';
 import { ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG } from '../constants';
@@ -64,25 +64,43 @@ export class ActorRegistry implements OnModuleInit, OnApplicationShutdown {
       const { metatype, instance } = wrapper;
       if (!metatype || !instance) continue;
 
-      const actorMeta = getActorMetadata(metatype);
-      if (!actorMeta) continue;
-
       const handlers = getActorHandlers(metatype);
+      if (handlers.length === 0) continue;
+
+      // If @Actor is present, use its explicit entity type.
+      // Otherwise, infer the entity type from the message classes' @EntityType.
+      const actorMeta = getActorMetadata(metatype);
+      let entityType: string | undefined;
+
+      if (actorMeta) {
+        entityType = actorMeta.entityType;
+      } else {
+        for (const h of handlers) {
+          const et = getEntityType(h.messageClass);
+          if (et) {
+            entityType = et;
+            break;
+          }
+        }
+      }
+
+      if (!entityType) continue;
+
       const handlerMap = new Map<string, string>();
       for (const h of handlers) {
         handlerMap.set(h.messageClass.name, h.methodName);
       }
 
       const definition: ActorDefinition = {
-        options: actorMeta,
+        options: actorMeta ?? { entityType },
         targetClass: metatype as Type<any>,
         handlers,
         handlerMap,
       };
 
-      this.definitions.set(actorMeta.entityType, definition);
+      this.definitions.set(entityType, definition);
       this.logger.log(
-        `Registered @Actor: ${metatype.name} for entity type '${actorMeta.entityType}' with ${handlers.length} handlers`,
+        `Registered actor: ${metatype.name} for entity type '${entityType}' with ${handlers.length} handlers`,
       );
     }
   }
