@@ -1,11 +1,12 @@
-import { Injectable, Logger, Inject } from '@nestjs/common';
-import Redis from 'ioredis';
+import { Injectable, Logger, Inject, Optional } from '@nestjs/common';
 import { v4 as uuidv4 } from 'uuid';
 import { IAtomicQueuesModuleConfig, ISerializedMessage, IMessageRef } from '../../domain';
 import { resolveKeyPrefix } from '../../utils';
 import { LogService } from '../log';
 import { ExecutorPoolService } from '../executor-pool';
-import { ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG } from '../constants';
+import { ResultCollector } from '../result-collector';
+import { RegistryService } from '../registry';
+import { ATOMIC_QUEUES_CONFIG } from '../constants';
 
 @Injectable()
 export class ActorSystem {
@@ -13,10 +14,11 @@ export class ActorSystem {
   private readonly keyPrefix: string;
 
   constructor(
-    @Inject(ATOMIC_QUEUES_REDIS) private readonly redis: Redis,
     @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
     private readonly logService: LogService,
     private readonly executorPool: ExecutorPoolService,
+    private readonly resultCollector: ResultCollector,
+    @Optional() private readonly registryService?: RegistryService,
   ) {
     this.keyPrefix = resolveKeyPrefix(config);
   }
@@ -28,6 +30,11 @@ export class ActorSystem {
   ): Promise<IMessageRef> {
     const entityKey = `${entityType}:${entityId}`;
     const serialized = this.serializeMessage(entityType, entityId, message);
+
+    if (this.registryService?.isEnabled()) {
+      await this.registryService.validate(entityType, message.constructor.name, serialized.data);
+    }
+
     await this.logService.append(entityKey, serialized);
     await this.executorPool.tickle();
     return { id: serialized.id, entityKey };
@@ -43,36 +50,16 @@ export class ActorSystem {
     const entityKey = `${entityType}:${entityId}`;
     const serialized = this.serializeMessage(entityType, entityId, message, correlationId);
 
-    const resultChannel = `${this.keyPrefix}:results:${correlationId}`;
-    const subscriber = this.redis.duplicate();
-
-    try {
-      const resultPromise = new Promise<R>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          reject(new Error(`sendAndWait timeout after ${timeout}ms for ${message.constructor.name} on ${entityKey}`));
-        }, timeout);
-
-        subscriber.subscribe(resultChannel).then(() => {
-          subscriber.on('message', (_ch: string, data: string) => {
-            clearTimeout(timer);
-            const parsed = JSON.parse(data);
-            if (parsed.error) {
-              reject(new Error(parsed.error));
-            } else {
-              resolve(parsed.result);
-            }
-          });
-        });
-      });
-
-      await this.logService.append(entityKey, serialized);
-      await this.executorPool.tickle();
-
-      return await resultPromise;
-    } finally {
-      await subscriber.unsubscribe(resultChannel);
-      await subscriber.quit();
+    if (this.registryService?.isEnabled()) {
+      await this.registryService.validate(entityType, message.constructor.name, serialized.data);
     }
+
+    const resultPromise = this.resultCollector.waitForResult<R>(correlationId, timeout);
+
+    await this.logService.append(entityKey, serialized);
+    await this.executorPool.tickle();
+
+    return resultPromise;
   }
 
   private serializeMessage<T extends object>(

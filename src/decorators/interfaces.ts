@@ -63,3 +63,13 @@ export interface ActorHandlerMetadata {
   /** The method name on the actor class */
   methodName: string;
 }
+
+/**
+ * Options for @Schema decorator
+ */
+export interface SchemaDecoratorOptions {
+  /** The Zod schema for the message payload */
+  schema: any;
+  /** Optional reply schema (for queries) */
+  replySchema?: any;
+}

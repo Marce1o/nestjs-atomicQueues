@@ -87,16 +87,6 @@ describe('QueueBus static registry', () => {
 // ─── QueueBus instance methods (mocked dependencies) ────────────────────────
 
 describe('QueueBus instance', () => {
-  const mockRedis = {
-    publish: jest.fn().mockResolvedValue(1),
-    duplicate: jest.fn().mockReturnValue({
-      subscribe: jest.fn().mockResolvedValue(undefined),
-      on: jest.fn(),
-      unsubscribe: jest.fn().mockResolvedValue(undefined),
-      quit: jest.fn().mockResolvedValue(undefined),
-    }),
-  };
-
   const mockLogService = {
     append: jest.fn().mockResolvedValue(1),
   };
@@ -106,6 +96,10 @@ describe('QueueBus instance', () => {
   };
 
   const mockHandlerExecutor = {};
+
+  const mockResultCollector = {
+    waitForResult: jest.fn(),
+  };
 
   const mockConfig = {
     redis: { host: 'localhost', port: 6379 },
@@ -121,11 +115,11 @@ describe('QueueBus instance', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     bus = new QueueBus(
-      mockRedis as any,
       mockConfig as any,
       mockLogService as any,
       mockExecutorPool as any,
       mockHandlerExecutor as any,
+      mockResultCollector as any,
     );
   });
 

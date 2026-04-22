@@ -5,7 +5,7 @@ describe('ActorSystem', () => {
   let actorSystem: ActorSystem;
   let mockLogService: any;
   let mockExecutorPool: any;
-  let mockRedis: any;
+  let mockResultCollector: any;
 
   beforeEach(() => {
     mockLogService = {
@@ -16,20 +16,15 @@ describe('ActorSystem', () => {
       tickle: jest.fn().mockResolvedValue(undefined),
     };
 
-    mockRedis = {
-      duplicate: jest.fn().mockReturnValue({
-        subscribe: jest.fn().mockResolvedValue(undefined),
-        on: jest.fn(),
-        unsubscribe: jest.fn().mockResolvedValue(undefined),
-        quit: jest.fn().mockResolvedValue(undefined),
-      }),
+    mockResultCollector = {
+      waitForResult: jest.fn(),
     };
 
     actorSystem = new ActorSystem(
-      mockRedis as any,
       { redis: {}, keyPrefix: 'test' } as any,
       mockLogService,
       mockExecutorPool,
+      mockResultCollector,
     );
   });
 
@@ -81,7 +76,6 @@ describe('ActorSystem', () => {
 
     it('should use retry config from entity settings', async () => {
       const system = new ActorSystem(
-        mockRedis as any,
         {
           redis: {},
           keyPrefix: 'test',
@@ -89,6 +83,7 @@ describe('ActorSystem', () => {
         } as any,
         mockLogService,
         mockExecutorPool,
+        mockResultCollector,
       );
 
       class Cmd {
@@ -102,26 +97,22 @@ describe('ActorSystem', () => {
   });
 
   describe('sendAndWait', () => {
-    it('should subscribe to result channel before enqueueing', async () => {
+    it('should register wait before enqueueing and return result', async () => {
       class Cmd {
         constructor(public readonly v: number) {}
       }
 
-      const subscriber = mockRedis.duplicate();
-      let messageHandler: Function;
-      subscriber.on.mockImplementation((event: string, handler: Function) => {
-        if (event === 'message') messageHandler = handler;
-      });
-      subscriber.subscribe.mockImplementation(async () => {
-        // Simulate result delivery after subscribe
-        setTimeout(() => {
-          messageHandler?.('channel', JSON.stringify({ result: 42 }));
-        }, 10);
-      });
+      mockResultCollector.waitForResult.mockResolvedValue(42);
 
       const result = await actorSystem.sendAndWait('account', 'a-1', new Cmd(1), 5000);
       expect(result).toBe(42);
+      expect(mockResultCollector.waitForResult).toHaveBeenCalledTimes(1);
       expect(mockLogService.append).toHaveBeenCalledTimes(1);
+
+      // waitForResult must be called with a correlationId and timeout
+      const [correlationId, timeout] = mockResultCollector.waitForResult.mock.calls[0];
+      expect(typeof correlationId).toBe('string');
+      expect(timeout).toBe(5000);
     });
   });
 });

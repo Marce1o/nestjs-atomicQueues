@@ -4,6 +4,9 @@
   "description": "Distributed virtual actor runtime for Node.js — sequential per entity, parallel across entities, zero contention",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "atomic-queues": "./dist/cli/index.js"
+  },
   "files": [
     "dist/**/*"
   ],
@@ -52,6 +55,9 @@
       "optional": true
     },
     "zod": {
+      "optional": true
+    },
+    "zod-to-json-schema": {
       "optional": true
     }
   },

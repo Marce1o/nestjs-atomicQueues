@@ -9,3 +9,5 @@ export * from './actor-system';
 export * from './queue-bus';
 export * from './command-discovery';
 export * from './shutdown';
+export * from './result-collector';
+export * from './registry';

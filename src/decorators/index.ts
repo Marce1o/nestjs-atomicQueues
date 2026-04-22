@@ -3,6 +3,7 @@ export * from './interfaces';
 export * from './entity.decorators';
 export * from './job.decorators';
 export * from './actor.decorators';
+export * from './schema.decorators';
 export * from './metadata-readers';
 export * from './registry';
 export * from './utils';

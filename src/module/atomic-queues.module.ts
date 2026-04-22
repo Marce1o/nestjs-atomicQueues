@@ -21,6 +21,8 @@ import {
   QueueBus,
   CommandDiscoveryService,
   ShutdownService,
+  ResultCollector,
+  RegistryService,
 } from '../services';
 
 const CORE_SERVICES: Provider[] = [
@@ -34,6 +36,8 @@ const CORE_SERVICES: Provider[] = [
   QueueBus,
   CommandDiscoveryService,
   ShutdownService,
+  ResultCollector,
+  RegistryService,
 ];
 
 export interface AtomicQueuesModuleAsyncOptions {

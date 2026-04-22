@@ -1,5 +1,4 @@
-import { Injectable, Logger, Inject, Type } from '@nestjs/common';
-import Redis from 'ioredis';
+import { Injectable, Logger, Inject, Type, Optional } from '@nestjs/common';
 import { v4 as uuidv4 } from 'uuid';
 import {
   IAtomicQueuesModuleConfig,
@@ -11,7 +10,9 @@ import { resolveKeyPrefix } from '../../utils';
 import { LogService } from '../log';
 import { ExecutorPoolService } from '../executor-pool';
 import { HandlerExecutor } from '../handler-executor';
-import { ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG } from '../constants';
+import { ResultCollector } from '../result-collector';
+import { RegistryService } from '../registry';
+import { ATOMIC_QUEUES_CONFIG } from '../constants';
 import { getJobName, extractData, extractEntityIdExplicit } from './queue-bus.utils';
 
 @Injectable()
@@ -20,11 +21,12 @@ export class QueueBus {
   private readonly keyPrefix: string;
 
   constructor(
-    @Inject(ATOMIC_QUEUES_REDIS) private readonly redis: Redis,
     @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
     private readonly logService: LogService,
     private readonly executorPool: ExecutorPoolService,
     private readonly handlerExecutor: HandlerExecutor,
+    private readonly resultCollector: ResultCollector,
+    @Optional() private readonly registryService?: RegistryService,
   ) {
     this.keyPrefix = resolveKeyPrefix(config);
   }
@@ -175,6 +177,10 @@ export class QueueBus {
     const entityKey = `${entityType}:${entityId}`;
     const retryConfig = entityConfig?.retry ?? this.config.retry;
 
+    if (this.registryService?.isEnabled()) {
+      await this.registryService.validate(entityType, jobName, data);
+    }
+
     const message: ISerializedMessage = {
       id: uuidv4(),
       name: jobName,
@@ -213,6 +219,10 @@ export class QueueBus {
     const correlationId = uuidv4();
     const retryConfig = entityConfig?.retry ?? this.config.retry;
 
+    if (this.registryService?.isEnabled()) {
+      await this.registryService.validate(entityType, jobName, data);
+    }
+
     const message: ISerializedMessage = {
       id: uuidv4(),
       name: jobName,
@@ -226,35 +236,11 @@ export class QueueBus {
       maxAttempts: retryConfig?.maxAttempts ?? 3,
     };
 
-    const resultChannel = `${this.keyPrefix}:results:${correlationId}`;
-    const subscriber = this.redis.duplicate();
+    const resultPromise = this.resultCollector.waitForResult<R>(correlationId, timeout);
 
-    try {
-      const resultPromise = new Promise<R>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          reject(new Error(`enqueueAndWait timeout after ${timeout}ms for ${jobName} on ${entityKey}`));
-        }, timeout);
+    await this.logService.append(entityKey, message);
+    await this.executorPool.tickle();
 
-        subscriber.subscribe(resultChannel).then(() => {
-          subscriber.on('message', (_ch: string, payload: string) => {
-            clearTimeout(timer);
-            const parsed = JSON.parse(payload);
-            if (parsed.error) {
-              reject(new Error(parsed.error));
-            } else {
-              resolve(parsed.result);
-            }
-          });
-        });
-      });
-
-      await this.logService.append(entityKey, message);
-      await this.executorPool.tickle();
-
-      return await resultPromise;
-    } finally {
-      await subscriber.unsubscribe(resultChannel);
-      await subscriber.quit();
-    }
+    return resultPromise;
   }
 }

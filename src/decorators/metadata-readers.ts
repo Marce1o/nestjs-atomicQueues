@@ -5,6 +5,8 @@ import {
   JOB_QUERY_METADATA,
   ACTOR_METADATA,
   ACTOR_HANDLERS_METADATA,
+  SCHEMA_METADATA,
+  REPLY_SCHEMA_METADATA,
 } from './constants';
 import {
   JobCommandMetadata,
@@ -35,4 +37,12 @@ export function getActorMetadata(target: Function): ActorOptions | undefined {
 
 export function getActorHandlers(target: Function): ActorHandlerMetadata[] {
   return Reflect.getMetadata(ACTOR_HANDLERS_METADATA, target) || [];
+}
+
+export function getSchemaMetadata(target: Function): any | undefined {
+  return Reflect.getMetadata(SCHEMA_METADATA, target);
+}
+
+export function getReplySchemaMetadata(target: Function): any | undefined {
+  return Reflect.getMetadata(REPLY_SCHEMA_METADATA, target);
 }
