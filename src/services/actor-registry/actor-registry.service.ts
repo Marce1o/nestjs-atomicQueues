@@ -1,5 +1,5 @@
 import { Injectable, Logger, Inject, OnModuleInit, OnApplicationShutdown, Optional, Type } from '@nestjs/common';
-import { DiscoveryService } from '@nestjs/core';
+import { DiscoveryService, ModuleRef } from '@nestjs/core';
 import Redis from 'ioredis';
 import { IAtomicQueuesModuleConfig } from '../../domain';
 import { resolveKeyPrefix } from '../../utils';
@@ -36,6 +36,7 @@ export class ActorRegistry implements OnModuleInit, OnApplicationShutdown {
     @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
     @Optional() private readonly discoveryService: DiscoveryService,
     private readonly handlerExecutor: HandlerExecutor,
+    private readonly moduleRef: ModuleRef,
   ) {
     this.keyPrefix = resolveKeyPrefix(config);
   }
@@ -121,7 +122,7 @@ export class ActorRegistry implements OnModuleInit, OnApplicationShutdown {
     let entry = this.instances.get(entityKey);
 
     if (!entry) {
-      const instance = Reflect.construct(definition.targetClass, []) as Record<string, unknown>;
+      const instance = await this.createActorInstance(definition);
 
       const persisted = this.config.entities?.[entityType]?.statePersistence !== false;
       if (persisted) {
@@ -151,6 +152,15 @@ export class ActorRegistry implements OnModuleInit, OnApplicationShutdown {
 
   getRegisteredEntityTypes(): string[] {
     return Array.from(this.definitions.keys());
+  }
+
+  private async createActorInstance(definition: ActorDefinition): Promise<Record<string, unknown>> {
+    try {
+      return await this.moduleRef.create(definition.targetClass) as Record<string, unknown>;
+    } catch {
+      // Fallback for classes not registered in the DI container
+      return Reflect.construct(definition.targetClass, []) as Record<string, unknown>;
+    }
   }
 
   private async persistState(entityKey: string, entry: ActorInstance): Promise<void> {
@@ -190,7 +200,13 @@ export class ActorRegistry implements OnModuleInit, OnApplicationShutdown {
       if (typeof val === 'function') continue;
       if (val instanceof Map || val instanceof Set || val instanceof Date) continue;
       if (val !== null && typeof val === 'object' && Object.getPrototypeOf(val) !== Object.prototype && !Array.isArray(val)) continue;
-      state[key] = val;
+
+      try {
+        JSON.stringify(val);
+        state[key] = val;
+      } catch {
+        this.logger.warn(`Skipping non-serializable field '${key}' during state extraction`);
+      }
     }
     return state;
   }

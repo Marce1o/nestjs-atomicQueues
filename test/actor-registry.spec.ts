@@ -113,6 +113,7 @@ describe('ActorRegistry', () => {
         { redis: {}, keyPrefix: 'test' } as any,
         mockDiscovery as any,
         handlerExecutor,
+        { create: () => Promise.reject(new Error('not in DI')) } as any,
       );
 
       await registry.onModuleInit();
@@ -195,6 +196,7 @@ describe('ActorRegistry', () => {
         { redis: {}, keyPrefix: 'test' } as any,
         mockDiscovery as any,
         handlerExecutor,
+        { create: () => Promise.reject(new Error('not in DI')) } as any,
       );
 
       await registry.onModuleInit();

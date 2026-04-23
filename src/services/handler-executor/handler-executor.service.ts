@@ -1,6 +1,7 @@
 import { Injectable, Logger, Type, OnModuleInit } from '@nestjs/common';
 import { DiscoveryService, ModuleRef } from '@nestjs/core';
 import { ISerializedMessage, ICommandBus, IQueryBus } from '../../domain';
+import { getConstructorParamNames } from '../../decorators/utils';
 import { discoverCqrsClasses } from '../../utils';
 import { CommandDiscoveryService } from '../command-discovery';
 
@@ -134,7 +135,12 @@ export class HandlerExecutor implements OnModuleInit {
     const registryEntry = this.commandRegistry.get(name);
     if (registryEntry) {
       const { targetClass, isQuery } = registryEntry;
-      const instance = Object.assign(new (targetClass as Type<Record<string, unknown>>)(), data);
+      const Ctor = targetClass as new (...args: unknown[]) => Record<string, unknown>;
+      const paramNames = this.getParamNames(Ctor);
+      const args = paramNames.length > 0
+        ? paramNames.map(p => (data as Record<string, unknown>)[p])
+        : [];
+      const instance = args.length > 0 ? new Ctor(...args) : Object.assign(new Ctor(), data);
 
       if (isQuery) {
         if (!this.queryBus) {
@@ -153,5 +159,9 @@ export class HandlerExecutor implements OnModuleInit {
 
     this.logger.warn(`No handler found for message '${name}' on entity type '${entityType}'`);
     return null;
+  }
+
+  private getParamNames(ctor: Function): string[] {
+    return getConstructorParamNames(ctor);
   }
 }
