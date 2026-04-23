@@ -19,6 +19,13 @@ module.exports = {
     '@typescript-eslint/no-explicit-any': 'warn',
     '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
     '@typescript-eslint/no-empty-function': 'off',
+    '@typescript-eslint/ban-types': [
+      'error',
+      {
+        types: { Function: false },
+        extendDefaults: true,
+      },
+    ],
   },
   ignorePatterns: ['dist/', 'node_modules/', 'candy-shop/'],
 };
