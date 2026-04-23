@@ -129,6 +129,8 @@ export class SchedulerService {
     if (message.attempts >= maxAttempts) {
       await this.logService.deadLetter(entityType, message);
     } else {
+      // RPUSH places retries at the head of the processing queue (consumed first by RPOP),
+      // prioritizing them over newer messages. This ensures failed work is retried promptly.
       const logKey = this.logService.getLogKey(entityKey);
       await this.redis.rpush(logKey, JSON.stringify(message));
       await this.logService.markReady(entityKey);
