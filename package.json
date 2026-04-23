@@ -50,6 +50,7 @@
   "peerDependencies": {
     "@nestjs/common": ">=10.0.0",
     "@nestjs/core": ">=10.0.0",
+    "ioredis": ">=5.0.0",
     "reflect-metadata": ">=0.1.13",
     "rxjs": ">=7.0.0"
   },
@@ -86,7 +87,6 @@
     "uuid": "^9.0.1"
   },
   "dependencies": {
-    "ioredis": "^5.10.1",
     "uuid": "^9.0.1"
   }
 }

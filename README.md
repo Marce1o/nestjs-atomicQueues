@@ -568,6 +568,29 @@ npm install zod zod-to-json-schema # for schema validation in the registry
 
 ---
 
+## Production Considerations
+
+### Redis as a Single Point of Failure
+
+atomic-queues relies on a single Redis instance for all coordination: message logs, gates, the ready set, actor state, and the distributed registry. If that Redis instance becomes unavailable, all dispatch stops.
+
+**Mitigations:**
+
+- **Redis Sentinel** — automatic failover to a replica. Gates (SET NX EX) and Lua scripts work identically after promotion. Brief message re-delivery is possible during failover but per-entity ordering is preserved.
+- **Redis Cluster** — horizontal scaling. Requires all keys for a given entity to land on the same shard. Use Redis hash tags (e.g. `{account:a-1}`) in your `keyPrefix` config to ensure co-location.
+- **Persistence** — enable AOF (`appendonly yes`) with `appendfsync everysec` at minimum. RDB snapshots alone risk losing the last seconds of enqueued messages on crash.
+- **Monitoring** — watch `connected_clients`, `used_memory`, and `instantaneous_ops_per_sec`. Set alerts on replication lag if using Sentinel.
+
+### Retry Ordering
+
+Failed messages are re-enqueued with `RPUSH`, placing them at the back of the entity's log. This means other pending messages for the same entity are processed before the retry. If you need head-of-line retry (failed message retried immediately), implement a custom retry strategy.
+
+### Actor State
+
+Actor state is serialized to Redis as JSON after each message. `Map`, `Set`, `Date`, and circular references are silently skipped during serialization. Keep actor state plain and serializable. State TTL defaults to 86400 seconds (24 hours) and is configurable per entity type via `stateTTL` in the module config.
+
+---
+
 ## Migrating from V1
 
 V2 is a full rewrite of the internals. BullMQ is removed. Workers are removed. The public API is largely preserved.
