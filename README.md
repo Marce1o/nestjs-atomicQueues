@@ -34,9 +34,9 @@
 
 ## What is atomic-queues?
 
-**A distributed virtual actor runtime for Node.js, built entirely on Redis primitives.**
+**Per-entity sequential processing for Node.js, built entirely on Redis primitives.**
 
-Think Orleans or Akka — but for the NestJS ecosystem, requiring nothing beyond a Redis instance you probably already have.
+Think of it as automatic entity-level serialization for the NestJS ecosystem, requiring nothing beyond a Redis instance you probably already have.
 
 Messages addressed to the same entity execute sequentially. Messages addressed to different entities execute in parallel. No distributed locks. No worker processes. No message broker. No BullMQ.
 
@@ -67,7 +67,7 @@ The standard answers — `SELECT ... FOR UPDATE`, optimistic locking with retrie
 
 The problem disappears if you change *when* serialization happens. Instead of serializing at the database level (row locks, transaction isolation), serialize at the **message level**: route all operations for a given entity through a single ordered log, and process that log sequentially. Different entities maintain independent logs with zero coordination between them.
 
-This is the virtual actor model. It's not new — Erlang/OTP has used it since the 1980s, Orleans shipped it in 2014, Akka has been doing it on the JVM for over a decade. What *is* new is implementing it with nothing beyond Redis and making it native to the NestJS ecosystem.
+This is the per-entity serialization model. It's the same insight behind the actor model (Erlang/OTP, Orleans, Akka) — but implemented with nothing beyond Redis and native to the NestJS ecosystem. Entity types are defined implicitly: any CQRS command or query decorated with `@EntityType` automatically gets per-entity sequential processing. Your `@CommandHandler` and `@QueryHandler` classes are the handlers — no separate actor classes needed.
 
 ```
                         ┌─────────────────────────────────────────────────┐
@@ -106,31 +106,7 @@ That's the entire contract. `@EntityType` says "this message targets the `accoun
 
 ### Two levels of abstraction
 
-atomic-queues gives you two ways to handle messages, and they're not different systems — they're two levels of abstraction over the same dispatch engine.
-
-**Actors** are the foundational primitive. An actor class *is* an entity — its fields are the state, its methods are message handlers. The runtime manages its lifecycle: activate on first message, evict from memory on idle, persist state to Redis automatically, restore on reactivation. The entity type is inferred from the message classes' `@EntityType` decorator — no `@Actor` decorator required.
-
-```typescript
-@Injectable()
-export class AccountActor {
-  private balance = 0;
-
-  @On(DepositCommand)     // DepositCommand has @EntityType('account')
-  async deposit(msg: DepositCommand) {
-    this.balance += msg.amount;
-    return this.balance;
-  }
-
-  @On(WithdrawCommand)    // WithdrawCommand has @EntityType('account')
-  async withdraw(msg: WithdrawCommand) {
-    if (this.balance < msg.amount) throw new InsufficientFunds();
-    this.balance -= msg.amount;
-    return this.balance;
-  }
-}
-```
-
-**CQRS handlers** are the convenience layer for teams using `@nestjs/cqrs`. You don't write actor classes — you write standard `@CommandHandler` and `@QueryHandler` classes exactly as NestJS CQRS prescribes, and atomic-queues intercepts the dispatch to route them through the same per-entity log and gate system. The handler code doesn't change. The guarantee changes — instead of executing inline on whatever request thread happens to call `commandBus.execute()`, your handler now executes sequentially per entity, cluster-wide.
+Entity types are defined implicitly — decorate your CQRS command or query class with `@EntityType`, and atomic-queues routes it through the per-entity log and gate system. Your `@CommandHandler` and `@QueryHandler` classes are the handlers. The handler code doesn't change. The guarantee changes — instead of executing inline on whatever request thread happens to call `commandBus.execute()`, your handler now executes sequentially per entity, cluster-wide.
 
 ```typescript
 @EntityType('account')
@@ -150,7 +126,7 @@ export class WithdrawHandler implements ICommandHandler<WithdrawCommand> {
 }
 ```
 
-The library auto-discovers `@CommandHandler` and `@QueryHandler` classes at boot and wires them into the dispatch pipeline. Your existing CQRS architecture gets per-entity sequential guarantees without changing a single handler. The CQRS surface *calls into the actor runtime* — it's not a separate execution path.
+The library auto-discovers `@CommandHandler` and `@QueryHandler` classes at boot and wires them into the dispatch pipeline. Your existing CQRS architecture gets per-entity sequential guarantees without changing a single handler.
 
 ### Enqueuing messages
 
@@ -171,10 +147,6 @@ const stock = await queueBus.enqueueAndWait('warehouse', 'GetStockQuery', 'SKU-0
 // Scoped cross-service
 const warehouse = queueBus.forEntity('warehouse');
 await warehouse.enqueue('ReserveStockCommand', 'SKU-001', { sku: 'SKU-001', quantity: 50 });
-
-// Actor-style direct send
-await actorSystem.send('account', accountId, new DepositCommand(100));
-const balance = await actorSystem.sendAndWait('account', accountId, new GetBalanceQuery());
 ```
 
 ---
@@ -249,7 +221,7 @@ const stock = await queueBus.enqueueAndWait(new GetStockQuery({ sku: 'SKU-001' }
 stock.available; // fully typed — no string API, no explicit timeout, no code dependency on warehouse-service
 ```
 
-When `warehouse-service` starts, it scans its own `@Actor`, `@CommandHandler`, and `@QueryHandler` classes and publishes **entity contracts** to Redis — a JSON document listing the entity type, accepted messages, optional JSON schemas, and reply schemas, refreshed via heartbeat TTL. When `order-service` enqueues a message, the registry validates it at the call site *before* it enters the log: entity type exists, message name is accepted, payload matches schema. Errors are immediate and descriptive — not silent dead letters discovered hours later in a DLQ dashboard.
+When `warehouse-service` starts, it scans its own `@CommandHandler` and `@QueryHandler` classes and publishes **entity contracts** to Redis — a JSON document listing the entity type, accepted messages, optional JSON schemas, and reply schemas, refreshed via heartbeat TTL. When `order-service` enqueues a message, the registry validates it at the call site *before* it enters the log: entity type exists, message name is accepted, payload matches schema. Errors are immediate and descriptive — not silent dead letters discovered hours later in a DLQ dashboard.
 
 The Lua scheduler ensures each node only dispatches messages for entity types it owns handlers for. Services that don't own any handlers (API gateways, pure producers) participate in the registry without stealing messages from handler-owning nodes.
 
@@ -421,16 +393,16 @@ SADD   aq:ready  account:a-1
 PUBLISH aq:tickle  1
 ```
 
-**Any language with a Redis client is a first-class citizen.** A Python data pipeline can enqueue commands to a NestJS-hosted actor. A Go microservice can fire events at entities defined in TypeScript. A Rust executor can run the same Lua scheduling script and compete for gates on equal terms with the Node.js executor pool. A Bash script can trigger a workflow.
+**Any language with a Redis client is a first-class citizen.** A Python data pipeline can enqueue commands to a NestJS-hosted entity. A Go microservice can fire events at entities defined in TypeScript. A Rust executor can run the same Lua scheduling script and compete for gates on equal terms with the Node.js executor pool. A Bash script can trigger a workflow.
 
-This is not a feature of any existing mainstream actor framework. Orleans requires the Orleans silo. Akka requires the JVM. Temporal requires the Temporal server with its own database. All of them are monoglot execution environments — actors must be written in the framework's language.
+This is not a feature of most frameworks. Orleans requires the Orleans silo. Temporal requires the Temporal server with its own database. All of them are monoglot execution environments — handlers must be written in the framework's language.
 
 atomic-queues is **polyglot by construction**. The coordination happens in Redis, not in the runtime. Any process that speaks the wire protocol participates on equal terms, and the [WIRE-PROTOCOL.md](./WIRE-PROTOCOL.md) includes a complete Python reference client to prove it.
 
 This opens architectures that are genuinely difficult to build otherwise:
 
 - **Ingest in Go, process in Node.js, analyze in Python.** Each layer speaks Redis. The entity logs are the integration boundary.
-- **Rust executors for CPU-hot-path actors.** The same Lua scheduler, the same gates, the same entity logs. The Rust process is just another executor that happens to be faster. The Node.js side doesn't know or care.
+- **Rust executors for CPU-hot-path entities.** The same Lua scheduler, the same gates, the same entity logs. The Rust process is just another executor that happens to be faster. The Node.js side doesn't know or care.
 - **Gradual migration.** Move one entity type's handlers to a different service, a different language, or a different infrastructure — without touching any other service's code. The entity contract in the registry is the interface, not the import statement.
 - **Edge coordination.** An IoT device with a Redis client and 3 commands of knowledge can participate in the same entity model as your cloud services.
 
@@ -494,8 +466,6 @@ AtomicQueuesModule.forRoot({
       defaultEntityId: 'accountId',
       gateTTL: 60,
       retry: { maxAttempts: 5, backoff: 'exponential', backoffDelay: 2000 },
-      actorIdleTimeout: 120000,
-      statePersistence: true,
       replyTimeout: 5000,     // per-entity enqueueAndWait timeout (ms)
     },
   },
@@ -544,7 +514,7 @@ npm install zod zod-to-json-schema # for schema validation in the registry
 |---|---|---|---|
 | Per-entity ordering | Manual (named queues) | Workflow-scoped | Built-in, zero config |
 | Cross-entity parallelism | Worker pools | Worker pools | Shared executor pool |
-| Stateful entities | No | Workflow state | Virtual actors |
+| Stateful entities | No | Workflow state | Per-entity sequential handlers |
 | Cross-service messaging | Shared queue names | gRPC | Redis registry + codegen |
 | Polyglot clients | JS/TS only | SDK per language | Any Redis client (3 commands) |
 | Infrastructure required | Redis | Temporal server + DB | Redis only |
@@ -561,8 +531,6 @@ npm install zod zod-to-json-schema # for schema validation in the registry
 | `@EntityType('type')` | Route a message to an entity type |
 | `@QueueEntityId()` | Mark the property holding the entity ID |
 | `@QueueEntity('type', 'prop')` | Combined entity type + ID |
-| `@Actor('type')` | Explicitly declare an actor (optional — entity type is inferred from `@On` handlers) |
-| `@On(MessageClass)` | Handle a message type on an actor |
 | `@Schema(zodSchema)` | Attach a Zod schema for registry validation |
 | `@ReplySchema(zodSchema)` | Attach a reply schema for query codegen |
 
@@ -572,7 +540,7 @@ npm install zod zod-to-json-schema # for schema validation in the registry
 
 ### Redis as a Single Point of Failure
 
-atomic-queues relies on a single Redis instance for all coordination: message logs, gates, the ready set, actor state, and the distributed registry. If that Redis instance becomes unavailable, all dispatch stops.
+atomic-queues relies on a single Redis instance for all coordination: message logs, gates, the ready set, and the distributed registry. If that Redis instance becomes unavailable, all dispatch stops.
 
 **Mitigations:**
 
@@ -585,10 +553,6 @@ atomic-queues relies on a single Redis instance for all coordination: message lo
 
 Failed messages are re-enqueued with `RPUSH`, placing them at the back of the entity's log. This means other pending messages for the same entity are processed before the retry. If you need head-of-line retry (failed message retried immediately), implement a custom retry strategy.
 
-### Actor State
-
-Actor state is serialized to Redis as JSON after each message. `Map`, `Set`, `Date`, and circular references are silently skipped during serialization. Keep actor state plain and serializable. State TTL defaults to 86400 seconds (24 hours) and is configurable per entity type via `stateTTL` in the module config.
-
 ---
 
 ## Migrating from V1
@@ -599,9 +563,9 @@ V2 is a full rewrite of the internals. BullMQ is removed. Workers are removed. T
 
 **What's removed**: `@WorkerProcessor`, `@JobHandler`, `@EntityScaler`, `@OnSpawnWorker`, `@OnTerminateWorker`, `@GetActiveEntities`, `@GetDesiredWorkerCount`, `.forProcessor()`. All worker and scaling concepts are gone.
 
-**What's new**: `@Actor`, `@On`, `@Schema`, `@ReplySchema`, `ActorSystem`, `RegistryService`, distributed registry, runtime introspection (`queueBus.introspect()`), cross-service string-based API, `Reply<T>` phantom type, class codegen CLI (`--classes`), config-driven timeouts.
+**What's new**: `@Schema`, `@ReplySchema`, `ActorSystem`, `RegistryService`, distributed registry, runtime introspection (`queueBus.introspect()`), cross-service string-based API, `Reply<T>` phantom type, class codegen CLI (`--classes`), config-driven timeouts.
 
-**Migration steps**: (1) remove all `@WorkerProcessor` classes — replace with `@Actor` or configure entity defaults in module config; (2) remove all scaling decorators; (3) run the data migration script to drain in-flight BullMQ jobs to the new log format; (4) remove `bullmq` and `@nestjs/bullmq` from your dependencies.
+**Migration steps**: (1) remove all `@WorkerProcessor` classes — configure entity defaults in module config and use `@CommandHandler`/`@QueryHandler`; (2) remove all scaling decorators; (3) run the data migration script to drain in-flight BullMQ jobs to the new log format; (4) remove `bullmq` and `@nestjs/bullmq` from your dependencies.
 
 ---
 

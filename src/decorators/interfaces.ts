@@ -45,26 +45,6 @@ export interface JobQueryMetadata {
 }
 
 /**
- * Options for @Actor decorator
- */
-export interface ActorOptions {
-  /** Entity type this actor handles */
-  entityType: string;
-  /** Default property name for entity ID extraction */
-  defaultEntityId?: string;
-}
-
-/**
- * Stored actor handler metadata
- */
-export interface ActorHandlerMetadata {
-  /** The message class this handler processes */
-  messageClass: Function;
-  /** The method name on the actor class */
-  methodName: string;
-}
-
-/**
  * Options for @Schema decorator
  */
 export interface SchemaDecoratorOptions {

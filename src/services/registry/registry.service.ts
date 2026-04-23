@@ -13,8 +13,6 @@ import { resolveKeyPrefix } from '../../utils';
 import {
   getEntityType,
   getEntityIdProperty,
-  getActorMetadata,
-  getActorHandlers,
   getJobCommandMetadata,
   getJobQueryMetadata,
   getSchemaMetadata,
@@ -185,44 +183,7 @@ export class RegistryService implements OnModuleInit, OnApplicationShutdown {
 
     const providers = this.discoveryService.getProviders();
 
-    // 1. @Actor classes and auto-discovered @On handlers
-    for (const wrapper of providers) {
-      const { metatype } = wrapper;
-      if (!metatype) continue;
-
-      const handlers = getActorHandlers(metatype);
-      if (handlers.length === 0) continue;
-
-      // If @Actor is present, use its explicit entity type.
-      // Otherwise, infer from the message classes' @EntityType.
-      const actorMeta = getActorMetadata(metatype);
-      let entityType: string | undefined;
-
-      if (actorMeta) {
-        entityType = actorMeta.entityType;
-      } else {
-        for (const h of handlers) {
-          const et = getEntityType(h.messageClass);
-          if (et) {
-            entityType = et;
-            break;
-          }
-        }
-      }
-
-      if (!entityType) continue;
-
-      const contract = this.getOrCreateContract(contracts, entityType);
-      for (const handler of handlers) {
-        const msgClass = handler.messageClass;
-        const msgName = msgClass.name;
-        if (!contract.messages[msgName]) {
-          contract.messages[msgName] = this.buildMessageSpec(msgClass);
-        }
-      }
-    }
-
-    // 2. @JobCommand / @JobQuery classes
+    // 1. @JobCommand / @JobQuery classes
     for (const wrapper of providers) {
       const { metatype } = wrapper;
       if (!metatype) continue;
@@ -246,7 +207,7 @@ export class RegistryService implements OnModuleInit, OnApplicationShutdown {
       }
     }
 
-    // 3. @CommandHandler / @QueryHandler (CQRS)
+    // 2. @CommandHandler / @QueryHandler (CQRS)
     const COMMAND_HANDLER_METADATA = '__commandHandler__';
     const QUERY_HANDLER_METADATA = '__queryHandler__';
 
@@ -277,7 +238,7 @@ export class RegistryService implements OnModuleInit, OnApplicationShutdown {
       }
     }
 
-    // 4. QueueBus static registry
+    // 3. QueueBus static registry
     const queueBusRegistry = QueueBus.getAllRegistered();
     for (const [className, entry] of queueBusRegistry) {
       const entityType = getEntityType(entry.targetClass);

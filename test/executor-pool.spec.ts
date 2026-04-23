@@ -35,21 +35,7 @@ describe('HandlerExecutor', () => {
     executor = createHandlerExecutor();
   });
 
-  it('should execute actor handler when registered', async () => {
-    const mockActor = {
-      deposit: jest.fn().mockResolvedValue(100),
-    };
-    const handlers = new Map([['DepositCommand', 'deposit']]);
-    executor.registerActor('account', mockActor, handlers);
-
-    const msg = createMessage({ name: 'DepositCommand', data: { amount: 50 } });
-    const result = await executor.execute(msg, 'account:a-1');
-
-    expect(mockActor.deposit).toHaveBeenCalledWith({ amount: 50 });
-    expect(result).toBe(100);
-  });
-
-  it('should fall through to command discovery when no actor handler', async () => {
+  it('should dispatch via command discovery', async () => {
     const mockDiscovery = {
       executeJob: jest.fn().mockResolvedValue('discovered-result'),
       hasHandler: jest.fn().mockReturnValue(true),

@@ -6,7 +6,7 @@ import { SchedulerService } from '../scheduler';
 import { GateService } from '../gate';
 import { LogService } from '../log';
 import { HandlerExecutor } from '../handler-executor';
-import { ActorRegistry } from '../actor-registry';
+import { EntityTypeRegistry } from '../entity-type-registry';
 import { ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG } from '../constants';
 
 @Injectable()
@@ -26,7 +26,7 @@ export class ExecutorPoolService implements OnModuleInit, OnApplicationShutdown 
     private readonly gateService: GateService,
     private readonly logService: LogService,
     private readonly handlerExecutor: HandlerExecutor,
-    private readonly actorRegistry: ActorRegistry,
+    private readonly entityTypeRegistry: EntityTypeRegistry,
   ) {
     this.keyPrefix = resolveKeyPrefix(config);
     this.poolSize = config.executor?.poolSize ?? 1;
@@ -112,20 +112,6 @@ export class ExecutorPoolService implements OnModuleInit, OnApplicationShutdown 
     }, refreshInterval);
 
     try {
-      if (this.actorRegistry.hasActor(entityType)) {
-        const actor = await this.actorRegistry.getOrCreateInstance(entityType, entityId);
-        const methodName = this.actorRegistry.getHandlerMethod(entityType, message.name);
-        if (actor && methodName) {
-          const handler = actor[methodName];
-          if (typeof handler === 'function') {
-            const result = await handler.call(actor, { ...message.data });
-            await this.publishResult(message, result);
-            await this.scheduler.complete(entityKey, ownerToken);
-            return;
-          }
-        }
-      }
-
       const result = await this.handlerExecutor.execute(message, entityKey);
       await this.publishResult(message, result);
       await this.scheduler.complete(entityKey, ownerToken);
@@ -156,8 +142,7 @@ export class ExecutorPoolService implements OnModuleInit, OnApplicationShutdown 
   private collectOwnedEntityTypes(): string[] | undefined {
     const types = new Set<string>();
 
-    // Actor entity types
-    for (const et of this.actorRegistry.getRegisteredEntityTypes()) {
+    for (const et of this.entityTypeRegistry.getRegisteredEntityTypes()) {
       types.add(et);
     }
 

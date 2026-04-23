@@ -34,12 +34,6 @@ export interface IEntityConfig {
   gateTTL?: number;
   /** Retry policy for this entity type */
   retry?: IRetryPolicy;
-  /** Idle timeout in ms before actor state is evicted from memory (default: 60000) */
-  actorIdleTimeout?: number;
-  /** Persist actor state to Redis on eviction (default: true) */
-  statePersistence?: boolean;
-  /** TTL in seconds for persisted actor state in Redis (default: 86400) */
-  stateTTL?: number;
   /** Default timeout in ms for enqueueAndWait on this entity type */
   replyTimeout?: number;
 }

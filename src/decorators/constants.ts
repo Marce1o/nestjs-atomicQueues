@@ -6,11 +6,6 @@ export const ENTITY_ID_METADATA = 'atomic:entity-id';
 export const JOB_COMMAND_METADATA = 'atomic:job-command';
 export const JOB_QUERY_METADATA = 'atomic:job-query';
 
-// Actor
-export const ACTOR_METADATA = 'atomic:actor';
-export const ACTOR_HANDLER_METADATA = 'atomic:actor-handler';
-export const ACTOR_HANDLERS_METADATA = 'atomic:actor-handlers';
-
 // Schema
 export const SCHEMA_METADATA = 'atomic:schema';
 export const REPLY_SCHEMA_METADATA = 'atomic:reply-schema';

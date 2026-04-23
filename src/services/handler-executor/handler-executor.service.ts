@@ -5,11 +5,6 @@ import { getConstructorParamNames } from '../../decorators/utils';
 import { discoverCqrsClasses } from '../../utils';
 import { CommandDiscoveryService } from '../command-discovery';
 
-interface IActorEntry {
-  create: () => Record<string, Function>;
-  handlers: Map<string, string>;
-}
-
 @Injectable()
 export class HandlerExecutor implements OnModuleInit {
   private readonly logger = new Logger(HandlerExecutor.name);
@@ -17,7 +12,6 @@ export class HandlerExecutor implements OnModuleInit {
   private commandBus: ICommandBus | null = null;
   private queryBus: IQueryBus | null = null;
 
-  private actorHandlerMap = new Map<string, IActorEntry>();
   private commandRegistry = new Map<string, { targetClass: Type<unknown>; isQuery: boolean }>();
   private commandDiscovery: CommandDiscoveryService | null = null;
 
@@ -85,25 +79,11 @@ export class HandlerExecutor implements OnModuleInit {
     this.commandDiscovery = discovery;
   }
 
-  registerActor(
-    entityType: string,
-    actorInstance: Record<string, Function>,
-    handlers: Map<string, string>,
-  ): void {
-    this.actorHandlerMap.set(entityType, {
-      create: () => actorInstance,
-      handlers,
-    });
-  }
-
   registerCommand(className: string, targetClass: Type<unknown>, isQuery: boolean): void {
     this.commandRegistry.set(className, { targetClass, isQuery });
   }
 
   canHandle(entityType: string, messageName: string): boolean {
-    const actorEntry = this.actorHandlerMap.get(entityType);
-    if (actorEntry && actorEntry.handlers.has(messageName)) return true;
-
     if (this.commandDiscovery?.hasHandler(messageName, entityType)) return true;
 
     if (this.commandRegistry.has(messageName)) return true;
@@ -113,16 +93,6 @@ export class HandlerExecutor implements OnModuleInit {
 
   async execute(message: ISerializedMessage, entityKey: string): Promise<unknown> {
     const { name, data, entityType, entityId } = message;
-
-    const actorEntry = this.actorHandlerMap.get(entityType);
-    if (actorEntry) {
-      const methodName = actorEntry.handlers.get(name);
-      if (methodName) {
-        const actor = actorEntry.create();
-        const msgInstance = { ...data };
-        return actor[methodName](msgInstance);
-      }
-    }
 
     if (this.commandDiscovery) {
       const fakeJob = { name, data, id: message.id };

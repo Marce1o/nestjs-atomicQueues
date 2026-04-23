@@ -4,7 +4,7 @@ export * from './gate';
 export * from './scheduler';
 export * from './executor-pool';
 export * from './handler-executor';
-export * from './actor-registry';
+export * from './entity-type-registry';
 export * from './actor-system';
 export * from './queue-bus';
 export * from './command-discovery';

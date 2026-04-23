@@ -5,20 +5,14 @@ import {
   QueueEntity,
   JobCommand,
   JobQuery,
-  Actor,
-  On,
   getEntityType,
   getEntityIdProperty,
   getJobCommandMetadata,
   getJobQueryMetadata,
-  getActorMetadata,
-  getActorHandlers,
   ENTITY_TYPE_METADATA,
   ENTITY_ID_METADATA,
   JOB_COMMAND_METADATA,
   JOB_QUERY_METADATA,
-  ACTOR_METADATA,
-  ACTOR_HANDLERS_METADATA,
 } from '../src/decorators';
 
 // ─── @EntityType ────────────────────────────────────────────────────────────
@@ -173,91 +167,3 @@ describe('@JobQuery', () => {
   });
 });
 
-// ─── @Actor ─────────────────────────────────────────────────────────────────
-
-describe('@Actor', () => {
-  it('should set actor metadata with entity type', () => {
-    @Actor('account')
-    class AccountActor {}
-
-    const meta = getActorMetadata(AccountActor);
-    expect(meta).toBeDefined();
-    expect(meta!.entityType).toBe('account');
-    expect(meta!.defaultEntityId).toBeUndefined();
-  });
-
-  it('should accept optional defaultEntityId', () => {
-    @Actor('table', { defaultEntityId: 'tableId' })
-    class TableActor {}
-
-    const meta = getActorMetadata(TableActor);
-    expect(meta!.entityType).toBe('table');
-    expect(meta!.defaultEntityId).toBe('tableId');
-  });
-
-  it('should mark class as injectable', () => {
-    @Actor('game')
-    class GameActor {}
-
-    expect(Reflect.hasMetadata('injectable', GameActor)).toBe(true);
-  });
-
-  it('should return undefined for non-actor classes', () => {
-    class NotAnActor {}
-    expect(getActorMetadata(NotAnActor)).toBeUndefined();
-  });
-});
-
-// ─── @On ────────────────────────────────────────────────────────────────────
-
-describe('@On', () => {
-  class DepositCommand {
-    constructor(public readonly amount: number) {}
-  }
-  class WithdrawCommand {
-    constructor(public readonly amount: number) {}
-  }
-
-  it('should register a handler for a message class', () => {
-    @Actor('account')
-    class AccountActor {
-      @On(DepositCommand)
-      async deposit(msg: DepositCommand) {
-        return msg.amount;
-      }
-    }
-
-    const handlers = getActorHandlers(AccountActor);
-    expect(handlers).toHaveLength(1);
-    expect(handlers[0].messageClass).toBe(DepositCommand);
-    expect(handlers[0].methodName).toBe('deposit');
-  });
-
-  it('should register multiple handlers', () => {
-    @Actor('account')
-    class MultiActor {
-      @On(DepositCommand)
-      async deposit(msg: DepositCommand) {}
-
-      @On(WithdrawCommand)
-      async withdraw(msg: WithdrawCommand) {}
-    }
-
-    const handlers = getActorHandlers(MultiActor);
-    expect(handlers).toHaveLength(2);
-    const names = handlers.map((h) => h.methodName).sort();
-    expect(names).toEqual(['deposit', 'withdraw']);
-  });
-
-  it('should store per-method metadata', () => {
-    class TestActor {
-      @On(DepositCommand)
-      async handle(msg: DepositCommand) {}
-    }
-
-    const meta = Reflect.getMetadata('atomic:actor-handler', TestActor.prototype, 'handle');
-    expect(meta).toBeDefined();
-    expect(meta.messageClass).toBe(DepositCommand);
-    expect(meta.methodName).toBe('handle');
-  });
-});
