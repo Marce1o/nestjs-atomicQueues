@@ -1,7 +1,7 @@
 {
   "name": "atomic-queues",
-  "version": "2.2.0",
-  "description": "Distributed virtual actor runtime for Node.js — sequential per entity, parallel across entities, zero contention",
+  "version": "2.3.0",
+  "description": "Per-entity sequential processing for Node.js — parallel across entities, zero contention, built on Redis",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
