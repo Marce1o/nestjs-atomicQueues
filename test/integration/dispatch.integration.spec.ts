@@ -15,7 +15,12 @@ function readySetKey(): string {
   return `${KEY_PREFIX}:ready`;
 }
 
-function createMessage(entityType: string, entityId: string, name: string, data: Record<string, unknown> = {}) {
+function createMessage(
+  entityType: string,
+  entityId: string,
+  name: string,
+  data: Record<string, unknown> = {},
+) {
   return JSON.stringify({
     id: uuidv4(),
     name,
@@ -123,7 +128,7 @@ describe('Integration: Redis dispatch cycle', () => {
       const key = gateKey('account:a-1');
       await redis.set(key, 'token-A', 'EX', 30, 'NX');
 
-      const result = await redis.eval(RELEASE_IF_OWNER_SCRIPT, 1, key, 'token-B') as number;
+      const result = (await redis.eval(RELEASE_IF_OWNER_SCRIPT, 1, key, 'token-B')) as number;
       expect(result).toBe(0);
 
       const holder = await redis.get(key);
@@ -134,7 +139,7 @@ describe('Integration: Redis dispatch cycle', () => {
       const key = gateKey('account:a-2');
       await redis.set(key, 'token-A', 'EX', 30, 'NX');
 
-      const result = await redis.eval(RELEASE_IF_OWNER_SCRIPT, 1, key, 'token-A') as number;
+      const result = (await redis.eval(RELEASE_IF_OWNER_SCRIPT, 1, key, 'token-A')) as number;
       expect(result).toBe(1);
 
       const holder = await redis.get(key);
@@ -145,7 +150,7 @@ describe('Integration: Redis dispatch cycle', () => {
       const key = gateKey('account:a-3');
       await redis.set(key, 'token-A', 'EX', 10, 'NX');
 
-      const result = await redis.eval(EXTEND_IF_OWNER_SCRIPT, 1, key, 'token-B', '60') as number;
+      const result = (await redis.eval(EXTEND_IF_OWNER_SCRIPT, 1, key, 'token-B', '60')) as number;
       expect(result).toBe(0);
 
       const ttl = await redis.ttl(key);
@@ -156,7 +161,7 @@ describe('Integration: Redis dispatch cycle', () => {
       const key = gateKey('account:a-4');
       await redis.set(key, 'token-A', 'EX', 5, 'NX');
 
-      const result = await redis.eval(EXTEND_IF_OWNER_SCRIPT, 1, key, 'token-A', '60') as number;
+      const result = (await redis.eval(EXTEND_IF_OWNER_SCRIPT, 1, key, 'token-A', '60')) as number;
       expect(result).toBe(1);
 
       const ttl = await redis.ttl(key);
@@ -171,7 +176,7 @@ describe('Integration: Redis dispatch cycle', () => {
       await redis.sadd(readySetKey(), entityKey);
 
       const token = uuidv4();
-      const result = await redis.eval(
+      const result = (await redis.eval(
         PICK_DISPATCHABLE_SCRIPT,
         1,
         readySetKey(),
@@ -180,7 +185,7 @@ describe('Integration: Redis dispatch cycle', () => {
         token,
         '30',
         '32',
-      ) as [string, string, string] | null;
+      )) as [string, string, string] | null;
 
       expect(result).not.toBeNull();
       expect(result![0]).toBe(entityKey);
@@ -198,7 +203,7 @@ describe('Integration: Redis dispatch cycle', () => {
       await redis.sadd(readySetKey(), entityKey);
       await redis.set(gateKey(entityKey), 'existing-token', 'EX', 30, 'NX');
 
-      const result = await redis.eval(
+      const result = (await redis.eval(
         PICK_DISPATCHABLE_SCRIPT,
         1,
         readySetKey(),
@@ -207,7 +212,7 @@ describe('Integration: Redis dispatch cycle', () => {
         uuidv4(),
         '30',
         '32',
-      ) as null;
+      )) as null;
 
       expect(result).toBeNull();
     });
@@ -260,7 +265,7 @@ describe('Integration: Redis dispatch cycle', () => {
       await redis.lpush(logKey(acctKey), createMessage('account', 'a-5', 'Deposit'));
       await redis.sadd(readySetKey(), wareKey, acctKey);
 
-      const result = await redis.eval(
+      const result = (await redis.eval(
         PICK_DISPATCHABLE_SCRIPT,
         1,
         readySetKey(),
@@ -270,7 +275,7 @@ describe('Integration: Redis dispatch cycle', () => {
         '30',
         '32',
         'warehouse:',
-      ) as [string, string, string] | null;
+      )) as [string, string, string] | null;
 
       expect(result).not.toBeNull();
       expect(result![0]).toBe(wareKey);
@@ -282,12 +287,39 @@ describe('Integration: Redis dispatch cycle', () => {
       await redis.sadd(readySetKey(), entityKey);
 
       const results = await Promise.all([
-        redis.eval(PICK_DISPATCHABLE_SCRIPT, 1, readySetKey(), `${KEY_PREFIX}:gate:`, `${KEY_PREFIX}:log:`, uuidv4(), '30', '32'),
-        redis.eval(PICK_DISPATCHABLE_SCRIPT, 1, readySetKey(), `${KEY_PREFIX}:gate:`, `${KEY_PREFIX}:log:`, uuidv4(), '30', '32'),
-        redis.eval(PICK_DISPATCHABLE_SCRIPT, 1, readySetKey(), `${KEY_PREFIX}:gate:`, `${KEY_PREFIX}:log:`, uuidv4(), '30', '32'),
+        redis.eval(
+          PICK_DISPATCHABLE_SCRIPT,
+          1,
+          readySetKey(),
+          `${KEY_PREFIX}:gate:`,
+          `${KEY_PREFIX}:log:`,
+          uuidv4(),
+          '30',
+          '32',
+        ),
+        redis.eval(
+          PICK_DISPATCHABLE_SCRIPT,
+          1,
+          readySetKey(),
+          `${KEY_PREFIX}:gate:`,
+          `${KEY_PREFIX}:log:`,
+          uuidv4(),
+          '30',
+          '32',
+        ),
+        redis.eval(
+          PICK_DISPATCHABLE_SCRIPT,
+          1,
+          readySetKey(),
+          `${KEY_PREFIX}:gate:`,
+          `${KEY_PREFIX}:log:`,
+          uuidv4(),
+          '30',
+          '32',
+        ),
       ]);
 
-      const winners = results.filter(r => r !== null);
+      const winners = results.filter((r) => r !== null);
       expect(winners.length).toBe(1);
     });
   });
@@ -302,17 +334,29 @@ describe('Integration: Redis dispatch cycle', () => {
       await redis.sadd(readySetKey(), entityKey);
 
       const token = uuidv4();
-      const first = await redis.eval(
-        PICK_DISPATCHABLE_SCRIPT, 1, readySetKey(),
-        `${KEY_PREFIX}:gate:`, `${KEY_PREFIX}:log:`, token, '30', '32',
-      ) as [string, string, string];
+      const first = (await redis.eval(
+        PICK_DISPATCHABLE_SCRIPT,
+        1,
+        readySetKey(),
+        `${KEY_PREFIX}:gate:`,
+        `${KEY_PREFIX}:log:`,
+        token,
+        '30',
+        '32',
+      )) as [string, string, string];
 
       expect(JSON.parse(first[1]).name).toBe('Msg1');
 
       // Same entity can't be picked while gate is held
       const second = await redis.eval(
-        PICK_DISPATCHABLE_SCRIPT, 1, readySetKey(),
-        `${KEY_PREFIX}:gate:`, `${KEY_PREFIX}:log:`, uuidv4(), '30', '32',
+        PICK_DISPATCHABLE_SCRIPT,
+        1,
+        readySetKey(),
+        `${KEY_PREFIX}:gate:`,
+        `${KEY_PREFIX}:log:`,
+        uuidv4(),
+        '30',
+        '32',
       );
       expect(second).toBeNull();
 
@@ -321,10 +365,16 @@ describe('Integration: Redis dispatch cycle', () => {
       await redis.sadd(readySetKey(), entityKey);
 
       const token2 = uuidv4();
-      const third = await redis.eval(
-        PICK_DISPATCHABLE_SCRIPT, 1, readySetKey(),
-        `${KEY_PREFIX}:gate:`, `${KEY_PREFIX}:log:`, token2, '30', '32',
-      ) as [string, string, string];
+      const third = (await redis.eval(
+        PICK_DISPATCHABLE_SCRIPT,
+        1,
+        readySetKey(),
+        `${KEY_PREFIX}:gate:`,
+        `${KEY_PREFIX}:log:`,
+        token2,
+        '30',
+        '32',
+      )) as [string, string, string];
 
       expect(JSON.parse(third[1]).name).toBe('Msg2');
     });
@@ -340,17 +390,23 @@ describe('Integration: Redis dispatch cycle', () => {
 
       const results: ([string, string, string] | null)[] = [];
       for (let i = 0; i < 3; i++) {
-        const r = await redis.eval(
-          PICK_DISPATCHABLE_SCRIPT, 1, readySetKey(),
-          `${KEY_PREFIX}:gate:`, `${KEY_PREFIX}:log:`, uuidv4(), '30', '32',
-        ) as [string, string, string] | null;
+        const r = (await redis.eval(
+          PICK_DISPATCHABLE_SCRIPT,
+          1,
+          readySetKey(),
+          `${KEY_PREFIX}:gate:`,
+          `${KEY_PREFIX}:log:`,
+          uuidv4(),
+          '30',
+          '32',
+        )) as [string, string, string] | null;
         results.push(r);
       }
 
-      const dispatched = results.filter(r => r !== null);
+      const dispatched = results.filter((r) => r !== null);
       expect(dispatched.length).toBe(3);
 
-      const keys = dispatched.map(r => r![0]).sort();
+      const keys = dispatched.map((r) => r![0]).sort();
       expect(keys).toEqual(['account:par-1', 'account:par-2', 'account:par-3']);
     });
   });

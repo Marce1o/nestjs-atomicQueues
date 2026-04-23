@@ -84,9 +84,9 @@ export class SchedulerService {
     const defaultTTL = this.config.executor?.gateTTL ?? 30;
 
     // Entity type prefixes for Lua filtering (e.g. "warehouse:", "candy:")
-    const prefixes = (ownedEntityTypes ?? []).map(t => `${t}:`);
+    const prefixes = (ownedEntityTypes ?? []).map((t) => `${t}:`);
 
-    const result = await this.redis.eval(
+    const result = (await this.redis.eval(
       PICK_DISPATCHABLE_SCRIPT,
       1,
       readySetKey,
@@ -96,7 +96,7 @@ export class SchedulerService {
       defaultTTL.toString(),
       '32',
       ...prefixes,
-    ) as [string, string, string] | null;
+    )) as [string, string, string] | null;
 
     if (!result) return null;
 
@@ -117,7 +117,12 @@ export class SchedulerService {
     }
   }
 
-  async fail(entityKey: string, ownerToken: string, message: ISerializedMessage, error: Error): Promise<void> {
+  async fail(
+    entityKey: string,
+    ownerToken: string,
+    message: ISerializedMessage,
+    error: Error,
+  ): Promise<void> {
     await this.gateService.release(entityKey, ownerToken);
 
     const entityType = message.entityType;

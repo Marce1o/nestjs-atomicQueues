@@ -137,9 +137,8 @@ export class HandlerExecutor implements OnModuleInit {
       const { targetClass, isQuery } = registryEntry;
       const Ctor = targetClass as new (...args: unknown[]) => Record<string, unknown>;
       const paramNames = this.getParamNames(Ctor);
-      const args = paramNames.length > 0
-        ? paramNames.map(p => (data as Record<string, unknown>)[p])
-        : [];
+      const args =
+        paramNames.length > 0 ? paramNames.map((p) => (data as Record<string, unknown>)[p]) : [];
       const instance = args.length > 0 ? new Ctor(...args) : Object.assign(new Ctor(), data);
 
       if (isQuery) {

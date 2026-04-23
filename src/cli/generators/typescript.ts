@@ -70,8 +70,8 @@ export function generateTypeScript(snapshot: RegistrySnapshot): string {
 
   // ── ReplyMap — maps entity type → query name → reply type ─────────────
 
-  const hasAnyReply = snapshot.entities.some(e =>
-    Object.values(e.messages).some(m => m.kind === 'query' && m.replySchema?.properties),
+  const hasAnyReply = snapshot.entities.some((e) =>
+    Object.values(e.messages).some((m) => m.kind === 'query' && m.replySchema?.properties),
   );
 
   if (hasAnyReply) {
@@ -102,20 +102,27 @@ export function generateTypeScript(snapshot: RegistrySnapshot): string {
 function jsonSchemaTypeToTS(schema: { type?: string; items?: any; enum?: any[] }): string {
   if (!schema.type) return 'any';
   switch (schema.type) {
-    case 'string': return schema.enum ? schema.enum.map((v: any) => `'${v}'`).join(' | ') : 'string';
+    case 'string':
+      return schema.enum ? schema.enum.map((v: any) => `'${v}'`).join(' | ') : 'string';
     case 'number':
-    case 'integer': return 'number';
-    case 'boolean': return 'boolean';
-    case 'array': return schema.items ? `${jsonSchemaTypeToTS(schema.items)}[]` : 'any[]';
-    case 'object': return 'Record<string, any>';
-    case 'null': return 'null';
-    default: return 'any';
+    case 'integer':
+      return 'number';
+    case 'boolean':
+      return 'boolean';
+    case 'array':
+      return schema.items ? `${jsonSchemaTypeToTS(schema.items)}[]` : 'any[]';
+    case 'object':
+      return 'Record<string, any>';
+    case 'null':
+      return 'null';
+    default:
+      return 'any';
   }
 }
 
 function pascalCase(str: string): string {
   return str
     .split(/[-_\s]+/)
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
     .join('');
 }

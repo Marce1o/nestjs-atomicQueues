@@ -278,7 +278,7 @@ describe('CLI Generators', () => {
       const files = generateClasses(snapshot);
       expect(files).toHaveLength(2); // warehouse.ts + index.ts
 
-      const warehouseFile = files.find(f => f.filename === 'warehouse.ts')!;
+      const warehouseFile = files.find((f) => f.filename === 'warehouse.ts')!;
       expect(warehouseFile).toBeDefined();
       expect(warehouseFile.content).toContain("@EntityType('warehouse')");
       expect(warehouseFile.content).toContain('export class ReserveStockCommand');
@@ -286,9 +286,11 @@ describe('CLI Generators', () => {
       expect(warehouseFile.content).toContain('readonly quantity!: number;');
       expect(warehouseFile.content).toContain('export interface ReserveStockCommandData');
       expect(warehouseFile.content).toContain('constructor(data: ReserveStockCommandData)');
-      expect(warehouseFile.content).toContain("import { EntityType, QueueEntityId } from 'atomic-queues';");
+      expect(warehouseFile.content).toContain(
+        "import { EntityType, QueueEntityId } from 'atomic-queues';",
+      );
 
-      const indexFile = files.find(f => f.filename === 'index.ts')!;
+      const indexFile = files.find((f) => f.filename === 'index.ts')!;
       expect(indexFile).toBeDefined();
       expect(indexFile.content).toContain("export * from './warehouse';");
     });
@@ -326,7 +328,7 @@ describe('CLI Generators', () => {
       });
 
       const files = generateClasses(snapshot);
-      const warehouseFile = files.find(f => f.filename === 'warehouse.ts')!;
+      const warehouseFile = files.find((f) => f.filename === 'warehouse.ts')!;
 
       expect(warehouseFile.content).toContain('export interface GetStockQueryReply');
       expect(warehouseFile.content).toContain('available: number;');
@@ -352,7 +354,7 @@ describe('CLI Generators', () => {
       });
 
       const files = generateClasses(snapshot);
-      const orderFile = files.find(f => f.filename === 'order.ts')!;
+      const orderFile = files.find((f) => f.filename === 'order.ts')!;
       expect(orderFile).toBeDefined();
       expect(orderFile.content).toContain('export class PlaceOrder');
       expect(orderFile.content).toContain('export interface PlaceOrderData');
@@ -383,7 +385,7 @@ describe('CLI Generators', () => {
       const files = generateClasses(snapshot);
       expect(files).toHaveLength(3); // warehouse.ts, billing.ts, index.ts
 
-      const index = files.find(f => f.filename === 'index.ts')!;
+      const index = files.find((f) => f.filename === 'index.ts')!;
       expect(index.content).toContain("export * from './warehouse';");
       expect(index.content).toContain("export * from './billing';");
     });

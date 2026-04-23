@@ -1,4 +1,8 @@
-import { RegistrySnapshot, EntityContract, MessageSpec } from '../../services/registry/registry.types';
+import {
+  RegistrySnapshot,
+  EntityContract,
+  MessageSpec,
+} from '../../services/registry/registry.types';
 
 export interface GeneratedFile {
   filename: string;
@@ -20,10 +24,7 @@ export function generateClasses(snapshot: RegistrySnapshot): GeneratedFile[] {
   }
 
   // Barrel index
-  const barrelLines: string[] = [
-    header(snapshot),
-    '',
-  ];
+  const barrelLines: string[] = [header(snapshot), ''];
   for (const entity of snapshot.entities) {
     barrelLines.push(`export * from './${kebabCase(entity.entityType)}';`);
   }
@@ -36,7 +37,9 @@ export function generateClasses(snapshot: RegistrySnapshot): GeneratedFile[] {
 function generateEntityFile(entity: EntityContract, snapshot: RegistrySnapshot): string {
   const lines: string[] = [];
   const messages = Object.entries(entity.messages);
-  const hasReply = messages.some(([, spec]) => spec.kind === 'query' && spec.replySchema?.properties);
+  const hasReply = messages.some(
+    ([, spec]) => spec.kind === 'query' && spec.replySchema?.properties,
+  );
 
   lines.push(header(snapshot));
   lines.push(`// Entity: ${entity.entityType} (service: ${entity.serviceName})`);
@@ -141,14 +144,21 @@ function extractFieldsFromSchema(schema?: Record<string, any>): FieldInfo[] {
 function jsonSchemaTypeToTS(schema: { type?: string; items?: any; enum?: any[] }): string {
   if (!schema.type) return 'any';
   switch (schema.type) {
-    case 'string': return schema.enum ? schema.enum.map((v: any) => `'${v}'`).join(' | ') : 'string';
+    case 'string':
+      return schema.enum ? schema.enum.map((v: any) => `'${v}'`).join(' | ') : 'string';
     case 'number':
-    case 'integer': return 'number';
-    case 'boolean': return 'boolean';
-    case 'array': return schema.items ? `${jsonSchemaTypeToTS(schema.items)}[]` : 'any[]';
-    case 'object': return 'Record<string, any>';
-    case 'null': return 'null';
-    default: return 'any';
+    case 'integer':
+      return 'number';
+    case 'boolean':
+      return 'boolean';
+    case 'array':
+      return schema.items ? `${jsonSchemaTypeToTS(schema.items)}[]` : 'any[]';
+    case 'object':
+      return 'Record<string, any>';
+    case 'null':
+      return 'null';
+    default:
+      return 'any';
   }
 }
 

@@ -1,10 +1,4 @@
-import {
-  DynamicModule,
-  Global,
-  Module,
-  Provider,
-  Type,
-} from '@nestjs/common';
+import { DynamicModule, Global, Module, Provider, Type } from '@nestjs/common';
 import { DiscoveryModule, DiscoveryService, MetadataScanner } from '@nestjs/core';
 import Redis from 'ioredis';
 import { IAtomicQueuesModuleConfig } from '../domain';
@@ -42,7 +36,9 @@ const CORE_SERVICES: Provider[] = [
 
 export interface AtomicQueuesModuleAsyncOptions {
   imports?: Type<unknown>[];
-  useFactory: (...args: unknown[]) => Promise<IAtomicQueuesModuleConfig> | IAtomicQueuesModuleConfig;
+  useFactory: (
+    ...args: unknown[]
+  ) => Promise<IAtomicQueuesModuleConfig> | IAtomicQueuesModuleConfig;
   inject?: unknown[];
   isGlobal?: boolean;
 }
@@ -64,11 +60,7 @@ export class AtomicQueuesModule {
         MetadataScanner,
         ...CORE_SERVICES,
       ],
-      exports: [
-        ATOMIC_QUEUES_CONFIG,
-        ATOMIC_QUEUES_REDIS,
-        ...CORE_SERVICES,
-      ],
+      exports: [ATOMIC_QUEUES_CONFIG, ATOMIC_QUEUES_REDIS, ...CORE_SERVICES],
     };
   }
 
@@ -91,11 +83,7 @@ export class AtomicQueuesModule {
         MetadataScanner,
         ...CORE_SERVICES,
       ],
-      exports: [
-        ATOMIC_QUEUES_CONFIG,
-        ATOMIC_QUEUES_REDIS,
-        ...CORE_SERVICES,
-      ],
+      exports: [ATOMIC_QUEUES_CONFIG, ATOMIC_QUEUES_REDIS, ...CORE_SERVICES],
       global: options.isGlobal ?? true,
     };
   }

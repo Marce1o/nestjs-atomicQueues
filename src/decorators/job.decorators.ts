@@ -1,5 +1,10 @@
 import { JOB_COMMAND_METADATA, JOB_QUERY_METADATA } from './constants';
-import { JobCommandOptions, JobQueryOptions, JobCommandMetadata, JobQueryMetadata } from './interfaces';
+import {
+  JobCommandOptions,
+  JobQueryOptions,
+  JobCommandMetadata,
+  JobQueryMetadata,
+} from './interfaces';
 import { deriveJobName, getConstructorParamNames } from './utils';
 
 /**
@@ -38,9 +43,7 @@ import { deriveJobName, getConstructorParamNames } from './utils';
  */
 export function JobCommand(options?: string | JobCommandOptions): ClassDecorator {
   return (target: Function) => {
-    const opts: JobCommandOptions = typeof options === 'string'
-      ? { name: options }
-      : (options || {});
+    const opts: JobCommandOptions = typeof options === 'string' ? { name: options } : options || {};
 
     const jobName = opts.name || deriveJobName(target.name, 'Command');
     const paramNames = getConstructorParamNames(target);
@@ -81,9 +84,7 @@ export function JobCommand(options?: string | JobCommandOptions): ClassDecorator
  */
 export function JobQuery(options?: string | JobQueryOptions): ClassDecorator {
   return (target: Function) => {
-    const opts: JobQueryOptions = typeof options === 'string'
-      ? { name: options }
-      : (options || {});
+    const opts: JobQueryOptions = typeof options === 'string' ? { name: options } : options || {};
 
     const jobName = opts.name || deriveJobName(target.name, 'Query');
     const paramNames = getConstructorParamNames(target);

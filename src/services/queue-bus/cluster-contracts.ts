@@ -95,7 +95,7 @@ export class ClusterContracts {
 
   /** All entities with their messages as structured objects. */
   all(): ContractEntity[] {
-    return this.entityTypes().map(et => this.entity(et)!);
+    return this.entityTypes().map((et) => this.entity(et)!);
   }
 
   /** The raw snapshot from Redis. */
@@ -113,9 +113,10 @@ export class ClusterContracts {
       lines.push(`  ${entity.entityType}  (service: ${entity.serviceName})`);
       for (const msg of entity.messages) {
         const tag = msg.kind === 'query' ? 'query' : 'cmd';
-        const fieldList = msg.fields.length > 0
-          ? msg.fields.map(f => `${f.name}${f.required ? '' : '?'}: ${f.type}`).join(', ')
-          : 'untyped';
+        const fieldList =
+          msg.fields.length > 0
+            ? msg.fields.map((f) => `${f.name}${f.required ? '' : '?'}: ${f.type}`).join(', ')
+            : 'untyped';
         lines.push(`    [${tag}] ${msg.name}({ ${fieldList} })`);
       }
       lines.push('');
@@ -140,14 +141,21 @@ function extractFields(spec: MessageSpec): ContractField[] {
 function jsonSchemaTypeLabel(schema: { type?: string; items?: any; enum?: any[] }): string {
   if (!schema.type) return 'any';
   switch (schema.type) {
-    case 'string': return schema.enum ? schema.enum.map((v: any) => `"${v}"`).join(' | ') : 'string';
+    case 'string':
+      return schema.enum ? schema.enum.map((v: any) => `"${v}"`).join(' | ') : 'string';
     case 'number':
-    case 'integer': return 'number';
-    case 'boolean': return 'boolean';
-    case 'array': return schema.items ? `${jsonSchemaTypeLabel(schema.items)}[]` : 'any[]';
-    case 'object': return 'object';
-    case 'null': return 'null';
-    default: return 'any';
+    case 'integer':
+      return 'number';
+    case 'boolean':
+      return 'boolean';
+    case 'array':
+      return schema.items ? `${jsonSchemaTypeLabel(schema.items)}[]` : 'any[]';
+    case 'object':
+      return 'object';
+    case 'null':
+      return 'null';
+    default:
+      return 'any';
   }
 }
 
@@ -170,10 +178,7 @@ function jsonSchemaTypeLabel(schema: { type?: string; items?: any; enum?: any[] 
  * });
  * ```
  */
-export type TypedEnqueue<TMap> = <
-  E extends keyof TMap & string,
-  M extends keyof TMap[E] & string,
->(
+export type TypedEnqueue<TMap> = <E extends keyof TMap & string, M extends keyof TMap[E] & string>(
   entityType: E,
   messageName: M,
   entityId: string,
@@ -204,9 +209,5 @@ export type TypedEnqueueAndWait<TMap, TReplyMap = Record<string, Record<string, 
   data: TMap[E][M],
   timeout?: number,
 ) => Promise<
-  E extends keyof TReplyMap
-    ? M extends keyof TReplyMap[E]
-      ? TReplyMap[E][M]
-      : any
-    : any
+  E extends keyof TReplyMap ? (M extends keyof TReplyMap[E] ? TReplyMap[E][M] : any) : any
 >;

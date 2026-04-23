@@ -130,15 +130,9 @@ describe('CommandDiscoveryService.executeJob', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
-    const mockDiscovery = createMockDiscoveryService([
-      MakeBetCommand,
-      GetScoreQuery,
-    ]);
+    const mockDiscovery = createMockDiscoveryService([MakeBetCommand, GetScoreQuery]);
 
-    service = new CommandDiscoveryService(
-      mockDiscovery as any,
-      {} as any,
-    );
+    service = new CommandDiscoveryService(mockDiscovery as any, {} as any);
     service.setCommandBus(mockCommandBus);
     service.setQueryBus(mockQueryBus);
 
@@ -191,9 +185,7 @@ describe('CommandDiscoveryService.executeJob', () => {
     await freshService.onModuleInit();
 
     const job = { name: 'make-bet', data: {} } as any;
-    await expect(freshService.executeJob(job, 'e-1')).rejects.toThrow(
-      /CommandBus not available/,
-    );
+    await expect(freshService.executeJob(job, 'e-1')).rejects.toThrow(/CommandBus not available/);
   });
 
   it('should throw when QueryBus is not available', async () => {
@@ -204,18 +196,13 @@ describe('CommandDiscoveryService.executeJob', () => {
     await freshService.onModuleInit();
 
     const job = { name: 'get-score', data: {} } as any;
-    await expect(freshService.executeJob(job, 'e-1')).rejects.toThrow(
-      /QueryBus not available/,
-    );
+    await expect(freshService.executeJob(job, 'e-1')).rejects.toThrow(/QueryBus not available/);
   });
 });
 
 describe('CommandDiscoveryService without DiscoveryService', () => {
   it('should handle missing DiscoveryService gracefully', async () => {
-    const service = new CommandDiscoveryService(
-      undefined as any,
-      undefined as any,
-    );
+    const service = new CommandDiscoveryService(undefined as any, undefined as any);
 
     // Should not throw
     await service.onModuleInit();

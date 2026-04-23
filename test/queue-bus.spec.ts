@@ -1,10 +1,6 @@
 import 'reflect-metadata';
 import { QueueBus } from '../src/services/queue-bus/queue-bus.service';
-import {
-  EntityType,
-  QueueEntityId,
-  QueueEntity,
-} from '../src/decorators';
+import { EntityType, QueueEntityId, QueueEntity } from '../src/decorators';
 
 // ─── Test classes ───────────────────────────────────────────────────────────
 
@@ -171,10 +167,7 @@ describe('QueueBus instance', () => {
     });
 
     it('should enqueue bulk', async () => {
-      const cmds = [
-        new MakeBetCommand('t-1', 10),
-        new MakeBetCommand('t-1', 20),
-      ];
+      const cmds = [new MakeBetCommand('t-1', 10), new MakeBetCommand('t-1', 20)];
       const target = bus.forEntity('table');
       const refs = await target.enqueueBulk(cmds);
 

@@ -8,7 +8,9 @@ export interface CqrsDiscoveryResult {
   queries: Map<string, Type<unknown>>;
 }
 
-export function discoverCqrsClasses(providers: { metatype?: Function | null }[]): CqrsDiscoveryResult {
+export function discoverCqrsClasses(
+  providers: { metatype?: Function | null }[],
+): CqrsDiscoveryResult {
   const commands = new Map<string, Type<unknown>>();
   const queries = new Map<string, Type<unknown>>();
 

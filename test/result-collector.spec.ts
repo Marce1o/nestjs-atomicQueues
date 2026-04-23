@@ -22,10 +22,7 @@ describe('ResultCollector', () => {
       duplicate: jest.fn().mockReturnValue(mockSubscriber),
     };
 
-    collector = new ResultCollector(
-      mockRedis as any,
-      { redis: {}, keyPrefix: 'test' } as any,
-    );
+    collector = new ResultCollector(mockRedis as any, { redis: {}, keyPrefix: 'test' } as any);
 
     await collector.onModuleInit();
   });
@@ -75,7 +72,11 @@ describe('ResultCollector', () => {
 
     // Deliver results in reverse order to prove routing works
     for (let i = 99; i >= 0; i--) {
-      pmessageHandler('test:results:*', `test:results:corr-${i}`, JSON.stringify({ result: i * 10 }));
+      pmessageHandler(
+        'test:results:*',
+        `test:results:corr-${i}`,
+        JSON.stringify({ result: i * 10 }),
+      );
     }
 
     const results = await Promise.all(promises);
@@ -87,7 +88,11 @@ describe('ResultCollector', () => {
 
   it('should silently ignore results for unknown correlationIds', () => {
     expect(() => {
-      pmessageHandler('test:results:*', 'test:results:unknown-id', JSON.stringify({ result: 'ignored' }));
+      pmessageHandler(
+        'test:results:*',
+        'test:results:unknown-id',
+        JSON.stringify({ result: 'ignored' }),
+      );
     }).not.toThrow();
     expect(collector.pendingCount()).toBe(0);
   });

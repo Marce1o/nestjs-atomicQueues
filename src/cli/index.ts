@@ -37,7 +37,7 @@ async function runIntrospect(args: string[]): Promise<void> {
   const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
   const prefixIdx = args.indexOf('--prefix');
   const keyPrefix = prefixIdx >= 0 ? args[prefixIdx + 1] : 'aq';
-  const entityFilter = args.find(a => !a.startsWith('--'));
+  const entityFilter = args.find((a) => !a.startsWith('--'));
 
   const redis = new Redis(redisUrl);
   const snapshot = await fetchSnapshot(redis, keyPrefix);
@@ -50,17 +50,19 @@ async function runIntrospect(args: string[]): Promise<void> {
   }
 
   const entities = entityFilter
-    ? snapshot.entities.filter(e => e.entityType === entityFilter)
+    ? snapshot.entities.filter((e) => e.entityType === entityFilter)
     : snapshot.entities;
 
   if (entityFilter && entities.length === 0) {
     console.error(`Entity type '${entityFilter}' not found in the registry.`);
-    console.log(`Available: ${snapshot.entities.map(e => e.entityType).join(', ')}`);
+    console.log(`Available: ${snapshot.entities.map((e) => e.entityType).join(', ')}`);
     process.exit(1);
   }
 
   console.log('');
-  console.log(`  Cluster Registry  (prefix: ${keyPrefix}, ${snapshot.entities.length} entity types)`);
+  console.log(
+    `  Cluster Registry  (prefix: ${keyPrefix}, ${snapshot.entities.length} entity types)`,
+  );
   console.log('');
 
   for (const entity of entities) {
@@ -95,7 +97,9 @@ async function runIntrospect(args: string[]): Promise<void> {
   if (firstMsg) {
     const [name, spec] = firstMsg;
     const exampleData = buildExampleData(spec);
-    console.log(`    await queueBus.enqueue('${first.entityType}', '${name}', entityId, ${exampleData});`);
+    console.log(
+      `    await queueBus.enqueue('${first.entityType}', '${name}', entityId, ${exampleData});`,
+    );
   }
   console.log('');
 }
@@ -119,14 +123,21 @@ function formatSchemaFields(schema: Record<string, any>): string[] {
 function jsonSchemaTypeLabel(schema: { type?: string; items?: any; enum?: any[] }): string {
   if (!schema.type) return 'any';
   switch (schema.type) {
-    case 'string': return schema.enum ? schema.enum.map((v: any) => `"${v}"`).join(' | ') : 'string';
+    case 'string':
+      return schema.enum ? schema.enum.map((v: any) => `"${v}"`).join(' | ') : 'string';
     case 'number':
-    case 'integer': return 'number';
-    case 'boolean': return 'boolean';
-    case 'array': return schema.items ? `${jsonSchemaTypeLabel(schema.items)}[]` : 'any[]';
-    case 'object': return 'object';
-    case 'null': return 'null';
-    default: return 'any';
+    case 'integer':
+      return 'number';
+    case 'boolean':
+      return 'boolean';
+    case 'array':
+      return schema.items ? `${jsonSchemaTypeLabel(schema.items)}[]` : 'any[]';
+    case 'object':
+      return 'object';
+    case 'null':
+      return 'null';
+    default:
+      return 'any';
   }
 }
 
@@ -134,10 +145,14 @@ function buildExampleData(spec: { schema?: Record<string, any> }): string {
   if (!spec.schema?.properties) return '{ ... }';
   const entries = Object.entries(spec.schema.properties).map(([name, propSchema]) => {
     const type = (propSchema as any).type;
-    const example = type === 'string' ? `'...'`
-      : type === 'number' || type === 'integer' ? '0'
-      : type === 'boolean' ? 'true'
-      : '...';
+    const example =
+      type === 'string'
+        ? `'...'`
+        : type === 'number' || type === 'integer'
+          ? '0'
+          : type === 'boolean'
+            ? 'true'
+            : '...';
     return `${name}: ${example}`;
   });
   return `{ ${entries.join(', ')} }`;
@@ -146,11 +161,15 @@ function buildExampleData(spec: { schema?: Record<string, any> }): string {
 // ─── generate ────────────────────────────────────────────────────────────────
 
 async function runGenerate(args: string[]): Promise<void> {
-  const format = args.includes('--classes') ? 'classes'
-    : args.includes('--ts') ? 'ts'
-    : args.includes('--json-schema') ? 'json-schema'
-    : args.includes('--snapshot') ? 'snapshot'
-    : null;
+  const format = args.includes('--classes')
+    ? 'classes'
+    : args.includes('--ts')
+      ? 'ts'
+      : args.includes('--json-schema')
+        ? 'json-schema'
+        : args.includes('--snapshot')
+          ? 'snapshot'
+          : null;
 
   if (!format) {
     console.error('Specify a format: --classes, --ts, --json-schema, or --snapshot');
@@ -174,14 +193,18 @@ async function runGenerate(args: string[]): Promise<void> {
   await redis.quit();
 
   if (snapshot.entities.length === 0) {
-    console.error('No entity types found in the registry. Is the registry enabled and are services running?');
+    console.error(
+      'No entity types found in the registry. Is the registry enabled and are services running?',
+    );
     process.exit(1);
   }
 
   if (entitiesFilter) {
-    snapshot.entities = snapshot.entities.filter(e => entitiesFilter.includes(e.entityType));
+    snapshot.entities = snapshot.entities.filter((e) => entitiesFilter.includes(e.entityType));
     if (snapshot.entities.length === 0) {
-      console.error(`No matching entity types. Available: ${snapshot.entities.map(e => e.entityType).join(', ')}`);
+      console.error(
+        `No matching entity types. Available: ${snapshot.entities.map((e) => e.entityType).join(', ')}`,
+      );
       process.exit(1);
     }
   }
@@ -298,7 +321,7 @@ Usage (after --classes):
   `);
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error('Error:', err.message);
   process.exit(1);
 });

@@ -47,18 +47,25 @@ export class GateService {
 
   async release(entityKey: string, ownerToken: string): Promise<boolean> {
     const gateKey = this.getGateKey(entityKey);
-    const result = await this.redis.eval(
-      RELEASE_IF_OWNER_SCRIPT, 1, gateKey, ownerToken,
-    ) as number;
+    const result = (await this.redis.eval(
+      RELEASE_IF_OWNER_SCRIPT,
+      1,
+      gateKey,
+      ownerToken,
+    )) as number;
     return result === 1;
   }
 
   async extend(entityKey: string, ownerToken: string, ttlSeconds?: number): Promise<boolean> {
     const gateKey = this.getGateKey(entityKey);
     const ttl = ttlSeconds ?? this.defaultTTL;
-    const result = await this.redis.eval(
-      EXTEND_IF_OWNER_SCRIPT, 1, gateKey, ownerToken, ttl.toString(),
-    ) as number;
+    const result = (await this.redis.eval(
+      EXTEND_IF_OWNER_SCRIPT,
+      1,
+      gateKey,
+      ownerToken,
+      ttl.toString(),
+    )) as number;
     return result === 1;
   }
 

@@ -1,7 +1,10 @@
 import { ACTOR_METADATA, ACTOR_HANDLER_METADATA, ACTOR_HANDLERS_METADATA } from './constants';
 import { ActorOptions, ActorHandlerMetadata } from './interfaces';
 
-export function Actor(entityType: string, options?: Partial<Omit<ActorOptions, 'entityType'>>): ClassDecorator {
+export function Actor(
+  entityType: string,
+  options?: Partial<Omit<ActorOptions, 'entityType'>>,
+): ClassDecorator {
   return (target: Function) => {
     const metadata: ActorOptions = {
       entityType,
@@ -16,11 +19,7 @@ export function Actor(entityType: string, options?: Partial<Omit<ActorOptions, '
 }
 
 export function On(messageClass: Function): MethodDecorator {
-  return (
-    target: object,
-    propertyKey: string | symbol,
-    descriptor: PropertyDescriptor,
-  ) => {
+  return (target: object, propertyKey: string | symbol, descriptor: PropertyDescriptor) => {
     const methodName = String(propertyKey);
 
     const metadata: ActorHandlerMetadata = {

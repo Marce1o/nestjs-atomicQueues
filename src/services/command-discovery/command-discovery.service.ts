@@ -58,7 +58,12 @@ export class CommandDiscoveryService implements OnModuleInit {
   }
 
   private discoverCommands(): void {
-    this.discoverByMetadataKey(JOB_COMMAND_METADATA, this.commandMap, this.scopedCommandMap, '@JobCommand');
+    this.discoverByMetadataKey(
+      JOB_COMMAND_METADATA,
+      this.commandMap,
+      this.scopedCommandMap,
+      '@JobCommand',
+    );
   }
 
   private discoverQueries(): void {
@@ -139,9 +144,7 @@ export class CommandDiscoveryService implements OnModuleInit {
         );
       }
       const command = this.instantiateFromMetadata(commandMeta, entityId, job.data);
-      this.logger.debug(
-        `Executing command ${commandMeta.targetClass.name} for job ${jobName}`,
-      );
+      this.logger.debug(`Executing command ${commandMeta.targetClass.name} for job ${jobName}`);
       return this.commandBus.execute(command);
     }
 
@@ -160,9 +163,7 @@ export class CommandDiscoveryService implements OnModuleInit {
         );
       }
       const query = this.instantiateFromMetadata(queryMeta, entityId, job.data);
-      this.logger.debug(
-        `Executing query ${queryMeta.targetClass.name} for job ${jobName}`,
-      );
+      this.logger.debug(`Executing query ${queryMeta.targetClass.name} for job ${jobName}`);
       return this.queryBus.execute(query);
     }
 

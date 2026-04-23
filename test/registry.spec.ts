@@ -18,7 +18,7 @@ function createMockRedis() {
     }),
     scan: jest.fn(async (_cursor: string, _match: string, pattern: string) => {
       const prefix = pattern.replace('*', '');
-      const keys = Object.keys(store).filter(k => k.startsWith(prefix));
+      const keys = Object.keys(store).filter((k) => k.startsWith(prefix));
       return ['0', keys];
     }),
     publish: jest.fn().mockResolvedValue(1),
@@ -168,8 +168,9 @@ describe('RegistryService', () => {
     it('should validate — throw for unknown entity type', async () => {
       await registry.onModuleInit();
 
-      await expect(registry.validate('unknown', 'SomeCommand'))
-        .rejects.toThrow(/Unknown entity type 'unknown'/);
+      await expect(registry.validate('unknown', 'SomeCommand')).rejects.toThrow(
+        /Unknown entity type 'unknown'/,
+      );
     });
 
     it('should validate — throw for unknown message on known entity type', async () => {
@@ -184,8 +185,9 @@ describe('RegistryService', () => {
         lastHeartbeat: Date.now(),
       });
 
-      await expect(registry.validate('account', 'TransferCommand'))
-        .rejects.toThrow(/does not accept message 'TransferCommand'/);
+      await expect(registry.validate('account', 'TransferCommand')).rejects.toThrow(
+        /does not accept message 'TransferCommand'/,
+      );
     });
 
     it('should validate — schema catches missing required field', async () => {
@@ -315,11 +317,14 @@ describe('RegistryService', () => {
       expect(onCall).toBeDefined();
 
       const handler = onCall![1];
-      handler('test:registry:updates', JSON.stringify({
-        entityType: 'account',
-        action: 'registered',
-        serviceName: 'bank-svc',
-      }));
+      handler(
+        'test:registry:updates',
+        JSON.stringify({
+          entityType: 'account',
+          action: 'registered',
+          serviceName: 'bank-svc',
+        }),
+      );
 
       expect(changes).toHaveLength(1);
       expect(changes[0].entityType).toBe('account');
@@ -345,11 +350,14 @@ describe('RegistryService', () => {
       const subscriber = redis.duplicate();
       const onCall = subscriber.on.mock.calls.find((c: any[]) => c[0] === 'message');
       const handler = onCall![1];
-      handler('test:registry:updates', JSON.stringify({
-        entityType: 'account',
-        action: 'updated',
-        serviceName: 'other-svc',
-      }));
+      handler(
+        'test:registry:updates',
+        JSON.stringify({
+          entityType: 'account',
+          action: 'updated',
+          serviceName: 'other-svc',
+        }),
+      );
 
       // Next call should re-fetch from Redis
       const callsBefore = redis.get.mock.calls.length;

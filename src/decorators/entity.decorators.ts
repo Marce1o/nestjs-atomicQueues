@@ -55,11 +55,7 @@ export function EntityType(entityType: string): ClassDecorator {
  * ```
  */
 export function QueueEntityId(): PropertyDecorator & ParameterDecorator {
-  return (
-    target: object,
-    propertyKey: string | symbol | undefined,
-    parameterIndex?: number,
-  ) => {
+  return (target: object, propertyKey: string | symbol | undefined, parameterIndex?: number) => {
     // Parameter decorator case (on constructor param)
     if (typeof parameterIndex === 'number') {
       const constructor = target as Function;
@@ -70,7 +66,7 @@ export function QueueEntityId(): PropertyDecorator & ParameterDecorator {
       if (!paramName) {
         throw new Error(
           `Cannot determine parameter name at index ${parameterIndex} in ${className}. ` +
-          `Ensure you're using 'public readonly paramName' syntax.`
+            `Ensure you're using 'public readonly paramName' syntax.`,
         );
       }
 
@@ -79,8 +75,8 @@ export function QueueEntityId(): PropertyDecorator & ParameterDecorator {
       if (existing) {
         throw new Error(
           `Multiple @QueueEntityId() decorators on ${className}. ` +
-          `Found on '${existing}' and '${paramName}'. ` +
-          `Only one parameter/property can be the entity ID.`
+            `Found on '${existing}' and '${paramName}'. ` +
+            `Only one parameter/property can be the entity ID.`,
         );
       }
 
@@ -99,8 +95,8 @@ export function QueueEntityId(): PropertyDecorator & ParameterDecorator {
     if (existing) {
       throw new Error(
         `Multiple @QueueEntityId() decorators on ${className}. ` +
-        `Found on '${existing}' and '${propName}'. ` +
-        `Only one property can be the entity ID.`
+          `Found on '${existing}' and '${propName}'. ` +
+          `Only one property can be the entity ID.`,
       );
     }
 

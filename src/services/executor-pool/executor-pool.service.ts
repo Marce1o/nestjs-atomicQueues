@@ -63,7 +63,7 @@ export class ExecutorPoolService implements OnModuleInit, OnApplicationShutdown 
     const maxWait = 30000;
     const start = Date.now();
     while (this.activeExecutors > 0 && Date.now() - start < maxWait) {
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
     if (this.activeExecutors > 0) {
       this.logger.warn(`Shutdown with ${this.activeExecutors} active executors still running`);
@@ -84,13 +84,12 @@ export class ExecutorPoolService implements OnModuleInit, OnApplicationShutdown 
       if (!result) break;
 
       this.activeExecutors++;
-      this.executeMessage(result.entityKey, result.message, result.ownerToken)
-        .finally(() => {
-          this.activeExecutors--;
-          if (this.running) {
-            this.tryDispatch();
-          }
-        });
+      this.executeMessage(result.entityKey, result.message, result.ownerToken).finally(() => {
+        this.activeExecutors--;
+        if (this.running) {
+          this.tryDispatch();
+        }
+      });
     }
   }
 
@@ -102,7 +101,7 @@ export class ExecutorPoolService implements OnModuleInit, OnApplicationShutdown 
     const entityType = message.entityType;
     const entityId = message.entityId;
     const ttl = this.gateService.getTTLForEntity(entityType);
-    const refreshInterval = this.config.executor?.gateRefreshInterval ?? (ttl * 500);
+    const refreshInterval = this.config.executor?.gateRefreshInterval ?? ttl * 500;
 
     const refresher = setInterval(async () => {
       try {
@@ -138,12 +137,14 @@ export class ExecutorPoolService implements OnModuleInit, OnApplicationShutdown 
     }
   }
 
-  private async publishResult(message: ISerializedMessage, result?: unknown, error?: Error): Promise<void> {
+  private async publishResult(
+    message: ISerializedMessage,
+    result?: unknown,
+    error?: Error,
+  ): Promise<void> {
     if (!message.correlationId) return;
     const channel = `${this.keyPrefix}:results:${message.correlationId}`;
-    const payload = error
-      ? JSON.stringify({ error: error.message })
-      : JSON.stringify({ result });
+    const payload = error ? JSON.stringify({ error: error.message }) : JSON.stringify({ result });
     await this.redis.publish(channel, payload);
   }
 

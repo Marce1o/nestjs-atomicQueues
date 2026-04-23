@@ -37,7 +37,7 @@ export class LogService {
     pipeline.sadd(readyKey, entityKey);
     const results = await pipeline.exec();
 
-    const length = results?.[0]?.[1] as number ?? 0;
+    const length = (results?.[0]?.[1] as number) ?? 0;
     this.logger.debug(`Appended message ${message.name} to ${entityKey} (depth: ${length})`);
     return length;
   }
@@ -64,17 +64,22 @@ export class LogService {
 
   async deadLetter(entityType: string, message: ISerializedMessage): Promise<void> {
     const deadKey = this.getDeadLetterKey(entityType);
-    await this.redis.lpush(deadKey, JSON.stringify({
-      ...message,
-      deadLetteredAt: Date.now(),
-    }));
-    this.logger.warn(`Dead-lettered message ${message.name} for ${entityType}:${message.entityId} after ${message.attempts} attempts`);
+    await this.redis.lpush(
+      deadKey,
+      JSON.stringify({
+        ...message,
+        deadLetteredAt: Date.now(),
+      }),
+    );
+    this.logger.warn(
+      `Dead-lettered message ${message.name} for ${entityType}:${message.entityId} after ${message.attempts} attempts`,
+    );
   }
 
   async getDeadLetters(entityType: string, limit = 100): Promise<ISerializedMessage[]> {
     const deadKey = this.getDeadLetterKey(entityType);
     const raw = await this.redis.lrange(deadKey, 0, limit - 1);
-    return raw.map(r => JSON.parse(r));
+    return raw.map((r) => JSON.parse(r));
   }
 
   async readyCount(): Promise<number> {

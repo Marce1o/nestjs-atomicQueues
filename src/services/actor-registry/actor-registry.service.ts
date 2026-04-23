@@ -1,4 +1,12 @@
-import { Injectable, Logger, Inject, OnModuleInit, OnApplicationShutdown, Optional, Type } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  Inject,
+  OnModuleInit,
+  OnApplicationShutdown,
+  Optional,
+  Type,
+} from '@nestjs/common';
 import { DiscoveryService, ModuleRef } from '@nestjs/core';
 import Redis from 'ioredis';
 import { IAtomicQueuesModuleConfig } from '../../domain';
@@ -114,7 +122,10 @@ export class ActorRegistry implements OnModuleInit, OnApplicationShutdown {
     }
   }
 
-  async getOrCreateInstance(entityType: string, entityId: string): Promise<Record<string, unknown> | null> {
+  async getOrCreateInstance(
+    entityType: string,
+    entityId: string,
+  ): Promise<Record<string, unknown> | null> {
     const definition = this.definitions.get(entityType);
     if (!definition) return null;
 
@@ -156,7 +167,7 @@ export class ActorRegistry implements OnModuleInit, OnApplicationShutdown {
 
   private async createActorInstance(definition: ActorDefinition): Promise<Record<string, unknown>> {
     try {
-      return await this.moduleRef.create(definition.targetClass) as Record<string, unknown>;
+      return (await this.moduleRef.create(definition.targetClass)) as Record<string, unknown>;
     } catch {
       // Fallback for classes not registered in the DI container
       return Reflect.construct(definition.targetClass, []) as Record<string, unknown>;
@@ -199,7 +210,13 @@ export class ActorRegistry implements OnModuleInit, OnApplicationShutdown {
       const val = instance[key];
       if (typeof val === 'function') continue;
       if (val instanceof Map || val instanceof Set || val instanceof Date) continue;
-      if (val !== null && typeof val === 'object' && Object.getPrototypeOf(val) !== Object.prototype && !Array.isArray(val)) continue;
+      if (
+        val !== null &&
+        typeof val === 'object' &&
+        Object.getPrototypeOf(val) !== Object.prototype &&
+        !Array.isArray(val)
+      )
+        continue;
 
       try {
         JSON.stringify(val);

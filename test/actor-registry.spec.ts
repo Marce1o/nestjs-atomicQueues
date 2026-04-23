@@ -32,7 +32,10 @@ class AccountActor {
 
 @EntityType('warehouse')
 class ReserveStockCommand {
-  constructor(public readonly sku: string, public readonly quantity: number) {}
+  constructor(
+    public readonly sku: string,
+    public readonly quantity: number,
+  ) {}
 }
 
 @EntityType('warehouse')
@@ -80,7 +83,7 @@ describe('ActorRegistry', () => {
   it('should discover @On handlers', () => {
     const handlers = getActorHandlers(AccountActor);
     expect(handlers).toHaveLength(2);
-    const names = handlers.map(h => h.messageClass.name).sort();
+    const names = handlers.map((h) => h.messageClass.name).sort();
     expect(names).toEqual(['DepositCommand', 'WithdrawCommand']);
   });
 
@@ -97,7 +100,11 @@ describe('ActorRegistry', () => {
         setCommandBus: jest.fn(),
         setQueryBus: jest.fn(),
       } as any;
-      handlerExecutor = new HandlerExecutor(mockCommandDiscovery, mockDiscoveryService, mockModuleRef);
+      handlerExecutor = new HandlerExecutor(
+        mockCommandDiscovery,
+        mockDiscoveryService,
+        mockModuleRef,
+      );
 
       const mockDiscovery = {
         getProviders: () => [
@@ -162,7 +169,7 @@ describe('ActorRegistry', () => {
 
     it('should restore state from Redis on instance creation', async () => {
       mockRedis._store['test:actor-state:account:a-5'] = JSON.stringify({ balance: 500 });
-      const instance = await registry.getOrCreateInstance('account', 'a-5') as any;
+      const instance = (await registry.getOrCreateInstance('account', 'a-5')) as any;
       expect(instance.balance).toBe(500);
     });
   });
@@ -180,7 +187,11 @@ describe('ActorRegistry', () => {
         setCommandBus: jest.fn(),
         setQueryBus: jest.fn(),
       } as any;
-      handlerExecutor = new HandlerExecutor(mockCommandDiscovery, mockDiscoveryService, mockModuleRef);
+      handlerExecutor = new HandlerExecutor(
+        mockCommandDiscovery,
+        mockDiscoveryService,
+        mockModuleRef,
+      );
 
       const mockDiscovery = {
         getProviders: () => [
@@ -217,13 +228,13 @@ describe('ActorRegistry', () => {
     });
 
     it('should create per-entity instances for auto-discovered actor', async () => {
-      const instance = await registry.getOrCreateInstance('warehouse', 'SKU-001') as any;
+      const instance = (await registry.getOrCreateInstance('warehouse', 'SKU-001')) as any;
       expect(instance).not.toBeNull();
       expect(instance.stock).toBe(1000);
     });
 
     it('should execute handlers on auto-discovered actor', async () => {
-      const instance = await registry.getOrCreateInstance('warehouse', 'SKU-001') as any;
+      const instance = (await registry.getOrCreateInstance('warehouse', 'SKU-001')) as any;
       instance.reserve({ sku: 'SKU-001', quantity: 200 });
       expect(instance.stock).toBe(800);
 

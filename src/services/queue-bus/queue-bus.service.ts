@@ -20,21 +20,60 @@ import { getJobName, extractData, extractEntityIdExplicit } from './queue-bus.ut
 import { ClusterContracts } from './cluster-contracts';
 
 export interface EntityTarget {
-  enqueue<T extends object>(commandOrQuery: T, options?: { entityId?: string }): Promise<IMessageRef>;
-  enqueue(messageName: string, entityId: string, data: Record<string, unknown>): Promise<IMessageRef>;
+  enqueue<T extends object>(
+    commandOrQuery: T,
+    options?: { entityId?: string },
+  ): Promise<IMessageRef>;
+  enqueue(
+    messageName: string,
+    entityId: string,
+    data: Record<string, unknown>,
+  ): Promise<IMessageRef>;
 
-  enqueueAndWait<T extends Reply<unknown>>(commandOrQuery: T, options?: { entityId?: string; timeout?: number }): Promise<InferReply<T>>;
-  enqueueAndWait<T extends object, R = unknown>(commandOrQuery: T, options?: { entityId?: string; timeout?: number }): Promise<R>;
-  enqueueAndWait<R = unknown>(messageName: string, entityId: string, data: Record<string, unknown>, timeout?: number): Promise<R>;
+  enqueueAndWait<T extends Reply<unknown>>(
+    commandOrQuery: T,
+    options?: { entityId?: string; timeout?: number },
+  ): Promise<InferReply<T>>;
+  enqueueAndWait<T extends object, R = unknown>(
+    commandOrQuery: T,
+    options?: { entityId?: string; timeout?: number },
+  ): Promise<R>;
+  enqueueAndWait<R = unknown>(
+    messageName: string,
+    entityId: string,
+    data: Record<string, unknown>,
+    timeout?: number,
+  ): Promise<R>;
 
-  enqueueClass<T extends object>(commandOrQuery: T, options?: { entityId?: string }): Promise<IMessageRef>;
-  enqueueRaw(messageName: string, entityId: string, data: Record<string, unknown>): Promise<IMessageRef>;
+  enqueueClass<T extends object>(
+    commandOrQuery: T,
+    options?: { entityId?: string },
+  ): Promise<IMessageRef>;
+  enqueueRaw(
+    messageName: string,
+    entityId: string,
+    data: Record<string, unknown>,
+  ): Promise<IMessageRef>;
 
-  enqueueClassAndWait<T extends Reply<unknown>>(commandOrQuery: T, options?: { entityId?: string; timeout?: number }): Promise<InferReply<T>>;
-  enqueueClassAndWait<T extends object, R = unknown>(commandOrQuery: T, options?: { entityId?: string; timeout?: number }): Promise<R>;
-  enqueueRawAndWait<R = unknown>(messageName: string, entityId: string, data: Record<string, unknown>, timeout?: number): Promise<R>;
+  enqueueClassAndWait<T extends Reply<unknown>>(
+    commandOrQuery: T,
+    options?: { entityId?: string; timeout?: number },
+  ): Promise<InferReply<T>>;
+  enqueueClassAndWait<T extends object, R = unknown>(
+    commandOrQuery: T,
+    options?: { entityId?: string; timeout?: number },
+  ): Promise<R>;
+  enqueueRawAndWait<R = unknown>(
+    messageName: string,
+    entityId: string,
+    data: Record<string, unknown>,
+    timeout?: number,
+  ): Promise<R>;
 
-  enqueueBulk<T extends object>(commands: T[], options?: { entityId?: string }): Promise<IMessageRef[]>;
+  enqueueBulk<T extends object>(
+    commands: T[],
+    options?: { entityId?: string },
+  ): Promise<IMessageRef[]>;
 }
 
 @Injectable()
@@ -48,7 +87,9 @@ export class QueueBus {
     private readonly executorPool: ExecutorPoolService,
     private readonly handlerExecutor: HandlerExecutor,
     private readonly resultCollector: ResultCollector,
-    @Optional() @Inject(forwardRef(() => RegistryService)) private readonly registryService?: RegistryService,
+    @Optional()
+    @Inject(forwardRef(() => RegistryService))
+    private readonly registryService?: RegistryService,
   ) {
     this.keyPrefix = resolveKeyPrefix(config);
   }
@@ -65,14 +106,25 @@ export class QueueBus {
     return this.dispatchClass(entityType, commandOrQuery, options?.entityId);
   }
 
-  async enqueueClassAndWait<T extends Reply<unknown>>(commandOrQuery: T, options?: { entityId?: string; timeout?: number }): Promise<InferReply<T>>;
-  async enqueueClassAndWait<T extends object, R = unknown>(commandOrQuery: T, options?: { entityId?: string; timeout?: number }): Promise<R>;
+  async enqueueClassAndWait<T extends Reply<unknown>>(
+    commandOrQuery: T,
+    options?: { entityId?: string; timeout?: number },
+  ): Promise<InferReply<T>>;
+  async enqueueClassAndWait<T extends object, R = unknown>(
+    commandOrQuery: T,
+    options?: { entityId?: string; timeout?: number },
+  ): Promise<R>;
   async enqueueClassAndWait<T extends object>(
     commandOrQuery: T,
     options?: { entityId?: string; timeout?: number },
   ): Promise<unknown> {
     const entityType = this.resolveEntityType(commandOrQuery);
-    return this.dispatchClassAndWait(entityType, commandOrQuery, options?.entityId, options?.timeout);
+    return this.dispatchClassAndWait(
+      entityType,
+      commandOrQuery,
+      options?.entityId,
+      options?.timeout,
+    );
   }
 
   // =========================================================================
@@ -102,8 +154,16 @@ export class QueueBus {
   // BACKWARD-COMPATIBLE OVERLOADED FACADES
   // =========================================================================
 
-  async enqueue<T extends object>(commandOrQuery: T, options?: { entityId?: string }): Promise<IMessageRef>;
-  async enqueue(entityType: string, messageName: string, entityId: string, data: Record<string, unknown>): Promise<IMessageRef>;
+  async enqueue<T extends object>(
+    commandOrQuery: T,
+    options?: { entityId?: string },
+  ): Promise<IMessageRef>;
+  async enqueue(
+    entityType: string,
+    messageName: string,
+    entityId: string,
+    data: Record<string, unknown>,
+  ): Promise<IMessageRef>;
   async enqueue(
     commandOrEntityType: object | string,
     messageNameOrOptions?: string | { entityId?: string },
@@ -113,12 +173,27 @@ export class QueueBus {
     if (typeof commandOrEntityType === 'string') {
       return this.enqueueRaw(commandOrEntityType, messageNameOrOptions as string, entityId!, data!);
     }
-    return this.enqueueClass(commandOrEntityType, messageNameOrOptions as { entityId?: string } | undefined);
+    return this.enqueueClass(
+      commandOrEntityType,
+      messageNameOrOptions as { entityId?: string } | undefined,
+    );
   }
 
-  async enqueueAndWait<T extends Reply<unknown>>(commandOrQuery: T, options?: { entityId?: string; timeout?: number }): Promise<InferReply<T>>;
-  async enqueueAndWait<T extends object, R = unknown>(commandOrQuery: T, options?: { entityId?: string; timeout?: number }): Promise<R>;
-  async enqueueAndWait<R = unknown>(entityType: string, messageName: string, entityId: string, data: Record<string, unknown>, timeout?: number): Promise<R>;
+  async enqueueAndWait<T extends Reply<unknown>>(
+    commandOrQuery: T,
+    options?: { entityId?: string; timeout?: number },
+  ): Promise<InferReply<T>>;
+  async enqueueAndWait<T extends object, R = unknown>(
+    commandOrQuery: T,
+    options?: { entityId?: string; timeout?: number },
+  ): Promise<R>;
+  async enqueueAndWait<R = unknown>(
+    entityType: string,
+    messageName: string,
+    entityId: string,
+    data: Record<string, unknown>,
+    timeout?: number,
+  ): Promise<R>;
   async enqueueAndWait(
     commandOrEntityType: object | string,
     messageNameOrOptions?: string | { entityId?: string; timeout?: number },
@@ -127,9 +202,18 @@ export class QueueBus {
     timeout?: number,
   ): Promise<unknown> {
     if (typeof commandOrEntityType === 'string') {
-      return this.enqueueRawAndWait(commandOrEntityType, messageNameOrOptions as string, entityIdOrNothing!, data!, timeout);
+      return this.enqueueRawAndWait(
+        commandOrEntityType,
+        messageNameOrOptions as string,
+        entityIdOrNothing!,
+        data!,
+        timeout,
+      );
     }
-    return this.enqueueClassAndWait(commandOrEntityType, messageNameOrOptions as { entityId?: string; timeout?: number } | undefined);
+    return this.enqueueClassAndWait(
+      commandOrEntityType,
+      messageNameOrOptions as { entityId?: string; timeout?: number } | undefined,
+    );
   }
 
   // =========================================================================
@@ -148,7 +232,11 @@ export class QueueBus {
         if (typeof commandOrMsgName === 'string') {
           return self.dispatchRaw(entityType, commandOrMsgName, entityIdOrOptions as string, data!);
         }
-        return self.dispatchClass(entityType, commandOrMsgName, (entityIdOrOptions as { entityId?: string })?.entityId);
+        return self.dispatchClass(
+          entityType,
+          commandOrMsgName,
+          (entityIdOrOptions as { entityId?: string })?.entityId,
+        );
       },
 
       enqueueAndWait(
@@ -158,25 +246,56 @@ export class QueueBus {
         timeout?: number,
       ): Promise<unknown> {
         if (typeof commandOrMsgName === 'string') {
-          return self.dispatchRawAndWait(entityType, commandOrMsgName, entityIdOrOptions as string, dataOrNothing!, timeout);
+          return self.dispatchRawAndWait(
+            entityType,
+            commandOrMsgName,
+            entityIdOrOptions as string,
+            dataOrNothing!,
+            timeout,
+          );
         }
         const opts = entityIdOrOptions as { entityId?: string; timeout?: number } | undefined;
-        return self.dispatchClassAndWait(entityType, commandOrMsgName, opts?.entityId, opts?.timeout);
+        return self.dispatchClassAndWait(
+          entityType,
+          commandOrMsgName,
+          opts?.entityId,
+          opts?.timeout,
+        );
       },
 
-      enqueueClass<T extends object>(commandOrQuery: T, options?: { entityId?: string }): Promise<IMessageRef> {
+      enqueueClass<T extends object>(
+        commandOrQuery: T,
+        options?: { entityId?: string },
+      ): Promise<IMessageRef> {
         return self.dispatchClass(entityType, commandOrQuery, options?.entityId);
       },
 
-      enqueueRaw(messageName: string, entityId: string, data: Record<string, unknown>): Promise<IMessageRef> {
+      enqueueRaw(
+        messageName: string,
+        entityId: string,
+        data: Record<string, unknown>,
+      ): Promise<IMessageRef> {
         return self.dispatchRaw(entityType, messageName, entityId, data);
       },
 
-      enqueueClassAndWait(commandOrQuery: object, options?: { entityId?: string; timeout?: number }): Promise<unknown> {
-        return self.dispatchClassAndWait(entityType, commandOrQuery, options?.entityId, options?.timeout);
+      enqueueClassAndWait(
+        commandOrQuery: object,
+        options?: { entityId?: string; timeout?: number },
+      ): Promise<unknown> {
+        return self.dispatchClassAndWait(
+          entityType,
+          commandOrQuery,
+          options?.entityId,
+          options?.timeout,
+        );
       },
 
-      enqueueRawAndWait<R = unknown>(messageName: string, entityId: string, data: Record<string, unknown>, timeout?: number): Promise<R> {
+      enqueueRawAndWait<R = unknown>(
+        messageName: string,
+        entityId: string,
+        data: Record<string, unknown>,
+        timeout?: number,
+      ): Promise<R> {
         return self.dispatchRawAndWait<R>(entityType, messageName, entityId, data, timeout);
       },
 
@@ -202,7 +321,7 @@ export class QueueBus {
     if (!this.registryService) {
       throw new Error(
         'Cannot introspect: registry is not configured. ' +
-        'Enable it with: registry: { enabled: true, serviceName: "..." }',
+          'Enable it with: registry: { enabled: true, serviceName: "..." }',
       );
     }
 
@@ -214,7 +333,10 @@ export class QueueBus {
   // STATIC REGISTRY
   // =========================================================================
 
-  private static readonly globalRegistry = new Map<string, { className: string; targetClass: Type<unknown>; isQuery: boolean }>();
+  private static readonly globalRegistry = new Map<
+    string,
+    { className: string; targetClass: Type<unknown>; isQuery: boolean }
+  >();
 
   static register(targetClass: Type<unknown>, isQuery = false): void {
     QueueBus.globalRegistry.set(targetClass.name, {
@@ -225,11 +347,11 @@ export class QueueBus {
   }
 
   static registerCommands(...commands: Type<unknown>[]): void {
-    commands.forEach(cmd => QueueBus.register(cmd, false));
+    commands.forEach((cmd) => QueueBus.register(cmd, false));
   }
 
   static registerQueries(...queries: Type<unknown>[]): void {
-    queries.forEach(q => QueueBus.register(q, true));
+    queries.forEach((q) => QueueBus.register(q, true));
   }
 
   static getRegistered(className: string) {
@@ -244,8 +366,14 @@ export class QueueBus {
     return new Map(QueueBus.globalRegistry);
   }
 
-  static discoverFromCqrs(discoveryService: DiscoveryService): { commands: number; queries: number } {
-    const providers = (discoveryService as { getProviders?: () => { metatype?: Function | null }[] }).getProviders?.() ?? [];
+  static discoverFromCqrs(discoveryService: DiscoveryService): {
+    commands: number;
+    queries: number;
+  } {
+    const providers =
+      (
+        discoveryService as { getProviders?: () => { metatype?: Function | null }[] }
+      ).getProviders?.() ?? [];
     const { commands, queries } = discoverCqrsClasses(providers);
 
     for (const [name, cls] of commands) {
@@ -284,13 +412,9 @@ export class QueueBus {
     const jobName = getJobName(commandOrQuery);
     const data = extractData(commandOrQuery);
     const entityConfig = this.config.entities?.[entityType];
-    const entityId = entityIdOverride ?? extractEntityIdExplicit(
-      commandOrQuery,
-      data,
-      undefined,
-      entityConfig,
-      this.logger,
-    );
+    const entityId =
+      entityIdOverride ??
+      extractEntityIdExplicit(commandOrQuery, data, undefined, entityConfig, this.logger);
 
     return this.dispatchRaw(entityType, jobName, entityId, data);
   }
@@ -304,13 +428,9 @@ export class QueueBus {
     const jobName = getJobName(commandOrQuery);
     const data = extractData(commandOrQuery);
     const entityConfig = this.config.entities?.[entityType];
-    const entityId = entityIdOverride ?? extractEntityIdExplicit(
-      commandOrQuery,
-      data,
-      undefined,
-      entityConfig,
-      this.logger,
-    );
+    const entityId =
+      entityIdOverride ??
+      extractEntityIdExplicit(commandOrQuery, data, undefined, entityConfig, this.logger);
 
     return this.dispatchRawAndWait(entityType, jobName, entityId, data, timeout);
   }

@@ -57,11 +57,7 @@ describe('SchedulerService', () => {
 
     it('should return a dispatch result when work is available', async () => {
       const msg = createMessage();
-      mockRedis.eval.mockResolvedValue([
-        'account:a-1',
-        JSON.stringify(msg),
-        'owner-token-1',
-      ]);
+      mockRedis.eval.mockResolvedValue(['account:a-1', JSON.stringify(msg), 'owner-token-1']);
 
       const result = await scheduler.pickNext();
       expect(result).not.toBeNull();

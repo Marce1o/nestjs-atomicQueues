@@ -1,4 +1,11 @@
-import { Injectable, Logger, Inject, OnModuleInit, OnApplicationShutdown, Optional } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  Inject,
+  OnModuleInit,
+  OnApplicationShutdown,
+  Optional,
+} from '@nestjs/common';
 import { DiscoveryService } from '@nestjs/core';
 import Redis from 'ioredis';
 import { IAtomicQueuesModuleConfig } from '../../domain';
@@ -60,12 +67,14 @@ export class RegistryService implements OnModuleInit, OnApplicationShutdown {
     await this.publishLocalContracts();
 
     this.heartbeatTimer = setInterval(() => {
-      this.refreshRegistrations().catch(err => {
+      this.refreshRegistrations().catch((err) => {
         this.logger.error(`Heartbeat failed: ${(err as Error).message}`);
       });
     }, this.heartbeatInterval);
 
-    this.logger.log(`Registry enabled for service '${this.serviceName}' with ${this.ownedEntityTypes.size} entity types`);
+    this.logger.log(
+      `Registry enabled for service '${this.serviceName}' with ${this.ownedEntityTypes.size} entity types`,
+    );
   }
 
   async onApplicationShutdown(): Promise<void> {
@@ -101,7 +110,7 @@ export class RegistryService implements OnModuleInit, OnApplicationShutdown {
 
     const pattern = `${this.keyPrefix}:registry:*`;
     const keys = await this.scanKeys(pattern);
-    return keys.map(k => k.replace(`${this.keyPrefix}:registry:`, ''));
+    return keys.map((k) => k.replace(`${this.keyPrefix}:registry:`, ''));
   }
 
   async getMessage(entityType: string, messageName: string): Promise<MessageSpec | null> {
@@ -134,7 +143,11 @@ export class RegistryService implements OnModuleInit, OnApplicationShutdown {
     };
   }
 
-  async validate(entityType: string, messageName: string, data?: Record<string, any>): Promise<void> {
+  async validate(
+    entityType: string,
+    messageName: string,
+    data?: Record<string, any>,
+  ): Promise<void> {
     if (!this.enabled) return;
 
     const contract = await this.getContract(entityType);
@@ -142,8 +155,8 @@ export class RegistryService implements OnModuleInit, OnApplicationShutdown {
     if (!contract) {
       throw new Error(
         `[Registry] Unknown entity type '${entityType}'. ` +
-        `No service has registered handlers for this entity type. ` +
-        `Registered types: [${(await this.listEntityTypes()).join(', ')}]`,
+          `No service has registered handlers for this entity type. ` +
+          `Registered types: [${(await this.listEntityTypes()).join(', ')}]`,
       );
     }
 
@@ -152,7 +165,7 @@ export class RegistryService implements OnModuleInit, OnApplicationShutdown {
       const accepted = Object.keys(contract.messages).join(', ');
       throw new Error(
         `[Registry] Entity '${entityType}' (service: ${contract.serviceName}) does not accept message '${messageName}'. ` +
-        `Accepted messages: [${accepted}]`,
+          `Accepted messages: [${accepted}]`,
       );
     }
 
@@ -389,7 +402,9 @@ export class RegistryService implements OnModuleInit, OnApplicationShutdown {
       }
 
       if (this.config.verbose) {
-        this.logger.debug(`Registry update: ${change.action} ${change.entityType} by ${change.serviceName}`);
+        this.logger.debug(
+          `Registry update: ${change.action} ${change.entityType} by ${change.serviceName}`,
+        );
       }
     } catch {
       // Ignore malformed updates
@@ -407,7 +422,7 @@ export class RegistryService implements OnModuleInit, OnApplicationShutdown {
       if (missing.length > 0) {
         throw new Error(
           `[Registry] Schema validation failed for '${messageName}' on '${entityType}': ` +
-          `missing required fields: [${missing.join(', ')}]`,
+            `missing required fields: [${missing.join(', ')}]`,
         );
       }
     }
@@ -422,7 +437,9 @@ export class RegistryService implements OnModuleInit, OnApplicationShutdown {
             const typeMatch =
               (expectedType === 'string' && actualType === 'string') ||
               (expectedType === 'number' && actualType === 'number') ||
-              (expectedType === 'integer' && actualType === 'number' && Number.isInteger(actualValue)) ||
+              (expectedType === 'integer' &&
+                actualType === 'number' &&
+                Number.isInteger(actualValue)) ||
               (expectedType === 'boolean' && actualType === 'boolean') ||
               (expectedType === 'object' && actualType === 'object') ||
               (expectedType === 'array' && Array.isArray(actualValue));
@@ -430,7 +447,7 @@ export class RegistryService implements OnModuleInit, OnApplicationShutdown {
             if (!typeMatch) {
               throw new Error(
                 `[Registry] Schema validation failed for '${messageName}' on '${entityType}': ` +
-                `field '${prop}' expected ${expectedType}, got ${actualType}`,
+                  `field '${prop}' expected ${expectedType}, got ${actualType}`,
               );
             }
           }

@@ -24,7 +24,7 @@ function createMockRedis() {
             return [null, 1];
           });
         },
-        exec: async () => ops.map(op => op()),
+        exec: async () => ops.map((op) => op()),
       };
     },
     rpop: async (key: string) => {
@@ -36,7 +36,7 @@ function createMockRedis() {
       store[key].unshift(value);
       return store[key].length;
     },
-    llen: async (key: string) => (store[key]?.length ?? 0),
+    llen: async (key: string) => store[key]?.length ?? 0,
     lrange: async (key: string, start: number, end: number) => {
       if (!store[key]) return [];
       return store[key].slice(start, end + 1);
@@ -51,7 +51,7 @@ function createMockRedis() {
       sets[key].delete(member);
       return 1;
     },
-    scard: async (key: string) => (sets[key]?.size ?? 0),
+    scard: async (key: string) => sets[key]?.size ?? 0,
     _store: store,
     _sets: sets,
   };
@@ -77,10 +77,7 @@ describe('LogService', () => {
 
   beforeEach(() => {
     mockRedis = createMockRedis();
-    logService = new LogService(
-      mockRedis as any,
-      { redis: {}, keyPrefix: 'test' } as any,
-    );
+    logService = new LogService(mockRedis as any, { redis: {}, keyPrefix: 'test' } as any);
   });
 
   it('should generate correct Redis keys', () => {

@@ -245,7 +245,7 @@ describe('@On', () => {
 
     const handlers = getActorHandlers(MultiActor);
     expect(handlers).toHaveLength(2);
-    const names = handlers.map(h => h.methodName).sort();
+    const names = handlers.map((h) => h.methodName).sort();
     expect(names).toEqual(['deposit', 'withdraw']);
   });
 
