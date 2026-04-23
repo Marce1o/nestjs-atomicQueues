@@ -1,6 +1,6 @@
 import { Injectable, Logger, Inject, OnModuleInit, OnApplicationShutdown } from '@nestjs/common';
 import Redis from 'ioredis';
-import { IAtomicQueuesModuleConfig } from '../../domain';
+import { IAtomicQueuesModuleConfig, ISerializedMessage } from '../../domain';
 import { resolveKeyPrefix } from '../../utils';
 import { SchedulerService } from '../scheduler';
 import { GateService } from '../gate';
@@ -96,7 +96,7 @@ export class ExecutorPoolService implements OnModuleInit, OnApplicationShutdown 
 
   private async executeMessage(
     entityKey: string,
-    message: any,
+    message: ISerializedMessage,
     ownerToken: string,
   ): Promise<void> {
     const entityType = message.entityType;
@@ -117,10 +117,13 @@ export class ExecutorPoolService implements OnModuleInit, OnApplicationShutdown 
         const actor = await this.actorRegistry.getOrCreateInstance(entityType, entityId);
         const methodName = this.actorRegistry.getHandlerMethod(entityType, message.name);
         if (actor && methodName) {
-          const result = await actor[methodName]({ ...message.data });
-          await this.publishResult(message, result);
-          await this.scheduler.complete(entityKey, ownerToken);
-          return;
+          const handler = actor[methodName];
+          if (typeof handler === 'function') {
+            const result = await handler.call(actor, { ...message.data });
+            await this.publishResult(message, result);
+            await this.scheduler.complete(entityKey, ownerToken);
+            return;
+          }
         }
       }
 
@@ -135,7 +138,7 @@ export class ExecutorPoolService implements OnModuleInit, OnApplicationShutdown 
     }
   }
 
-  private async publishResult(message: any, result?: unknown, error?: Error): Promise<void> {
+  private async publishResult(message: ISerializedMessage, result?: unknown, error?: Error): Promise<void> {
     if (!message.correlationId) return;
     const channel = `${this.keyPrefix}:results:${message.correlationId}`;
     const payload = error

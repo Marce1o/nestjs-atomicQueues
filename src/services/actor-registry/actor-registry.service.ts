@@ -10,13 +10,13 @@ import { ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG } from '../constants';
 
 interface ActorDefinition {
   options: ActorOptions;
-  targetClass: Type<any>;
+  targetClass: Type<unknown>;
   handlers: ActorHandlerMetadata[];
   handlerMap: Map<string, string>;
 }
 
 interface ActorInstance {
-  instance: any;
+  instance: Record<string, unknown>;
   entityId: string;
   entityType: string;
   lastAccessedAt: number;
@@ -67,8 +67,6 @@ export class ActorRegistry implements OnModuleInit, OnApplicationShutdown {
       const handlers = getActorHandlers(metatype);
       if (handlers.length === 0) continue;
 
-      // If @Actor is present, use its explicit entity type.
-      // Otherwise, infer the entity type from the message classes' @EntityType.
       const actorMeta = getActorMetadata(metatype);
       let entityType: string | undefined;
 
@@ -93,7 +91,7 @@ export class ActorRegistry implements OnModuleInit, OnApplicationShutdown {
 
       const definition: ActorDefinition = {
         options: actorMeta ?? { entityType },
-        targetClass: metatype as Type<any>,
+        targetClass: metatype as Type<unknown>,
         handlers,
         handlerMap,
       };
@@ -109,13 +107,13 @@ export class ActorRegistry implements OnModuleInit, OnApplicationShutdown {
     for (const [entityType, def] of this.definitions) {
       this.handlerExecutor.registerActor(
         entityType,
-        { _placeholder: true },
+        { _placeholder: true } as unknown as Record<string, Function>,
         def.handlerMap,
       );
     }
   }
 
-  async getOrCreateInstance(entityType: string, entityId: string): Promise<any | null> {
+  async getOrCreateInstance(entityType: string, entityId: string): Promise<Record<string, unknown> | null> {
     const definition = this.definitions.get(entityType);
     if (!definition) return null;
 
@@ -123,9 +121,7 @@ export class ActorRegistry implements OnModuleInit, OnApplicationShutdown {
     let entry = this.instances.get(entityKey);
 
     if (!entry) {
-      // Use Reflect.construct to properly run the constructor so class field
-      // initializers (e.g. `private balance = 0`) are executed.
-      const instance = Reflect.construct(definition.targetClass, []);
+      const instance = Reflect.construct(definition.targetClass, []) as Record<string, unknown>;
 
       const persisted = this.config.entities?.[entityType]?.statePersistence !== false;
       if (persisted) {
@@ -163,16 +159,17 @@ export class ActorRegistry implements OnModuleInit, OnApplicationShutdown {
 
     try {
       const stateKey = `${this.keyPrefix}:actor-state:${entityKey}`;
+      const stateTTL = entityConfig?.stateTTL ?? 86400;
       const state = this.extractState(entry.instance);
       if (Object.keys(state).length > 0) {
-        await this.redis.set(stateKey, JSON.stringify(state), 'EX', 86400);
+        await this.redis.set(stateKey, JSON.stringify(state), 'EX', stateTTL);
       }
     } catch (err) {
       this.logger.error(`Failed to persist state for ${entityKey}: ${(err as Error).message}`);
     }
   }
 
-  private async restoreState(entityKey: string, instance: any): Promise<void> {
+  private async restoreState(entityKey: string, instance: Record<string, unknown>): Promise<void> {
     try {
       const stateKey = `${this.keyPrefix}:actor-state:${entityKey}`;
       const raw = await this.redis.get(stateKey);
@@ -186,13 +183,12 @@ export class ActorRegistry implements OnModuleInit, OnApplicationShutdown {
     }
   }
 
-  private extractState(instance: any): Record<string, any> {
-    const state: Record<string, any> = {};
+  private extractState(instance: Record<string, unknown>): Record<string, unknown> {
+    const state: Record<string, unknown> = {};
     for (const key of Object.keys(instance)) {
       const val = instance[key];
       if (typeof val === 'function') continue;
-      // Skip non-serializable values: class instances (Logger, services, etc.)
-      // Only persist primitives, plain objects, and arrays
+      if (val instanceof Map || val instanceof Set || val instanceof Date) continue;
       if (val !== null && typeof val === 'object' && Object.getPrototypeOf(val) !== Object.prototype && !Array.isArray(val)) continue;
       state[key] = val;
     }

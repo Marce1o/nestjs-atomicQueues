@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleInit, Type, Optional } from '@nestjs/common';
 import { DiscoveryService, Reflector } from '@nestjs/core';
+import { ICommandBus, IQueryBus } from '../../domain';
 import {
   JOB_COMMAND_METADATA,
   JOB_QUERY_METADATA,
@@ -7,17 +8,9 @@ import {
   JobQueryMetadata,
 } from '../../decorators';
 
-interface ICommandBus {
-  execute<T>(command: T): Promise<any>;
-}
-
-interface IQueryBus {
-  execute<T>(query: T): Promise<any>;
-}
-
 interface IJobLike {
   name: string;
-  data: Record<string, any>;
+  data: Record<string, unknown>;
   id: string;
 }
 
@@ -110,25 +103,25 @@ export class CommandDiscoveryService implements OnModuleInit {
     return this.commandMap.has(jobName) || this.queryMap.has(jobName);
   }
 
-  getCommandClass(jobName: string, entityType?: string): Type<any> | undefined {
+  getCommandClass(jobName: string, entityType?: string): Type<unknown> | undefined {
     if (entityType) {
       const scopedKey = `${entityType}:${jobName}`;
       const scopedMeta = this.scopedCommandMap.get(scopedKey);
-      if (scopedMeta) return scopedMeta.targetClass as Type<any>;
+      if (scopedMeta) return scopedMeta.targetClass as Type<unknown>;
     }
-    return this.commandMap.get(jobName)?.targetClass as Type<any> | undefined;
+    return this.commandMap.get(jobName)?.targetClass as Type<unknown> | undefined;
   }
 
-  getQueryClass(jobName: string, entityType?: string): Type<any> | undefined {
+  getQueryClass(jobName: string, entityType?: string): Type<unknown> | undefined {
     if (entityType) {
       const scopedKey = `${entityType}:${jobName}`;
       const scopedMeta = this.scopedQueryMap.get(scopedKey);
-      if (scopedMeta) return scopedMeta.targetClass as Type<any>;
+      if (scopedMeta) return scopedMeta.targetClass as Type<unknown>;
     }
-    return this.queryMap.get(jobName)?.targetClass as Type<any> | undefined;
+    return this.queryMap.get(jobName)?.targetClass as Type<unknown> | undefined;
   }
 
-  async executeJob(job: IJobLike, entityId: string, entityType?: string): Promise<any> {
+  async executeJob(job: IJobLike, entityId: string, entityType?: string): Promise<unknown> {
     const jobName = job.name;
 
     let commandMeta: JobCommandMetadata | undefined;
@@ -179,11 +172,11 @@ export class CommandDiscoveryService implements OnModuleInit {
   private instantiateFromMetadata(
     metadata: JobCommandMetadata | JobQueryMetadata,
     entityId: string,
-    jobData: Record<string, any>,
-  ): any {
+    jobData: Record<string, unknown>,
+  ): unknown {
     const { targetClass, paramNames, entityIdParam } = metadata;
 
-    const args: any[] = [];
+    const args: unknown[] = [];
 
     for (let i = 0; i < paramNames.length; i++) {
       const paramName = paramNames[i];
@@ -199,7 +192,7 @@ export class CommandDiscoveryService implements OnModuleInit {
       }
     }
 
-    return new (targetClass as Type<any>)(...args);
+    return new (targetClass as new (...args: unknown[]) => unknown)(...args);
   }
 
   getRegisteredJobNames(): { commands: string[]; queries: string[] } {

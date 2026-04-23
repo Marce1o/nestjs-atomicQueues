@@ -161,7 +161,7 @@ describe('ActorRegistry', () => {
 
     it('should restore state from Redis on instance creation', async () => {
       mockRedis._store['test:actor-state:account:a-5'] = JSON.stringify({ balance: 500 });
-      const instance = await registry.getOrCreateInstance('account', 'a-5');
+      const instance = await registry.getOrCreateInstance('account', 'a-5') as any;
       expect(instance.balance).toBe(500);
     });
   });
@@ -215,13 +215,13 @@ describe('ActorRegistry', () => {
     });
 
     it('should create per-entity instances for auto-discovered actor', async () => {
-      const instance = await registry.getOrCreateInstance('warehouse', 'SKU-001');
+      const instance = await registry.getOrCreateInstance('warehouse', 'SKU-001') as any;
       expect(instance).not.toBeNull();
       expect(instance.stock).toBe(1000);
     });
 
     it('should execute handlers on auto-discovered actor', async () => {
-      const instance = await registry.getOrCreateInstance('warehouse', 'SKU-001');
+      const instance = await registry.getOrCreateInstance('warehouse', 'SKU-001') as any;
       instance.reserve({ sku: 'SKU-001', quantity: 200 });
       expect(instance.stock).toBe(800);
 

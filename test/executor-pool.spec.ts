@@ -54,7 +54,7 @@ describe('HandlerExecutor', () => {
       executeJob: jest.fn().mockResolvedValue('discovered-result'),
       hasHandler: jest.fn().mockReturnValue(true),
     };
-    executor.setCommandDiscovery(mockDiscovery);
+    executor.setCommandDiscovery(mockDiscovery as any);
 
     const msg = createMessage({ name: 'UnhandledCommand' });
     const result = await executor.execute(msg, 'account:a-1');

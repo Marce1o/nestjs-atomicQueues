@@ -1,15 +1,12 @@
 import { Injectable, Logger, Type, OnModuleInit } from '@nestjs/common';
 import { DiscoveryService, ModuleRef } from '@nestjs/core';
-import { ISerializedMessage } from '../../domain';
+import { ISerializedMessage, ICommandBus, IQueryBus } from '../../domain';
 import { discoverCqrsClasses } from '../../utils';
 import { CommandDiscoveryService } from '../command-discovery';
 
-interface ICommandBus {
-  execute<T>(command: T): Promise<any>;
-}
-
-interface IQueryBus {
-  execute<T>(query: T): Promise<any>;
+interface IActorEntry {
+  create: () => Record<string, Function>;
+  handlers: Map<string, string>;
 }
 
 @Injectable()
@@ -19,9 +16,9 @@ export class HandlerExecutor implements OnModuleInit {
   private commandBus: ICommandBus | null = null;
   private queryBus: IQueryBus | null = null;
 
-  private actorFactories = new Map<string, { create: () => any; handlers: Map<string, string> }>();
-  private commandRegistry = new Map<string, { targetClass: Type<any>; isQuery: boolean }>();
-  private commandDiscovery: any = null;
+  private actorHandlerMap = new Map<string, IActorEntry>();
+  private commandRegistry = new Map<string, { targetClass: Type<unknown>; isQuery: boolean }>();
+  private commandDiscovery: CommandDiscoveryService | null = null;
 
   constructor(
     private readonly commandDiscoveryService: CommandDiscoveryService,
@@ -61,12 +58,12 @@ export class HandlerExecutor implements OnModuleInit {
 
     for (const [name, cls] of commands) {
       if (!this.commandRegistry.has(name)) {
-        this.registerCommand(name, cls as Type<any>, false);
+        this.registerCommand(name, cls as Type<unknown>, false);
       }
     }
     for (const [name, cls] of queries) {
       if (!this.commandRegistry.has(name)) {
-        this.registerCommand(name, cls as Type<any>, true);
+        this.registerCommand(name, cls as Type<unknown>, true);
       }
     }
 
@@ -83,27 +80,27 @@ export class HandlerExecutor implements OnModuleInit {
     this.queryBus = bus;
   }
 
-  setCommandDiscovery(discovery: any): void {
+  setCommandDiscovery(discovery: CommandDiscoveryService): void {
     this.commandDiscovery = discovery;
   }
 
   registerActor(
     entityType: string,
-    actorInstance: any,
+    actorInstance: Record<string, Function>,
     handlers: Map<string, string>,
   ): void {
-    this.actorFactories.set(entityType, {
+    this.actorHandlerMap.set(entityType, {
       create: () => actorInstance,
       handlers,
     });
   }
 
-  registerCommand(className: string, targetClass: Type<any>, isQuery: boolean): void {
+  registerCommand(className: string, targetClass: Type<unknown>, isQuery: boolean): void {
     this.commandRegistry.set(className, { targetClass, isQuery });
   }
 
   canHandle(entityType: string, messageName: string): boolean {
-    const actorEntry = this.actorFactories.get(entityType);
+    const actorEntry = this.actorHandlerMap.get(entityType);
     if (actorEntry && actorEntry.handlers.has(messageName)) return true;
 
     if (this.commandDiscovery?.hasHandler(messageName, entityType)) return true;
@@ -116,8 +113,7 @@ export class HandlerExecutor implements OnModuleInit {
   async execute(message: ISerializedMessage, entityKey: string): Promise<unknown> {
     const { name, data, entityType, entityId } = message;
 
-    // 1. Try actor handler
-    const actorEntry = this.actorFactories.get(entityType);
+    const actorEntry = this.actorHandlerMap.get(entityType);
     if (actorEntry) {
       const methodName = actorEntry.handlers.get(name);
       if (methodName) {
@@ -127,7 +123,6 @@ export class HandlerExecutor implements OnModuleInit {
       }
     }
 
-    // 2. Try CommandDiscovery (@JobCommand / @JobQuery)
     if (this.commandDiscovery) {
       const fakeJob = { name, data, id: message.id };
       const result = await this.commandDiscovery.executeJob(fakeJob, entityId, entityType);
@@ -136,11 +131,10 @@ export class HandlerExecutor implements OnModuleInit {
       }
     }
 
-    // 3. Try QueueBus registry
     const registryEntry = this.commandRegistry.get(name);
     if (registryEntry) {
       const { targetClass, isQuery } = registryEntry;
-      const instance = Object.assign(new targetClass(), data);
+      const instance = Object.assign(new (targetClass as Type<Record<string, unknown>>)(), data);
 
       if (isQuery) {
         if (!this.queryBus) {
