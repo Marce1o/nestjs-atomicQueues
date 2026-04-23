@@ -53,9 +53,7 @@ export class EntityTypeRegistry implements OnModuleInit {
     }
 
     if (this.entityTypes.size > 0) {
-      this.logger.log(
-        `Discovered entity types: [${Array.from(this.entityTypes).join(', ')}]`,
-      );
+      this.logger.log(`Discovered entity types: [${Array.from(this.entityTypes).join(', ')}]`);
     }
   }
 }

@@ -40,10 +40,7 @@ describe('EntityTypeRegistry', () => {
   }
 
   it('should discover entity types from @CommandHandler providers', async () => {
-    const registry = createRegistry([
-      { metatype: DepositHandler },
-      { metatype: WithdrawHandler },
-    ]);
+    const registry = createRegistry([{ metatype: DepositHandler }, { metatype: WithdrawHandler }]);
     await registry.onModuleInit();
 
     expect(registry.getRegisteredEntityTypes()).toEqual(['account']);
@@ -78,10 +75,7 @@ describe('EntityTypeRegistry', () => {
   });
 
   it('should discover multiple entity types', async () => {
-    const registry = createRegistry([
-      { metatype: DepositHandler },
-      { metatype: ReserveHandler },
-    ]);
+    const registry = createRegistry([{ metatype: DepositHandler }, { metatype: ReserveHandler }]);
     await registry.onModuleInit();
 
     const types = registry.getRegisteredEntityTypes().sort();

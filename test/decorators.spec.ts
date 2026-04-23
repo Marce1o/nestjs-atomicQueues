@@ -166,4 +166,3 @@ describe('@JobQuery', () => {
     expect(meta!.jobName).toBe('fetch-score');
   });
 });
-
