@@ -65,34 +65,19 @@ export class CommandDiscoveryService implements OnModuleInit {
   }
 
   private discoverCommands(): void {
-    if (!this.discoveryService) return;
-
-    const providers = this.discoveryService.getProviders();
-
-    for (const wrapper of providers) {
-      const { metatype } = wrapper;
-      if (!metatype) continue;
-
-      const metadata = Reflect.getMetadata(JOB_COMMAND_METADATA, metatype) as
-        | JobCommandMetadata
-        | undefined;
-
-      if (metadata) {
-        this.commandMap.set(metadata.jobName, metadata);
-
-        if (metadata.entityType) {
-          const scopedKey = `${metadata.entityType}:${metadata.jobName}`;
-          this.scopedCommandMap.set(scopedKey, metadata);
-        }
-
-        this.logger.debug(
-          `Registered @JobCommand: ${metadata.jobName} -> ${metatype.name}`,
-        );
-      }
-    }
+    this.discoverByMetadataKey(JOB_COMMAND_METADATA, this.commandMap, this.scopedCommandMap, '@JobCommand');
   }
 
   private discoverQueries(): void {
+    this.discoverByMetadataKey(JOB_QUERY_METADATA, this.queryMap, this.scopedQueryMap, '@JobQuery');
+  }
+
+  private discoverByMetadataKey<T extends { jobName: string; entityType?: string }>(
+    metadataKey: string,
+    targetMap: Map<string, T>,
+    scopedMap: Map<string, T>,
+    label: string,
+  ): void {
     if (!this.discoveryService) return;
 
     const providers = this.discoveryService.getProviders();
@@ -101,22 +86,17 @@ export class CommandDiscoveryService implements OnModuleInit {
       const { metatype } = wrapper;
       if (!metatype) continue;
 
-      const metadata = Reflect.getMetadata(JOB_QUERY_METADATA, metatype) as
-        | JobQueryMetadata
-        | undefined;
+      const metadata = Reflect.getMetadata(metadataKey, metatype) as T | undefined;
+      if (!metadata) continue;
 
-      if (metadata) {
-        this.queryMap.set(metadata.jobName, metadata);
+      targetMap.set(metadata.jobName, metadata);
 
-        if (metadata.entityType) {
-          const scopedKey = `${metadata.entityType}:${metadata.jobName}`;
-          this.scopedQueryMap.set(scopedKey, metadata);
-        }
-
-        this.logger.debug(
-          `Registered @JobQuery: ${metadata.jobName} -> ${metatype.name}`,
-        );
+      if (metadata.entityType) {
+        const scopedKey = `${metadata.entityType}:${metadata.jobName}`;
+        scopedMap.set(scopedKey, metadata);
       }
+
+      this.logger.debug(`Registered ${label}: ${metadata.jobName} -> ${metatype.name}`);
     }
   }
 

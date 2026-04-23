@@ -51,14 +51,15 @@ export interface AtomicQueuesModuleAsyncOptions {
 @Module({})
 export class AtomicQueuesModule {
   static forRoot(config: IAtomicQueuesModuleConfig): DynamicModule {
-    const redisProvider = this.createRedisProvider(config);
-
     return {
       module: AtomicQueuesModule,
       imports: [DiscoveryModule],
       providers: [
         { provide: ATOMIC_QUEUES_CONFIG, useValue: config },
-        redisProvider,
+        {
+          provide: ATOMIC_QUEUES_REDIS,
+          useFactory: () => this.buildRedisConnection(config),
+        },
         DiscoveryService,
         MetadataScanner,
         ...CORE_SERVICES,
@@ -83,20 +84,7 @@ export class AtomicQueuesModule {
         },
         {
           provide: ATOMIC_QUEUES_REDIS,
-          useFactory: (config: IAtomicQueuesModuleConfig) => {
-            if (config.redis.url) {
-              return new Redis(config.redis.url, {
-                maxRetriesPerRequest: config.redis.maxRetriesPerRequest ?? null,
-              });
-            }
-            return new Redis({
-              host: config.redis.host || 'localhost',
-              port: config.redis.port || 6379,
-              password: config.redis.password,
-              db: config.redis.db,
-              maxRetriesPerRequest: config.redis.maxRetriesPerRequest ?? null,
-            });
-          },
+          useFactory: (config: IAtomicQueuesModuleConfig) => this.buildRedisConnection(config),
           inject: [ATOMIC_QUEUES_CONFIG],
         },
         DiscoveryService,
@@ -112,23 +100,18 @@ export class AtomicQueuesModule {
     };
   }
 
-  private static createRedisProvider(config: IAtomicQueuesModuleConfig): Provider {
-    return {
-      provide: ATOMIC_QUEUES_REDIS,
-      useFactory: () => {
-        if (config.redis.url) {
-          return new Redis(config.redis.url, {
-            maxRetriesPerRequest: config.redis.maxRetriesPerRequest ?? null,
-          });
-        }
-        return new Redis({
-          host: config.redis.host || 'localhost',
-          port: config.redis.port || 6379,
-          password: config.redis.password,
-          db: config.redis.db,
-          maxRetriesPerRequest: config.redis.maxRetriesPerRequest ?? null,
-        });
-      },
-    };
+  private static buildRedisConnection(config: IAtomicQueuesModuleConfig): Redis {
+    if (config.redis.url) {
+      return new Redis(config.redis.url, {
+        maxRetriesPerRequest: config.redis.maxRetriesPerRequest ?? null,
+      });
+    }
+    return new Redis({
+      host: config.redis.host || 'localhost',
+      port: config.redis.port || 6379,
+      password: config.redis.password,
+      db: config.redis.db,
+      maxRetriesPerRequest: config.redis.maxRetriesPerRequest ?? null,
+    });
   }
 }

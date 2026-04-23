@@ -1,6 +1,7 @@
 import { Injectable, Logger, Type, OnModuleInit } from '@nestjs/common';
 import { DiscoveryService, ModuleRef } from '@nestjs/core';
 import { ISerializedMessage } from '../../domain';
+import { discoverCqrsClasses } from '../../utils';
 import { CommandDiscoveryService } from '../command-discovery';
 
 interface ICommandBus {
@@ -55,35 +56,22 @@ export class HandlerExecutor implements OnModuleInit {
   }
 
   private discoverCqrsHandlers(): void {
-    const COMMAND_HANDLER_METADATA = '__commandHandler__';
-    const QUERY_HANDLER_METADATA = '__queryHandler__';
-    let commandCount = 0;
-    let queryCount = 0;
-
     const providers = this.discoveryService.getProviders();
-    for (const wrapper of providers) {
-      const { metatype } = wrapper;
-      if (!metatype) continue;
+    const { commands, queries } = discoverCqrsClasses(providers);
 
-      const commandClass = Reflect.getMetadata(COMMAND_HANDLER_METADATA, metatype);
-      if (commandClass && typeof commandClass === 'function') {
-        if (!this.commandRegistry.has(commandClass.name)) {
-          this.registerCommand(commandClass.name, commandClass, false);
-          commandCount++;
-        }
+    for (const [name, cls] of commands) {
+      if (!this.commandRegistry.has(name)) {
+        this.registerCommand(name, cls as Type<any>, false);
       }
-
-      const queryClass = Reflect.getMetadata(QUERY_HANDLER_METADATA, metatype);
-      if (queryClass && typeof queryClass === 'function') {
-        if (!this.commandRegistry.has(queryClass.name)) {
-          this.registerCommand(queryClass.name, queryClass, true);
-          queryCount++;
-        }
+    }
+    for (const [name, cls] of queries) {
+      if (!this.commandRegistry.has(name)) {
+        this.registerCommand(name, cls as Type<any>, true);
       }
     }
 
-    if (commandCount > 0 || queryCount > 0) {
-      this.logger.log(`Auto-discovered ${commandCount} CQRS commands and ${queryCount} queries`);
+    if (commands.size > 0 || queries.size > 0) {
+      this.logger.log(`Auto-discovered ${commands.size} CQRS commands and ${queries.size} queries`);
     }
   }
 
@@ -115,17 +103,11 @@ export class HandlerExecutor implements OnModuleInit {
   }
 
   canHandle(entityType: string, messageName: string): boolean {
-    // 1. Actor handler
     const actorEntry = this.actorFactories.get(entityType);
     if (actorEntry && actorEntry.handlers.has(messageName)) return true;
 
-    // 2. CommandDiscovery (@JobCommand / @JobQuery)
     if (this.commandDiscovery?.hasHandler(messageName, entityType)) return true;
 
-    // 3. QueueBus static registry
-    if (this.commandRegistry.has(messageName)) return true;
-
-    // 4. CQRS auto-discovered handlers
     if (this.commandRegistry.has(messageName)) return true;
 
     return false;

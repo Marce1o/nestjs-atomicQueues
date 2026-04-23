@@ -1,4 +1,5 @@
 import { Injectable, Logger, Inject, Type, Optional, forwardRef } from '@nestjs/common';
+import { DiscoveryService } from '@nestjs/core';
 import { v4 as uuidv4 } from 'uuid';
 import {
   IAtomicQueuesModuleConfig,
@@ -8,7 +9,7 @@ import {
   InferReply,
 } from '../../domain';
 import { getEntityType } from '../../decorators';
-import { resolveKeyPrefix } from '../../utils';
+import { resolveKeyPrefix, discoverCqrsClasses } from '../../utils';
 import { LogService } from '../log';
 import { ExecutorPoolService } from '../executor-pool';
 import { HandlerExecutor } from '../handler-executor';
@@ -220,35 +221,22 @@ export class QueueBus {
     return new Map(QueueBus.globalRegistry);
   }
 
-  static discoverFromCqrs(discoveryService: any): { commands: number; queries: number } {
-    const COMMAND_HANDLER_METADATA = '__commandHandler__';
-    const QUERY_HANDLER_METADATA = '__queryHandler__';
-    let commandCount = 0;
-    let queryCount = 0;
+  static discoverFromCqrs(discoveryService: DiscoveryService): { commands: number; queries: number } {
+    const providers = (discoveryService as any).getProviders?.() ?? [];
+    const { commands, queries } = discoverCqrsClasses(providers);
 
-    const providers = discoveryService.getProviders?.() ?? [];
-    for (const wrapper of providers) {
-      const { metatype } = wrapper;
-      if (!metatype) continue;
-
-      const commandClass = Reflect.getMetadata(COMMAND_HANDLER_METADATA, metatype);
-      if (commandClass && typeof commandClass === 'function') {
-        if (!QueueBus.globalRegistry.has(commandClass.name)) {
-          QueueBus.register(commandClass, false);
-          commandCount++;
-        }
+    for (const [name, cls] of commands) {
+      if (!QueueBus.globalRegistry.has(name)) {
+        QueueBus.register(cls as Type<any>, false);
       }
-
-      const queryClass = Reflect.getMetadata(QUERY_HANDLER_METADATA, metatype);
-      if (queryClass && typeof queryClass === 'function') {
-        if (!QueueBus.globalRegistry.has(queryClass.name)) {
-          QueueBus.register(queryClass, true);
-          queryCount++;
-        }
+    }
+    for (const [name, cls] of queries) {
+      if (!QueueBus.globalRegistry.has(name)) {
+        QueueBus.register(cls as Type<any>, true);
       }
     }
 
-    return { commands: commandCount, queries: queryCount };
+    return { commands: commands.size, queries: queries.size };
   }
 
   // =========================================================================
