@@ -4,6 +4,22 @@ import { IAtomicQueuesModuleConfig } from '../../domain';
 import { resolveKeyPrefix } from '../../utils';
 import { ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG } from '../constants';
 
+const RELEASE_IF_OWNER_SCRIPT = `
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("DEL", KEYS[1])
+else
+  return 0
+end
+`;
+
+const EXTEND_IF_OWNER_SCRIPT = `
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("EXPIRE", KEYS[1], ARGV[2])
+else
+  return 0
+end
+`;
+
 @Injectable()
 export class GateService {
   private readonly logger = new Logger(GateService.name);
@@ -29,15 +45,20 @@ export class GateService {
     return result === 'OK';
   }
 
-  async release(entityKey: string): Promise<void> {
+  async release(entityKey: string, ownerToken: string): Promise<boolean> {
     const gateKey = this.getGateKey(entityKey);
-    await this.redis.del(gateKey);
+    const result = await this.redis.eval(
+      RELEASE_IF_OWNER_SCRIPT, 1, gateKey, ownerToken,
+    ) as number;
+    return result === 1;
   }
 
-  async extend(entityKey: string, ttlSeconds?: number): Promise<boolean> {
+  async extend(entityKey: string, ownerToken: string, ttlSeconds?: number): Promise<boolean> {
     const gateKey = this.getGateKey(entityKey);
     const ttl = ttlSeconds ?? this.defaultTTL;
-    const result = await this.redis.expire(gateKey, ttl);
+    const result = await this.redis.eval(
+      EXTEND_IF_OWNER_SCRIPT, 1, gateKey, ownerToken, ttl.toString(),
+    ) as number;
     return result === 1;
   }
 

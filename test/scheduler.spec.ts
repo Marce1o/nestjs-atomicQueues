@@ -37,7 +37,7 @@ describe('SchedulerService', () => {
     };
 
     mockGateService = {
-      release: jest.fn().mockResolvedValue(undefined),
+      release: jest.fn().mockResolvedValue(true),
     };
 
     scheduler = new SchedulerService(
@@ -88,20 +88,20 @@ describe('SchedulerService', () => {
   });
 
   describe('complete', () => {
-    it('should release the gate', async () => {
-      await scheduler.complete('account:a-1');
-      expect(mockGateService.release).toHaveBeenCalledWith('account:a-1');
+    it('should release the gate with owner token', async () => {
+      await scheduler.complete('account:a-1', 'token-1');
+      expect(mockGateService.release).toHaveBeenCalledWith('account:a-1', 'token-1');
     });
 
     it('should re-mark entity ready if messages remain', async () => {
       mockLogService.length.mockResolvedValue(2);
-      await scheduler.complete('account:a-1');
+      await scheduler.complete('account:a-1', 'token-1');
       expect(mockLogService.markReady).toHaveBeenCalledWith('account:a-1');
     });
 
     it('should not re-mark ready if no messages remain', async () => {
       mockLogService.length.mockResolvedValue(0);
-      await scheduler.complete('account:a-1');
+      await scheduler.complete('account:a-1', 'token-1');
       expect(mockLogService.markReady).not.toHaveBeenCalled();
     });
   });
@@ -111,9 +111,9 @@ describe('SchedulerService', () => {
       const msg = createMessage({ attempts: 0, maxAttempts: 3 });
       const error = new Error('handler failed');
 
-      await scheduler.fail('account:a-1', msg, error);
+      await scheduler.fail('account:a-1', 'token-1', msg, error);
 
-      expect(mockGateService.release).toHaveBeenCalledWith('account:a-1');
+      expect(mockGateService.release).toHaveBeenCalledWith('account:a-1', 'token-1');
       expect(msg.attempts).toBe(1);
       expect(mockRedis.rpush).toHaveBeenCalled();
       expect(mockLogService.markReady).toHaveBeenCalledWith('account:a-1');
@@ -123,7 +123,7 @@ describe('SchedulerService', () => {
       const msg = createMessage({ attempts: 2, maxAttempts: 3 });
       const error = new Error('handler failed');
 
-      await scheduler.fail('account:a-1', msg, error);
+      await scheduler.fail('account:a-1', 'token-1', msg, error);
 
       expect(msg.attempts).toBe(3);
       expect(mockLogService.deadLetter).toHaveBeenCalledWith('account', msg);
@@ -143,7 +143,7 @@ describe('SchedulerService', () => {
       );
 
       const msg = createMessage({ attempts: 0, maxAttempts: 1 });
-      await configScheduler.fail('account:a-1', msg, new Error('fail'));
+      await configScheduler.fail('account:a-1', 'token-1', msg, new Error('fail'));
 
       expect(mockLogService.deadLetter).toHaveBeenCalled();
     });

@@ -106,7 +106,7 @@ export class ExecutorPoolService implements OnModuleInit, OnApplicationShutdown 
 
     const refresher = setInterval(async () => {
       try {
-        await this.gateService.extend(entityKey, ttl);
+        await this.gateService.extend(entityKey, ownerToken, ttl);
       } catch (err) {
         this.logger.error(`Gate refresh failed for ${entityKey}: ${(err as Error).message}`);
       }
@@ -119,16 +119,16 @@ export class ExecutorPoolService implements OnModuleInit, OnApplicationShutdown 
         if (actor && methodName) {
           const result = await actor[methodName]({ ...message.data });
           await this.publishResult(message, result);
-          await this.scheduler.complete(entityKey);
+          await this.scheduler.complete(entityKey, ownerToken);
           return;
         }
       }
 
       const result = await this.handlerExecutor.execute(message, entityKey);
       await this.publishResult(message, result);
-      await this.scheduler.complete(entityKey);
+      await this.scheduler.complete(entityKey, ownerToken);
     } catch (err) {
-      await this.scheduler.fail(entityKey, message, err as Error);
+      await this.scheduler.fail(entityKey, ownerToken, message, err as Error);
       await this.publishResult(message, undefined, err as Error);
     } finally {
       clearInterval(refresher);

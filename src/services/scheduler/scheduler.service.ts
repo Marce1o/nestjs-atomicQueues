@@ -108,8 +108,8 @@ export class SchedulerService {
     return { entityKey, message, ownerToken: token };
   }
 
-  async complete(entityKey: string): Promise<void> {
-    await this.gateService.release(entityKey);
+  async complete(entityKey: string, ownerToken: string): Promise<void> {
+    await this.gateService.release(entityKey, ownerToken);
 
     const remaining = await this.logService.length(entityKey);
     if (remaining > 0) {
@@ -117,8 +117,8 @@ export class SchedulerService {
     }
   }
 
-  async fail(entityKey: string, message: ISerializedMessage, error: Error): Promise<void> {
-    await this.gateService.release(entityKey);
+  async fail(entityKey: string, ownerToken: string, message: ISerializedMessage, error: Error): Promise<void> {
+    await this.gateService.release(entityKey, ownerToken);
 
     const entityType = message.entityType;
     const retryConfig = this.config.entities?.[entityType]?.retry ?? this.config.retry;

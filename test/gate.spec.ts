@@ -30,6 +30,29 @@ function createMockRedis() {
       return 0;
     },
     exists: async (key: string) => (store[key] ? 1 : 0),
+    eval: async (script: string, numKeys: number, ...args: any[]) => {
+      const key = args[0];
+      const ownerToken = args[1];
+
+      if (script.includes('DEL')) {
+        if (store[key] && store[key].value === ownerToken) {
+          delete store[key];
+          return 1;
+        }
+        return 0;
+      }
+
+      if (script.includes('EXPIRE')) {
+        const ttl = parseInt(args[2], 10);
+        if (store[key] && store[key].value === ownerToken) {
+          store[key].ttl = ttl;
+          return 1;
+        }
+        return 0;
+      }
+
+      return 0;
+    },
     _store: store,
   };
 }
@@ -63,31 +86,47 @@ describe('GateService', () => {
     expect(mockRedis._store['test:gate:account:a-1'].value).toBe('token-1');
   });
 
-  it('should release a gate', async () => {
+  it('should release a gate when owner token matches', async () => {
     await gateService.acquire('account:a-1', 'token-1');
-    await gateService.release('account:a-1');
+    const released = await gateService.release('account:a-1', 'token-1');
+    expect(released).toBe(true);
     expect(mockRedis._store['test:gate:account:a-1']).toBeUndefined();
+  });
+
+  it('should NOT release a gate when owner token does not match', async () => {
+    await gateService.acquire('account:a-1', 'token-1');
+    const released = await gateService.release('account:a-1', 'token-2');
+    expect(released).toBe(false);
+    expect(mockRedis._store['test:gate:account:a-1'].value).toBe('token-1');
   });
 
   it('should allow re-acquire after release', async () => {
     await gateService.acquire('account:a-1', 'token-1');
-    await gateService.release('account:a-1');
+    await gateService.release('account:a-1', 'token-1');
     const acquired = await gateService.acquire('account:a-1', 'token-2');
     expect(acquired).toBe(true);
     expect(mockRedis._store['test:gate:account:a-1'].value).toBe('token-2');
   });
 
-  it('should extend the gate TTL', async () => {
+  it('should extend the gate TTL when owner token matches', async () => {
     await gateService.acquire('account:a-1', 'token-1', 10);
     expect(mockRedis._store['test:gate:account:a-1'].ttl).toBe(10);
 
-    const extended = await gateService.extend('account:a-1', 60);
+    const extended = await gateService.extend('account:a-1', 'token-1', 60);
     expect(extended).toBe(true);
     expect(mockRedis._store['test:gate:account:a-1'].ttl).toBe(60);
   });
 
+  it('should NOT extend the gate TTL when owner token does not match', async () => {
+    await gateService.acquire('account:a-1', 'token-1', 10);
+
+    const extended = await gateService.extend('account:a-1', 'token-2', 60);
+    expect(extended).toBe(false);
+    expect(mockRedis._store['test:gate:account:a-1'].ttl).toBe(10);
+  });
+
   it('should return false when extending non-existent gate', async () => {
-    const extended = await gateService.extend('account:a-1', 60);
+    const extended = await gateService.extend('account:a-1', 'token-1', 60);
     expect(extended).toBe(false);
   });
 
