@@ -25,7 +25,7 @@ end
 
 for _, entityKey in ipairs(members) do
   -- If entity-type filters are active, skip keys this node doesn't own
-  local dominated = false
+  local skipped = false
   if numFilters > 0 then
     local owned = false
     for i = 6, #ARGV do
@@ -35,11 +35,11 @@ for _, entityKey in ipairs(members) do
       end
     end
     if not owned then
-      dominated = true
+      skipped = true
     end
   end
 
-  if not dominated then
+  if not skipped then
     local gateKey = gatePrefix .. entityKey
     local acquired = redis.call("SET", gateKey, ownerToken, "EX", defaultTTL, "NX")
     if acquired then

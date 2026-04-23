@@ -70,30 +70,22 @@ export function deriveJobName(className: string, suffix: string): string {
 }
 
 /**
- * Helper to extract constructor parameter names using reflection
+ * Extract all constructor parameter names, delegating to getConstructorParamName
+ * which correctly handles decorators via splitParams.
  */
 export function getConstructorParamNames(target: Function): string[] {
-  const paramTypes = Reflect.getMetadata('design:paramtypes', target) || [];
-
-  // Try to extract parameter names from the constructor string
-  const constructorStr = target.toString();
-  const match = constructorStr.match(/constructor\s*\(([^)]*)\)/);
-
-  if (match && match[1]) {
-    return match[1]
-      .split(',')
-      .map((param) => {
-        // Handle various patterns:
-        // "public readonly tableId: string" -> "tableId"
-        // "tableId" -> "tableId"
-        // "private tableId: string" -> "tableId"
-        const cleaned = param.trim();
-        const nameMatch = cleaned.match(/(?:public\s+)?(?:private\s+)?(?:protected\s+)?(?:readonly\s+)?(\w+)/);
-        return nameMatch ? nameMatch[1] : cleaned;
-      })
-      .filter((name) => name.length > 0);
+  const fnStr = target.toString();
+  const constructorMatch = fnStr.match(/constructor\s*\(([^)]*)\)/);
+  if (!constructorMatch || !constructorMatch[1].trim()) {
+    const paramTypes = Reflect.getMetadata('design:paramtypes', target) || [];
+    return paramTypes.map((_: unknown, i: number) => `param${i}`);
   }
 
-  // Fallback: generate param0, param1, etc.
-  return paramTypes.map((_: any, i: number) => `param${i}`);
+  const params = splitParams(constructorMatch[1]);
+  const names: string[] = [];
+  for (let i = 0; i < params.length; i++) {
+    const name = getConstructorParamName(target, i);
+    if (name) names.push(name);
+  }
+  return names;
 }
