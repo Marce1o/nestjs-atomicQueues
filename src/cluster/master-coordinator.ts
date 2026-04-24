@@ -1,6 +1,7 @@
-import { Injectable, Logger, Inject, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, Inject, Optional, OnModuleInit } from '@nestjs/common';
 import { IAtomicQueuesModuleConfig } from '../domain';
 import { ATOMIC_QUEUES_CONFIG } from '../services/constants';
+import { GrpcClientPool } from '../grpc';
 import { LeaderElectionService } from './leader-election.service';
 import { ClusterDiscoveryService, ClusterNode } from './cluster-discovery.service';
 
@@ -41,6 +42,7 @@ export class MasterCoordinator implements OnModuleInit {
     @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
     private readonly leaderElection: LeaderElectionService,
     private readonly clusterDiscovery: ClusterDiscoveryService,
+    @Optional() private readonly grpcClientPool?: GrpcClientPool,
   ) {
     this.localReplicaId = config.grpc?.serverId ?? 'local';
     this.isClusterMode = config.grpc?.enabled ?? false;
@@ -203,22 +205,52 @@ export class MasterCoordinator implements OnModuleInit {
   // =========================================================================
 
   private async rebuildAssignmentTable(): Promise<void> {
-    // TODO: in cluster mode, query all replicas via gRPC ListWorkers
-    // and rebuild the assignment table from their responses.
-    // For now, start with empty table — workers will be re-spawned on demand.
     this.assignments.clear();
     this.replicaLoad.clear();
 
-    if (this.isClusterMode) {
-      const nodes = await this.clusterDiscovery.getNodes();
-      for (const node of nodes) {
-        this.replicaLoad.set(node.serverId, 0);
-      }
-    } else {
-      this.replicaLoad.set(this.localReplicaId, 0);
-    }
+    const nodes = this.isClusterMode ? await this.clusterDiscovery.getNodes() : [];
 
-    this.logger.log(`Assignment table rebuilt: ${this.replicaLoad.size} replicas, 0 workers`);
+    for (const node of nodes) {
+      this.replicaLoad.set(node.serverId, 0);
+    }
+    this.replicaLoad.set(this.localReplicaId, 0);
+
+    // Query each replica for its active workers via gRPC ListWorkers
+    if (this.isClusterMode && this.grpcClientPool) {
+      let totalRecovered = 0;
+
+      for (const node of nodes) {
+        if (node.serverId === this.localReplicaId) continue;
+
+        try {
+          const client = await this.grpcClientPool.getClient(node.serverId, node.grpcAddress);
+          const workers = await new Promise<Array<{ entityKey: string }>>((resolve, reject) => {
+            (client as unknown as Record<string, Function>).listWorkers(
+              {},
+              (err: Error | null, response: Record<string, unknown>) => {
+                if (err) return reject(err);
+                resolve((response.workers as Array<{ entityKey: string }>) ?? []);
+              },
+            );
+          });
+
+          for (const w of workers) {
+            this.assignWorker(w.entityKey, node.serverId);
+            totalRecovered++;
+          }
+        } catch (err) {
+          this.logger.warn(
+            `Failed to query replica ${node.serverId} for workers: ${(err as Error).message}`,
+          );
+        }
+      }
+
+      this.logger.log(
+        `Assignment table rebuilt: ${this.replicaLoad.size} replicas, ${totalRecovered} workers recovered`,
+      );
+    } else {
+      this.logger.log(`Assignment table rebuilt: ${this.replicaLoad.size} replicas, 0 workers`);
+    }
   }
 
   private reconcileReplicas(nodes: ClusterNode[]): void {

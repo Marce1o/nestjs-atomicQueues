@@ -1,32 +1,28 @@
 import { Injectable, Logger, Inject, OnModuleInit, OnApplicationShutdown } from '@nestjs/common';
 import * as path from 'path';
-import { IAtomicQueuesModuleConfig } from '../domain';
+import { IAtomicQueuesModuleConfig, ISerializedMessage } from '../domain';
 import { MessageRouter } from '../services/message-router';
 import { EntityWorkerManager } from '../workers';
+import { MasterCoordinator } from '../cluster';
 import { ATOMIC_QUEUES_CONFIG } from '../services/constants';
 
-/** Minimal shape of a gRPC unary call (from @grpc/grpc-js). */
 interface GrpcUnaryCall {
   request: Record<string, unknown>;
 }
 
-/** Minimal shape of a gRPC server-streaming call (from @grpc/grpc-js). */
 interface GrpcServerStreamingCall extends GrpcUnaryCall {
   write(message: Record<string, unknown>): void;
   end(): void;
 }
 
-/** Minimal shape of a gRPC callback (from @grpc/grpc-js). */
 type GrpcCallback = (err: Error | null, response?: Record<string, unknown>) => void;
 
-/** Minimal shape of a gRPC server instance (from @grpc/grpc-js). */
 interface GrpcServer {
   addService(service: unknown, handlers: Record<string, unknown>): void;
   bindAsync(address: string, credentials: unknown, callback: (err: Error | null) => void): void;
   tryShutdown(callback: () => void): void;
 }
 
-/** Minimal shape of the @grpc/grpc-js module used at runtime. */
 interface GrpcModule {
   Server: new () => GrpcServer;
   ServerCredentials: { createInsecure(): unknown };
@@ -35,17 +31,19 @@ interface GrpcModule {
   ): Record<string, Record<string, Record<string, Record<string, unknown>>>>;
 }
 
-/** Minimal shape of the @grpc/proto-loader module used at runtime. */
 interface ProtoLoaderModule {
   loadSync(filename: string, options: Record<string, unknown>): unknown;
 }
 
 /**
- * gRPC Server — receives messages forwarded from peer servers.
+ * gRPC Server — handles all cross-replica and cross-service communication.
  *
- * Only starts when `config.grpc.enabled` is true.
- * Dynamically imports `@grpc/grpc-js` and `@grpc/proto-loader` to keep
- * them as optional peer dependencies.
+ * RPCs:
+ * - SpawnWorker / TeardownWorker / ListWorkers: Master → Replica
+ * - EnqueueToWorker / EnqueueToWorkerAndWait: Master → Replica (dispatch)
+ * - Petition / PetitionAndWait: Replica → Master (routing)
+ * - ReportIdle: Replica → Master (idle teardown)
+ * - Forward / ForwardAndWait: Master → Master (cross-service)
  */
 @Injectable()
 export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
@@ -56,6 +54,7 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
     @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
     private readonly router: MessageRouter,
     private readonly workerManager: EntityWorkerManager,
+    private readonly masterCoordinator: MasterCoordinator,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -91,8 +90,20 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
 
     this.server = new grpc.Server();
     this.server.addService(service, {
+      // Master → Replica: worker management
+      spawnWorker: this.handleSpawnWorker.bind(this),
+      enqueueToWorker: this.handleEnqueueToWorker.bind(this),
+      enqueueToWorkerAndWait: this.handleEnqueueToWorkerAndWait.bind(this),
+      teardownWorker: this.handleTeardownWorker.bind(this),
+      listWorkers: this.handleListWorkers.bind(this),
+      // Replica → Master: petitions
+      petition: this.handlePetition.bind(this),
+      petitionAndWait: this.handlePetitionAndWait.bind(this),
+      reportIdle: this.handleReportIdle.bind(this),
+      // Master → Master: cross-service
       forward: this.handleForward.bind(this),
       forwardAndWait: this.handleForwardAndWait.bind(this),
+      // Health
       ping: this.handlePing.bind(this),
     });
 
@@ -104,11 +115,8 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
         listenAddress,
         grpc.ServerCredentials.createInsecure(),
         (err: Error | null) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve();
-          }
+          if (err) reject(err);
+          else resolve();
         },
       );
     });
@@ -119,7 +127,6 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
   async onApplicationShutdown(): Promise<void> {
     const server = this.server;
     if (!server) return;
-
     return new Promise<void>((resolve) => {
       server.tryShutdown(() => {
         this.logger.log('gRPC server shut down');
@@ -129,22 +136,136 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
   }
 
   // =========================================================================
-  // RPC HANDLERS
+  // Master → Replica: worker management
+  // =========================================================================
+
+  private handleSpawnWorker(call: GrpcUnaryCall, callback: GrpcCallback): void {
+    try {
+      const entityKey = call.request.entityKey as string;
+      const spawned = this.workerManager.spawn(entityKey);
+      callback(null, { spawned, error: '' });
+    } catch (err) {
+      callback(null, { spawned: false, error: (err as Error).message });
+    }
+  }
+
+  private handleEnqueueToWorker(call: GrpcUnaryCall, callback: GrpcCallback): void {
+    try {
+      const entityKey = call.request.entityKey as string;
+      const envelope = call.request.message as Record<string, unknown>;
+      const message = this.deserializeEnvelope(envelope);
+
+      this.workerManager.enqueue(entityKey, message);
+      callback(null, { accepted: true, rejectReason: '' });
+    } catch (err) {
+      callback(null, { accepted: false, rejectReason: (err as Error).message });
+    }
+  }
+
+  private async handleEnqueueToWorkerAndWait(call: GrpcServerStreamingCall): Promise<void> {
+    try {
+      const entityKey = call.request.entityKey as string;
+      const envelope = call.request.message as Record<string, unknown>;
+      const message = this.deserializeEnvelope(envelope);
+
+      const result = await this.workerManager.enqueueAndWait(entityKey, message, 60000);
+
+      call.write({
+        correlationId: message.correlationId ?? '',
+        result: Buffer.from(JSON.stringify(result), 'utf-8'),
+      });
+      call.end();
+    } catch (err) {
+      call.write({
+        correlationId: '',
+        error: (err as Error).message,
+      });
+      call.end();
+    }
+  }
+
+  private async handleTeardownWorker(call: GrpcUnaryCall, callback: GrpcCallback): Promise<void> {
+    try {
+      const entityKey = call.request.entityKey as string;
+      await this.workerManager.teardown(entityKey);
+      callback(null, { tornDown: true });
+    } catch (err) {
+      callback(null, { tornDown: false });
+    }
+  }
+
+  private handleListWorkers(_call: GrpcUnaryCall, callback: GrpcCallback): void {
+    const workerKeys = this.workerManager.listWorkers();
+    const workers = workerKeys.map((key) => ({
+      entityKey: key,
+      queueDepth: 0,
+      isProcessing: false,
+      lastActive: Date.now(),
+    }));
+    callback(null, { workers });
+  }
+
+  // =========================================================================
+  // Replica → Master: petitions
+  // =========================================================================
+
+  private async handlePetition(call: GrpcUnaryCall, callback: GrpcCallback): Promise<void> {
+    try {
+      const entityKey = call.request.entityKey as string;
+      const envelope = call.request.message as Record<string, unknown>;
+      const message = this.deserializeEnvelope(envelope);
+
+      // Master resolves: which replica?
+      const resolution = this.masterCoordinator.resolve(entityKey);
+
+      if (resolution.isLocal) {
+        this.workerManager.enqueue(entityKey, message);
+      } else {
+        // TODO: forward to resolution.replicaId via GrpcClientPool.enqueueToWorker()
+        this.logger.warn(
+          `Cross-replica forward to ${resolution.replicaId} — falling back to local`,
+        );
+        this.workerManager.enqueue(entityKey, message);
+      }
+
+      callback(null, { accepted: true, rejectReason: '' });
+    } catch (err) {
+      callback(null, { accepted: false, rejectReason: (err as Error).message });
+    }
+  }
+
+  private async handlePetitionAndWait(call: GrpcServerStreamingCall): Promise<void> {
+    try {
+      const entityKey = call.request.entityKey as string;
+      const envelope = call.request.message as Record<string, unknown>;
+      const message = this.deserializeEnvelope(envelope);
+
+      const result = await this.workerManager.enqueueAndWait(entityKey, message, 60000);
+
+      call.write({
+        correlationId: message.correlationId ?? '',
+        result: Buffer.from(JSON.stringify(result), 'utf-8'),
+      });
+      call.end();
+    } catch (err) {
+      call.write({ correlationId: '', error: (err as Error).message });
+      call.end();
+    }
+  }
+
+  private handleReportIdle(call: GrpcUnaryCall, callback: GrpcCallback): void {
+    const entityKey = call.request.entityKey as string;
+    this.masterCoordinator.release(entityKey);
+    callback(null, { shouldTeardown: true });
+  }
+
+  // =========================================================================
+  // Master → Master: cross-service
   // =========================================================================
 
   private async handleForward(call: GrpcUnaryCall, callback: GrpcCallback): Promise<void> {
     try {
       const envelope = call.request;
-      const maxHops = this.config.grpc?.maxForwardHops ?? 3;
-
-      if ((envelope.hops as number) >= maxHops) {
-        callback(null, {
-          accepted: false,
-          rejectReason: `max forward hops exceeded (${envelope.hops}/${maxHops})`,
-        });
-        return;
-      }
-
       const data = JSON.parse(Buffer.from(envelope.payload as Buffer).toString('utf-8'));
 
       await this.router.enqueue(
@@ -161,7 +282,6 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
 
       callback(null, { accepted: true, rejectReason: '' });
     } catch (err) {
-      this.logger.error(`Forward RPC error: ${(err as Error).message}`);
       callback(null, { accepted: false, rejectReason: (err as Error).message });
     }
   }
@@ -169,26 +289,14 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
   private async handleForwardAndWait(call: GrpcServerStreamingCall): Promise<void> {
     try {
       const envelope = call.request;
-      const maxHops = this.config.grpc?.maxForwardHops ?? 3;
-
-      if ((envelope.hops as number) >= maxHops) {
-        call.write({
-          correlationId: envelope.correlationId as string,
-          error: `max forward hops exceeded (${envelope.hops}/${maxHops})`,
-        });
-        call.end();
-        return;
-      }
-
       const data = JSON.parse(Buffer.from(envelope.payload as Buffer).toString('utf-8'));
-      const timeout = 60000; // TODO: pass timeout in envelope metadata
 
       const result = await this.router.enqueueAndWait(
         envelope.entityType as string,
         envelope.name as string,
         envelope.entityId as string,
         data,
-        timeout,
+        60000,
         { maxAttempts: envelope.maxAttempts as number },
       );
 
@@ -206,12 +314,40 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
     }
   }
 
+  // =========================================================================
+  // Health
+  // =========================================================================
+
   private handlePing(_call: GrpcUnaryCall, callback: GrpcCallback): void {
     callback(null, {
       serverId: this.config.grpc?.serverId ?? 'unknown',
+      isMaster: this.masterCoordinator.isMaster(),
       activeWorkers: this.workerManager.workerCount(),
       queueDepth: this.workerManager.totalQueueDepth(),
-      entityTypes: [], // TODO: populated from EntityTypeRegistry
+      entityTypes: [],
     });
+  }
+
+  // =========================================================================
+  // Helpers
+  // =========================================================================
+
+  private deserializeEnvelope(envelope: Record<string, unknown>): ISerializedMessage {
+    const payload = envelope.payload
+      ? JSON.parse(Buffer.from(envelope.payload as Buffer).toString('utf-8'))
+      : {};
+
+    return {
+      id: (envelope.id as string) ?? '',
+      name: (envelope.name as string) ?? '',
+      data: payload,
+      entityType: (envelope.entityType as string) ?? '',
+      entityId: (envelope.entityId as string) ?? '',
+      correlationId: (envelope.correlationId as string) || undefined,
+      isQuery: (envelope.isQuery as boolean) || undefined,
+      enqueuedAt: (envelope.enqueuedAt as number) ?? Date.now(),
+      attempts: (envelope.attempts as number) ?? 0,
+      maxAttempts: (envelope.maxAttempts as number) ?? 1,
+    };
   }
 }
