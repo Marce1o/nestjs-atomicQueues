@@ -4,33 +4,33 @@ import { JobCommand, JobQuery, JOB_COMMAND_METADATA, JOB_QUERY_METADATA } from '
 
 // ─── Test classes ───────────────────────────────────────────────────────────
 
-@JobCommand('make-bet')
-class MakeBetCommand {
+@JobCommand('place-order')
+class PlaceOrderCommand {
   constructor(
-    public readonly tableId: string,
-    public readonly amount: number,
+    public readonly orderId: string,
+    public readonly quantity: number,
   ) {}
 }
 
-@JobCommand({ name: 'deal-cards', entityType: 'table' })
-class DealCardsCommand {
+@JobCommand({ name: 'ship-order', entityType: 'order' })
+class ShipOrderCommand {
   constructor(
-    public readonly tableId: string,
-    public readonly deck: string,
+    public readonly orderId: string,
+    public readonly carrier: string,
   ) {}
 }
 
-@JobQuery('get-score')
-class GetScoreQuery {
+@JobQuery('get-status')
+class GetStatusQuery {
   constructor(
-    public readonly tableId: string,
-    public readonly seatIndex: number,
+    public readonly orderId: string,
+    public readonly includeHistory: number,
   ) {}
 }
 
-@JobQuery({ name: 'get-state', entityType: 'table' })
-class GetStateQuery {
-  constructor(public readonly tableId: string) {}
+@JobQuery({ name: 'get-summary', entityType: 'order' })
+class GetSummaryQuery {
+  constructor(public readonly orderId: string) {}
 }
 
 // ─── Mock DiscoveryService ──────────────────────────────────────────────────
@@ -51,10 +51,10 @@ describe('CommandDiscoveryService', () => {
 
   beforeEach(async () => {
     const mockDiscovery = createMockDiscoveryService([
-      MakeBetCommand,
-      DealCardsCommand,
-      GetScoreQuery,
-      GetStateQuery,
+      PlaceOrderCommand,
+      ShipOrderCommand,
+      GetStatusQuery,
+      GetSummaryQuery,
     ]);
 
     service = new CommandDiscoveryService(
@@ -67,13 +67,13 @@ describe('CommandDiscoveryService', () => {
   });
 
   it('should discover @JobCommand classes', () => {
-    expect(service.hasHandler('make-bet')).toBe(true);
-    expect(service.hasHandler('deal-cards')).toBe(true);
+    expect(service.hasHandler('place-order')).toBe(true);
+    expect(service.hasHandler('ship-order')).toBe(true);
   });
 
   it('should discover @JobQuery classes', () => {
-    expect(service.hasHandler('get-score')).toBe(true);
-    expect(service.hasHandler('get-state')).toBe(true);
+    expect(service.hasHandler('get-status')).toBe(true);
+    expect(service.hasHandler('get-summary')).toBe(true);
   });
 
   it('should return false for unknown job names', () => {
@@ -81,13 +81,13 @@ describe('CommandDiscoveryService', () => {
   });
 
   it('should get command class by job name', () => {
-    expect(service.getCommandClass('make-bet')).toBe(MakeBetCommand);
-    expect(service.getCommandClass('deal-cards')).toBe(DealCardsCommand);
+    expect(service.getCommandClass('place-order')).toBe(PlaceOrderCommand);
+    expect(service.getCommandClass('ship-order')).toBe(ShipOrderCommand);
   });
 
   it('should get query class by job name', () => {
-    expect(service.getQueryClass('get-score')).toBe(GetScoreQuery);
-    expect(service.getQueryClass('get-state')).toBe(GetStateQuery);
+    expect(service.getQueryClass('get-status')).toBe(GetStatusQuery);
+    expect(service.getQueryClass('get-summary')).toBe(GetSummaryQuery);
   });
 
   it('should return undefined for unknown command', () => {
@@ -99,27 +99,27 @@ describe('CommandDiscoveryService', () => {
   });
 
   it('should support scoped routing by entityType', () => {
-    // DealCardsCommand has entityType: 'table'
-    expect(service.hasHandler('deal-cards', 'table')).toBe(true);
-    expect(service.getCommandClass('deal-cards', 'table')).toBe(DealCardsCommand);
+    // ShipOrderCommand has entityType: 'order'
+    expect(service.hasHandler('ship-order', 'order')).toBe(true);
+    expect(service.getCommandClass('ship-order', 'order')).toBe(ShipOrderCommand);
 
-    // GetStateQuery has entityType: 'table'
-    expect(service.hasHandler('get-state', 'table')).toBe(true);
-    expect(service.getQueryClass('get-state', 'table')).toBe(GetStateQuery);
+    // GetSummaryQuery has entityType: 'order'
+    expect(service.hasHandler('get-summary', 'order')).toBe(true);
+    expect(service.getQueryClass('get-summary', 'order')).toBe(GetSummaryQuery);
   });
 
   it('should fall back to global when scoped not found', () => {
-    // make-bet has no entityType
-    expect(service.hasHandler('make-bet', 'table')).toBe(true);
-    expect(service.getCommandClass('make-bet', 'table')).toBe(MakeBetCommand);
+    // place-order has no entityType
+    expect(service.hasHandler('place-order', 'order')).toBe(true);
+    expect(service.getCommandClass('place-order', 'order')).toBe(PlaceOrderCommand);
   });
 
   it('getRegisteredJobNames should list all discovered names', () => {
     const names = service.getRegisteredJobNames();
-    expect(names.commands).toContain('make-bet');
-    expect(names.commands).toContain('deal-cards');
-    expect(names.queries).toContain('get-score');
-    expect(names.queries).toContain('get-state');
+    expect(names.commands).toContain('place-order');
+    expect(names.commands).toContain('ship-order');
+    expect(names.queries).toContain('get-status');
+    expect(names.queries).toContain('get-summary');
   });
 });
 
@@ -130,7 +130,7 @@ describe('CommandDiscoveryService.executeJob', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
-    const mockDiscovery = createMockDiscoveryService([MakeBetCommand, GetScoreQuery]);
+    const mockDiscovery = createMockDiscoveryService([PlaceOrderCommand, GetStatusQuery]);
 
     service = new CommandDiscoveryService(mockDiscovery as any, {} as any);
     service.setCommandBus(mockCommandBus);
@@ -140,34 +140,34 @@ describe('CommandDiscoveryService.executeJob', () => {
   });
 
   it('should execute a command via CommandBus', async () => {
-    mockCommandBus.execute.mockResolvedValue('bet-placed');
+    mockCommandBus.execute.mockResolvedValue('order-placed');
 
     const job = {
-      name: 'make-bet',
-      data: { tableId: 't-1', amount: 100 },
+      name: 'place-order',
+      data: { orderId: 'o-1', quantity: 100 },
     } as any;
 
     const result = await service.executeJob(job, 'entity-1');
     expect(mockCommandBus.execute).toHaveBeenCalledTimes(1);
-    expect(result).toBe('bet-placed');
+    expect(result).toBe('order-placed');
 
     // Verify the command was instantiated correctly
     const cmdArg = mockCommandBus.execute.mock.calls[0][0];
-    expect(cmdArg).toBeInstanceOf(MakeBetCommand);
-    expect(cmdArg.tableId).toBe('entity-1'); // entityId injected
+    expect(cmdArg).toBeInstanceOf(PlaceOrderCommand);
+    expect(cmdArg.orderId).toBe('entity-1'); // entityId injected
   });
 
   it('should execute a query via QueryBus', async () => {
-    mockQueryBus.execute.mockResolvedValue({ score: 21 });
+    mockQueryBus.execute.mockResolvedValue({ status: 'shipped' });
 
     const job = {
-      name: 'get-score',
-      data: { tableId: 't-1', seatIndex: 3 },
+      name: 'get-status',
+      data: { orderId: 'o-1', includeHistory: 1 },
     } as any;
 
     const result = await service.executeJob(job, 'entity-2');
     expect(mockQueryBus.execute).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ score: 21 });
+    expect(result).toEqual({ status: 'shipped' });
   });
 
   it('should return undefined for unknown job names', async () => {
@@ -177,25 +177,24 @@ describe('CommandDiscoveryService.executeJob', () => {
   });
 
   it('should throw when CommandBus is not available', async () => {
-    // Create service without setting CommandBus
     const freshService = new CommandDiscoveryService(
-      createMockDiscoveryService([MakeBetCommand]) as any,
+      createMockDiscoveryService([PlaceOrderCommand]) as any,
       {} as any,
     );
     await freshService.onModuleInit();
 
-    const job = { name: 'make-bet', data: {} } as any;
+    const job = { name: 'place-order', data: {} } as any;
     await expect(freshService.executeJob(job, 'e-1')).rejects.toThrow(/CommandBus not available/);
   });
 
   it('should throw when QueryBus is not available', async () => {
     const freshService = new CommandDiscoveryService(
-      createMockDiscoveryService([GetScoreQuery]) as any,
+      createMockDiscoveryService([GetStatusQuery]) as any,
       {} as any,
     );
     await freshService.onModuleInit();
 
-    const job = { name: 'get-score', data: {} } as any;
+    const job = { name: 'get-status', data: {} } as any;
     await expect(freshService.executeJob(job, 'e-1')).rejects.toThrow(/QueryBus not available/);
   });
 });

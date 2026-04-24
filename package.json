@@ -1,7 +1,7 @@
 {
   "name": "atomic-queues",
-  "version": "2.3.0",
-  "description": "Per-entity sequential processing for Node.js — parallel across entities, zero contention, built on Redis",
+  "version": "3.0.0",
+  "description": "Per-entity sequential processing for Node.js — Worker Threads, gRPC cluster, strictly-once delivery",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
@@ -43,7 +43,9 @@
     "virtual-actor",
     "actor-model",
     "distributed",
-    "cqrs"
+    "cqrs",
+    "worker-threads",
+    "grpc"
   ],
   "author": "",
   "license": "MIT",
@@ -62,6 +64,12 @@
       "optional": true
     },
     "zod-to-json-schema": {
+      "optional": true
+    },
+    "@grpc/grpc-js": {
+      "optional": true
+    },
+    "@grpc/proto-loader": {
       "optional": true
     }
   },

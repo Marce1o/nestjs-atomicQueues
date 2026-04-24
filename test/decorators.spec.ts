@@ -60,16 +60,16 @@ describe('@QueueEntityId', () => {
 
 describe('@QueueEntity', () => {
   it('should set both entity type and entity ID property', () => {
-    @QueueEntity('table', 'tableId')
-    class DealCommand {
+    @QueueEntity('order', 'orderId')
+    class ShipOrderCommand {
       constructor(
-        public readonly tableId: string,
-        public readonly card: string,
+        public readonly orderId: string,
+        public readonly carrier: string,
       ) {}
     }
 
-    expect(getEntityType(DealCommand)).toBe('table');
-    expect(getEntityIdProperty(DealCommand)).toBe('tableId');
+    expect(getEntityType(ShipOrderCommand)).toBe('order');
+    expect(getEntityIdProperty(ShipOrderCommand)).toBe('orderId');
   });
 
   it('should set entity type only when entityIdProperty is omitted', () => {
@@ -88,43 +88,43 @@ describe('@QueueEntity', () => {
 describe('@JobCommand', () => {
   it('should auto-derive job name from class name', () => {
     @JobCommand()
-    class MakeBetCommand {
+    class PlaceOrderCommand {
       constructor(
-        public readonly tableId: string,
-        public readonly amount: number,
+        public readonly orderId: string,
+        public readonly quantity: number,
       ) {}
     }
 
-    const meta = getJobCommandMetadata(MakeBetCommand);
+    const meta = getJobCommandMetadata(PlaceOrderCommand);
     expect(meta).toBeDefined();
-    expect(meta!.jobName).toBe('make-bet');
+    expect(meta!.jobName).toBe('place-order');
     expect(meta!.entityIdParam).toBe(0);
-    expect(meta!.targetClass).toBe(MakeBetCommand);
+    expect(meta!.targetClass).toBe(PlaceOrderCommand);
   });
 
   it('should accept explicit job name as string', () => {
-    @JobCommand('place-wager')
-    class PlaceWagerCommand {
+    @JobCommand('submit-request')
+    class SubmitRequestCommand {
       constructor(public readonly id: string) {}
     }
 
-    const meta = getJobCommandMetadata(PlaceWagerCommand);
-    expect(meta!.jobName).toBe('place-wager');
+    const meta = getJobCommandMetadata(SubmitRequestCommand);
+    expect(meta!.jobName).toBe('submit-request');
   });
 
   it('should accept options object', () => {
-    @JobCommand({ name: 'custom-bet', entityType: 'table', entityIdParam: 'tableId' })
+    @JobCommand({ name: 'reserve-stock', entityType: 'warehouse', entityIdParam: 'warehouseId' })
     class CustomCommand {
       constructor(
-        public readonly tableId: string,
-        public readonly amount: number,
+        public readonly warehouseId: string,
+        public readonly quantity: number,
       ) {}
     }
 
     const meta = getJobCommandMetadata(CustomCommand);
-    expect(meta!.jobName).toBe('custom-bet');
-    expect(meta!.entityType).toBe('table');
-    expect(meta!.entityIdParam).toBe('tableId');
+    expect(meta!.jobName).toBe('reserve-stock');
+    expect(meta!.entityType).toBe('warehouse');
+    expect(meta!.entityIdParam).toBe('warehouseId');
   });
 
   it('should extract constructor parameter names', () => {
@@ -147,22 +147,22 @@ describe('@JobCommand', () => {
 describe('@JobQuery', () => {
   it('should auto-derive job name from class name', () => {
     @JobQuery()
-    class GetTableStateQuery {
-      constructor(public readonly tableId: string) {}
+    class GetOrderStatusQuery {
+      constructor(public readonly orderId: string) {}
     }
 
-    const meta = getJobQueryMetadata(GetTableStateQuery);
+    const meta = getJobQueryMetadata(GetOrderStatusQuery);
     expect(meta).toBeDefined();
-    expect(meta!.jobName).toBe('get-table-state');
+    expect(meta!.jobName).toBe('get-order-status');
   });
 
   it('should accept explicit name', () => {
-    @JobQuery('fetch-score')
-    class FetchScoreQuery {
-      constructor(public readonly playerId: string) {}
+    @JobQuery('fetch-inventory')
+    class FetchInventoryQuery {
+      constructor(public readonly warehouseId: string) {}
     }
 
-    const meta = getJobQueryMetadata(FetchScoreQuery);
-    expect(meta!.jobName).toBe('fetch-score');
+    const meta = getJobQueryMetadata(FetchInventoryQuery);
+    expect(meta!.jobName).toBe('fetch-inventory');
   });
 });

@@ -49,7 +49,7 @@ export interface JobQueryMetadata {
  */
 export interface SchemaDecoratorOptions {
   /** The Zod schema for the message payload */
-  schema: any;
+  schema: unknown;
   /** Optional reply schema (for queries) */
-  replySchema?: any;
+  replySchema?: unknown;
 }

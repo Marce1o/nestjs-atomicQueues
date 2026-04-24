@@ -1,7 +1,4 @@
-import {
-  AutoScaler,
-  ScalingConfig,
-} from '../src/workers/auto-scaler';
+import { AutoScaler, ScalingConfig } from '../src/workers/auto-scaler';
 import {
   WORKER_STATE_OFFSET,
   WORKER_DEPTH_OFFSET,
@@ -28,7 +25,12 @@ function createStateBuffer(maxWorkers: number): { buffer: SharedArrayBuffer; vie
   return { buffer, view };
 }
 
-function setWorkerState(view: Int32Array, workerId: number, state: WorkerState, depth: number): void {
+function setWorkerState(
+  view: Int32Array,
+  workerId: number,
+  state: WorkerState,
+  depth: number,
+): void {
   const base = (workerId * WORKER_SLOT_SIZE) / 4;
   Atomics.store(view, base + WORKER_STATE_OFFSET, state);
   Atomics.store(view, base + WORKER_DEPTH_OFFSET, depth);

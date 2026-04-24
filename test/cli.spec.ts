@@ -1,7 +1,7 @@
 import { generateTypeScript } from '../src/cli/generators/typescript';
 import { generateJsonSchema } from '../src/cli/generators/json-schema';
 import { generateClasses } from '../src/cli/generators/classes';
-import { RegistrySnapshot } from '../src/services/registry/registry.types';
+import { RegistrySnapshot } from '../src/domain/interfaces/registry.types';
 
 function createSnapshot(overrides?: Partial<RegistrySnapshot>): RegistrySnapshot {
   return {
@@ -118,10 +118,10 @@ describe('CLI Generators', () => {
             lastHeartbeat: Date.now(),
           },
           {
-            entityType: 'game-table',
-            serviceName: 'casino-svc',
+            entityType: 'shipping-label',
+            serviceName: 'logistics-svc',
             version: '1.0.0',
-            messages: { MakeBet: { kind: 'command' } },
+            messages: { PrintLabel: { kind: 'command' } },
             registeredAt: Date.now(),
             lastHeartbeat: Date.now(),
           },
@@ -130,7 +130,7 @@ describe('CLI Generators', () => {
 
       const output = generateTypeScript(snapshot);
       expect(output).toContain('export namespace AccountEntity');
-      expect(output).toContain('export namespace GameTableEntity');
+      expect(output).toContain('export namespace ShippingLabelEntity');
     });
 
     it('should handle array and enum types', () => {

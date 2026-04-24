@@ -24,10 +24,10 @@ export function getJobQueryMetadata(target: Function): JobQueryMetadata | undefi
   return Reflect.getMetadata(JOB_QUERY_METADATA, target);
 }
 
-export function getSchemaMetadata(target: Function): any | undefined {
+export function getSchemaMetadata(target: Function): unknown | undefined {
   return Reflect.getMetadata(SCHEMA_METADATA, target);
 }
 
-export function getReplySchemaMetadata(target: Function): any | undefined {
+export function getReplySchemaMetadata(target: Function): unknown | undefined {
   return Reflect.getMetadata(REPLY_SCHEMA_METADATA, target);
 }

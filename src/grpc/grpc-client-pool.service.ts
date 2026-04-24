@@ -4,9 +4,55 @@ import { v4 as uuidv4 } from 'uuid';
 import { IAtomicQueuesModuleConfig, ISerializedMessage, IMessageRef } from '../domain';
 import { ATOMIC_QUEUES_CONFIG } from '../services/constants';
 
+/** Minimal shape of a gRPC client instance (from @grpc/grpc-js). */
+interface GrpcClientInstance {
+  forward(
+    envelope: Record<string, unknown>,
+    callback: (err: Error | null, response: Record<string, unknown>) => void,
+  ): void;
+  forwardAndWait(envelope: Record<string, unknown>): GrpcClientStream;
+  ping(
+    request: Record<string, unknown>,
+    callback: (err: Error | null, response: Record<string, unknown>) => void,
+  ): void;
+  close(): void;
+}
+
+/** Minimal shape of a gRPC readable stream (from @grpc/grpc-js). */
+interface GrpcClientStream {
+  on(event: 'data', listener: (response: Record<string, unknown>) => void): void;
+  on(event: 'error', listener: (err: Error) => void): void;
+  on(event: 'end', listener: () => void): void;
+}
+
+/** Minimal shape of the @grpc/grpc-js module used at runtime. */
+interface GrpcModule {
+  credentials: { createInsecure(): unknown };
+  loadPackageDefinition(
+    packageDef: unknown,
+  ): Record<string, Record<string, Record<string, unknown>>>;
+}
+
+/** Minimal shape of the @grpc/proto-loader module used at runtime. */
+interface ProtoLoaderModule {
+  loadSync(filename: string, options: Record<string, unknown>): unknown;
+}
+
+/** Minimal shape of a proto-loaded service constructor. */
+type GrpcServiceConstructor = new (address: string, credentials: unknown) => GrpcClientInstance;
+
+/** Minimal shape of the loaded proto descriptor used in this pool. */
+interface ProtoDescriptor {
+  atomicqueues: {
+    v1: {
+      AtomicQueuesNode: GrpcServiceConstructor;
+    };
+  };
+}
+
 interface GrpcClient {
   address: string;
-  client: any;
+  client: GrpcClientInstance;
 }
 
 /**
@@ -19,12 +65,10 @@ interface GrpcClient {
 export class GrpcClientPool implements OnApplicationShutdown {
   private readonly logger = new Logger(GrpcClientPool.name);
   private readonly clients = new Map<string, GrpcClient>();
-  private grpcModule: any = null;
-  private protoDescriptor: any = null;
+  private grpcModule: GrpcModule | null = null;
+  private protoDescriptor: ProtoDescriptor | null = null;
 
-  constructor(
-    @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
-  ) {}
+  constructor(@Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig) {}
 
   async onApplicationShutdown(): Promise<void> {
     for (const [, { client }] of this.clients) {
@@ -44,8 +88,8 @@ export class GrpcClientPool implements OnApplicationShutdown {
     if (this.grpcModule) return;
 
     /* eslint-disable @typescript-eslint/no-var-requires */
-    const grpc = require('@grpc/grpc-js');
-    const protoLoader = require('@grpc/proto-loader');
+    const grpc = require('@grpc/grpc-js') as GrpcModule;
+    const protoLoader = require('@grpc/proto-loader') as ProtoLoaderModule;
     /* eslint-enable @typescript-eslint/no-var-requires */
 
     const protoPath = path.join(__dirname, 'atomicqueues.proto');
@@ -58,13 +102,13 @@ export class GrpcClientPool implements OnApplicationShutdown {
     });
 
     this.grpcModule = grpc;
-    this.protoDescriptor = grpc.loadPackageDefinition(packageDef);
+    this.protoDescriptor = grpc.loadPackageDefinition(packageDef) as unknown as ProtoDescriptor;
   }
 
   /**
    * Get or create a client connection to a peer server.
    */
-  async getClient(serverId: string, address: string): Promise<any> {
+  async getClient(serverId: string, address: string): Promise<GrpcClientInstance> {
     const existing = this.clients.get(serverId);
     if (existing && existing.address === address) {
       return existing.client;
@@ -72,11 +116,8 @@ export class GrpcClientPool implements OnApplicationShutdown {
 
     await this.ensureLoaded();
 
-    const ServiceClass = this.protoDescriptor.atomicqueues.v1.AtomicQueuesNode;
-    const client = new ServiceClass(
-      address,
-      this.grpcModule.credentials.createInsecure(),
-    );
+    const ServiceClass = this.protoDescriptor!.atomicqueues.v1.AtomicQueuesNode;
+    const client = new ServiceClass(address, this.grpcModule!.credentials.createInsecure());
 
     this.clients.set(serverId, { address, client });
     this.logger.log(`Connected to peer ${serverId} at ${address}`);
@@ -112,7 +153,7 @@ export class GrpcClientPool implements OnApplicationShutdown {
     };
 
     return new Promise<IMessageRef>((resolve, reject) => {
-      client.forward(envelope, (err: Error | null, response: any) => {
+      client.forward(envelope, (err: Error | null, response: Record<string, unknown>) => {
         if (err) {
           reject(new Error(`gRPC forward to ${serverId} failed: ${err.message}`));
           return;
@@ -164,13 +205,13 @@ export class GrpcClientPool implements OnApplicationShutdown {
 
       const stream = client.forwardAndWait(envelope);
 
-      stream.on('data', (response: any) => {
+      stream.on('data', (response: Record<string, unknown>) => {
         clearTimeout(timer);
 
         if (response.error) {
-          reject(new Error(response.error));
+          reject(new Error(response.error as string));
         } else if (response.result) {
-          const resultJson = Buffer.from(response.result).toString('utf-8');
+          const resultJson = Buffer.from(response.result as Buffer).toString('utf-8');
           resolve(JSON.parse(resultJson) as R);
         } else {
           reject(new Error('Empty result from remote server'));
@@ -196,17 +237,20 @@ export class GrpcClientPool implements OnApplicationShutdown {
     const client = await this.getClient(serverId, address);
     const myServerId = this.config.grpc?.serverId ?? 'unknown';
 
-    return new Promise((resolve, reject) => {
-      client.ping({ senderId: myServerId }, (err: Error | null, response: any) => {
-        if (err) {
-          resolve({ healthy: false, queueDepth: 0 });
-          return;
-        }
-        resolve({
-          healthy: true,
-          queueDepth: response.queueDepth ?? 0,
-        });
-      });
+    return new Promise((resolve, _reject) => {
+      client.ping(
+        { senderId: myServerId },
+        (err: Error | null, response: Record<string, unknown>) => {
+          if (err) {
+            resolve({ healthy: false, queueDepth: 0 });
+            return;
+          }
+          resolve({
+            healthy: true,
+            queueDepth: (response.queueDepth as number) ?? 0,
+          });
+        },
+      );
     });
   }
 

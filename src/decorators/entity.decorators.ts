@@ -120,33 +120,33 @@ export const EntityId = QueueEntityId;
  * Single decorator that combines @EntityType and @QueueEntityId into one.
  * This is the recommended way to mark commands/queries for queue routing.
  *
- * @param entityType - The entity type for routing (e.g., 'table', 'account')
+ * @param entityType - The entity type for routing (e.g., 'order', 'account')
  * @param entityIdProperty - Optional property name containing the entity ID.
  *                           If omitted, uses module-level defaultEntityId from entities config.
  *
  * @example
  * // With explicit property name:
- * @QueueEntity('table', 'tableId')
- * export class MakeBetCommand {
+ * @QueueEntity('order', 'orderId')
+ * export class PlaceOrderCommand {
  *   constructor(
- *     public readonly tableId: string,  // <- unchanged!
- *     public readonly amount: number,
+ *     public readonly orderId: string,  // <- unchanged!
+ *     public readonly quantity: number,
  *   ) {}
  * }
  *
  * @example
- * // Using module default (entities config has defaultEntityId: 'tableId'):
- * @QueueEntity('table')
- * export class DealCommand {
+ * // Using module default (entities config has defaultEntityId: 'orderId'):
+ * @QueueEntity('order')
+ * export class ShipOrderCommand {
  *   constructor(
- *     public readonly tableId: string,
- *     public readonly card: string,
+ *     public readonly orderId: string,
+ *     public readonly carrier: string,
  *   ) {}
  * }
  *
  * @example
  * // Then just enqueue directly:
- * await queueBus.enqueue(new MakeBetCommand(tableId, 100));
+ * await queueBus.enqueue(new PlaceOrderCommand(orderId, 100));
  */
 export function QueueEntity(entityType: string, entityIdProperty?: string): ClassDecorator {
   return (target: Function) => {

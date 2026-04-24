@@ -19,26 +19,26 @@ import { deriveJobName, getConstructorParamNames } from './utils';
  * @example
  * ```typescript
  * // Option 1: Explicit job name
- * @JobCommand('make-bet')
- * export class MakeBetCommand {
+ * @JobCommand('place-order')
+ * export class PlaceOrderCommand {
  *   constructor(
- *     public readonly tableId: string,    // entityId (first param)
- *     public readonly playerId: string,
- *     public readonly amount: number,
+ *     public readonly orderId: string,    // entityId (first param)
+ *     public readonly customerId: string,
+ *     public readonly quantity: number,
  *   ) {}
  * }
  *
- * // Option 2: Auto-derived job name (MakeBetCommand -> 'make-bet')
+ * // Option 2: Auto-derived job name (PlaceOrderCommand -> 'place-order')
  * @JobCommand()
- * export class MakeBetCommand { ... }
+ * export class PlaceOrderCommand { ... }
  *
  * // Option 3: With options
  * @JobCommand({
- *   name: 'place-bet',
- *   entityType: 'table',
- *   entityIdParam: 'tableId',  // or 0 for first param
+ *   name: 'reserve-stock',
+ *   entityType: 'warehouse',
+ *   entityIdParam: 'warehouseId',  // or 0 for first param
  * })
- * export class PlaceBetCommand { ... }
+ * export class ReserveStockCommand { ... }
  * ```
  */
 export function JobCommand(options?: string | JobCommandOptions): ClassDecorator {
@@ -69,17 +69,17 @@ export function JobCommand(options?: string | JobCommandOptions): ClassDecorator
  *
  * @example
  * ```typescript
- * @JobQuery('get-score')
- * export class GetScoreQuery {
+ * @JobQuery('get-order-status')
+ * export class GetOrderStatusQuery {
  *   constructor(
- *     public readonly tableId: string,
- *     public readonly seatIndex: number,
+ *     public readonly orderId: string,
+ *     public readonly includeHistory: boolean,
  *   ) {}
  * }
  *
- * // Auto-derived: GetTableStateQuery -> 'get-table-state'
+ * // Auto-derived: GetInventoryLevelQuery -> 'get-inventory-level'
  * @JobQuery()
- * export class GetTableStateQuery { ... }
+ * export class GetInventoryLevelQuery { ... }
  * ```
  */
 export function JobQuery(options?: string | JobQueryOptions): ClassDecorator {

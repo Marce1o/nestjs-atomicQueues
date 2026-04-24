@@ -5,3 +5,5 @@ export * from './decorators';
 export * from './utils';
 export * from './workers';
 export * from './wal';
+export * from './grpc';
+export * from './cluster';

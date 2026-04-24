@@ -59,7 +59,7 @@ export function splitParams(paramsStr: string): string[] {
 
 /**
  * Helper to convert class name to kebab-case job name
- * MakeBetCommand -> make-bet
+ * PlaceOrderCommand -> place-order
  * ProcessPaymentCommand -> process-payment
  */
 export function deriveJobName(className: string, suffix: string): string {

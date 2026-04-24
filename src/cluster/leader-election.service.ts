@@ -135,7 +135,9 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
     if (this.isLeader) return;
 
     this.isLeader = true;
-    this.logger.log(`This server (${this.serverId}) is now the leader for group '${this.serviceGroup}'`);
+    this.logger.log(
+      `This server (${this.serverId}) is now the leader for group '${this.serviceGroup}'`,
+    );
 
     // Start renewal
     this.renewalTimer = setInterval(() => {

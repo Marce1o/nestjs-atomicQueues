@@ -26,9 +26,9 @@ Reflect.defineMetadata('atomic:entity-type', 'account', GetBalanceQuery);
 class GetBalanceHandler {}
 Reflect.defineMetadata('__queryHandler__', GetBalanceQuery, GetBalanceHandler);
 
-@JobCommand({ name: 'place-bet', entityType: 'table' })
-class PlaceBetCommand {
-  constructor(public readonly tableId: string) {}
+@JobCommand({ name: 'place-order', entityType: 'order' })
+class PlaceOrderCommand {
+  constructor(public readonly orderId: string) {}
 }
 
 describe('EntityTypeRegistry', () => {
@@ -56,10 +56,10 @@ describe('EntityTypeRegistry', () => {
   });
 
   it('should discover entity types from @JobCommand providers', async () => {
-    const registry = createRegistry([{ metatype: PlaceBetCommand }]);
+    const registry = createRegistry([{ metatype: PlaceOrderCommand }]);
     await registry.onModuleInit();
 
-    expect(registry.hasEntityType('table')).toBe(true);
+    expect(registry.hasEntityType('order')).toBe(true);
   });
 
   it('should deduplicate entity types across sources', async () => {
