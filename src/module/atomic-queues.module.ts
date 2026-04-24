@@ -14,7 +14,7 @@ import {
   MessageRouter,
 } from '../services';
 import { WalService } from '../wal';
-import { WorkerPoolService } from '../workers';
+import { EntityWorkerManager } from '../workers';
 import { GrpcServerService, GrpcClientPool } from '../grpc';
 import { ClusterDiscoveryService, ServerRingService, LeaderElectionService } from '../cluster';
 
@@ -27,7 +27,7 @@ const CORE_SERVICES: Provider[] = [
   CommandDiscoveryService,
   ShutdownService,
   MessageRouter,
-  WorkerPoolService,
+  EntityWorkerManager,
   GrpcServerService,
   GrpcClientPool,
   ClusterDiscoveryService,

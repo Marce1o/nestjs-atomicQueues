@@ -1,3 +1,3 @@
 export * from './consistent-hash';
-export * from './in-memory-dispatcher';
-export * from './worker-pool.service';
+export * from './entity-worker';
+export * from './entity-worker-manager';

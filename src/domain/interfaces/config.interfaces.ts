@@ -36,6 +36,8 @@ export interface IEntityConfig {
   replyTimeout?: number;
   /** Behavior when a message is found in "dispatched" state on recovery */
   onInterrupt?: 'dead-letter' | 'retry';
+  /** Idle timeout in ms before worker teardown (default: 30000) */
+  workerIdleTimeout?: number;
 }
 
 /**
