@@ -39,38 +39,6 @@ export interface IEntityConfig {
 }
 
 /**
- * Worker thread pool configuration
- */
-export interface IWorkerConfig {
-  /** Path to the NestJS module file. Auto-discovered if omitted. */
-  modulePath?: string;
-  /** Name of the exported module class (default: 'AppModule') */
-  moduleExportName?: string;
-  /** Minimum number of worker threads (default: 1) */
-  min?: number;
-  /** Maximum number of worker threads (default: os.cpus().length - 1) */
-  max?: number;
-  /** Auto-scaling configuration */
-  scaling?: IScalingConfig;
-}
-
-/**
- * Auto-scaling configuration for the worker pool
- */
-export interface IScalingConfig {
-  /** Evaluate scaling every N ms (default: 5000) */
-  evaluationInterval?: number;
-  /** Scale up when avg queue depth per worker exceeds this (default: 10) */
-  scaleUpThreshold?: number;
-  /** Scale down when avg queue depth is below this for cooldown period (default: 2) */
-  scaleDownThreshold?: number;
-  /** Cooldown in ms before scaling down (default: 30000) */
-  scaleDownCooldown?: number;
-  /** Cooldown in ms after scaling up (default: 10000) */
-  scaleUpCooldown?: number;
-}
-
-/**
  * gRPC inter-server communication configuration
  */
 export interface IGrpcConfig {
@@ -108,9 +76,6 @@ export interface IWalConfig {
 export interface IAtomicQueuesModuleConfig {
   /** Redis connection configuration */
   redis: IRedisConfig;
-
-  /** Worker thread pool configuration */
-  workers?: IWorkerConfig;
 
   /** Default retry policy */
   retry?: IRetryPolicy;
