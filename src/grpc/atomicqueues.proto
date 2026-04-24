@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package atomicqueues.v1;
+
+service AtomicQueuesNode {
+  // Fire-and-forget: forward a message to the entity owner.
+  rpc Forward (MessageEnvelope) returns (ForwardAck);
+
+  // Request-reply: forward and stream back the result when handler completes.
+  rpc ForwardAndWait (MessageEnvelope) returns (stream ResultEnvelope);
+
+  // Health check
+  rpc Ping (HealthRequest) returns (HealthResponse);
+}
+
+message MessageEnvelope {
+  string id              = 1;
+  string name            = 2;
+  bytes  payload         = 3;   // JSON-encoded data
+  string entity_type     = 4;
+  string entity_id       = 5;
+  string correlation_id  = 6;
+  bool   is_query        = 7;
+  int64  enqueued_at     = 8;
+  int32  attempts        = 9;
+  int32  max_attempts    = 10;
+  string origin_server   = 11;
+  int32  hops            = 12;
+}
+
+message ForwardAck {
+  bool   accepted      = 1;
+  string reject_reason = 2;
+}
+
+message ResultEnvelope {
+  string correlation_id = 1;
+  oneof outcome {
+    bytes  result  = 2;
+    string error   = 3;
+  }
+}
+
+message HealthRequest {
+  string sender_id = 1;
+}
+
+message HealthResponse {
+  string server_id              = 1;
+  int32  active_workers         = 2;
+  int32  queue_depth            = 3;
+  repeated string entity_types  = 4;
+}
