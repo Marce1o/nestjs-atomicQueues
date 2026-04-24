@@ -1,8 +1,4 @@
-import {
-  murmurhash3,
-  ConsistentHashRing,
-  HashRingNode,
-} from '../src/workers/consistent-hash';
+import { murmurhash3, ConsistentHashRing, HashRingNode } from '../src/workers/consistent-hash';
 
 describe('murmurhash3', () => {
   it('should produce deterministic results', () => {
@@ -95,8 +91,8 @@ describe('ConsistentHashRing', () => {
       // Each worker should get roughly 1/3 of the keys
       // With 150 virtual nodes and 10k keys, expect ~3333 each, ±15%
       for (const [, count] of counts) {
-        expect(count).toBeGreaterThan(numKeys / 3 * 0.7);
-        expect(count).toBeLessThan(numKeys / 3 * 1.3);
+        expect(count).toBeGreaterThan((numKeys / 3) * 0.7);
+        expect(count).toBeLessThan((numKeys / 3) * 1.3);
       }
     });
 
@@ -182,8 +178,8 @@ describe('ConsistentHashRing', () => {
 
       // Expected: ~1/4 of keys move (25%), allow 10-40% range for variance
       const movedPct = moved / numKeys;
-      expect(movedPct).toBeGreaterThan(0.10);
-      expect(movedPct).toBeLessThan(0.40);
+      expect(movedPct).toBeGreaterThan(0.1);
+      expect(movedPct).toBeLessThan(0.4);
     });
 
     it('should only reassign ~1/N keys when removing a node', () => {
@@ -212,8 +208,8 @@ describe('ConsistentHashRing', () => {
 
       // Only keys that were on w2 should move — ~1/4 of keys (25%)
       const movedPct = moved / numKeys;
-      expect(movedPct).toBeGreaterThan(0.10);
-      expect(movedPct).toBeLessThan(0.40);
+      expect(movedPct).toBeGreaterThan(0.1);
+      expect(movedPct).toBeLessThan(0.4);
     });
 
     it('should handle re-adding a node with same ID', () => {
@@ -278,9 +274,7 @@ describe('ConsistentHashRing', () => {
       ring.addNode({ id: 's1', data: ['account'] });
       ring.addNode({ id: 's2', data: ['warehouse'] });
 
-      const result = ring.getNodeFiltered('test', (node) =>
-        node.data.includes('billing'),
-      );
+      const result = ring.getNodeFiltered('test', (node) => node.data.includes('billing'));
 
       expect(result).toBeNull();
     });

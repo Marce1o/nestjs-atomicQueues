@@ -82,66 +82,60 @@ function createMockRedis() {
       };
       return pipe;
     }),
-    eval: jest.fn(
-      async (
-        script: string,
-        numKeys: number,
-        ...args: string[]
-      ): Promise<number> => {
-        // Simulate Lua script behavior
-        const key = args[0];
+    eval: jest.fn(async (script: string, numKeys: number, ...args: string[]): Promise<number> => {
+      // Simulate Lua script behavior
+      const key = args[0];
 
-        if (script.includes('"enqueued"') && script.includes('"dispatched"')) {
-          // DISPATCH_SCRIPT
-          if (store[key]?.state === 'enqueued') {
-            store[key].state = 'dispatched';
-            store[key].dispatched_at = args[numKeys];
-            store[key].worker_id = args[numKeys + 1];
-            return 1;
-          }
-          return 0;
+      if (script.includes('"enqueued"') && script.includes('"dispatched"')) {
+        // DISPATCH_SCRIPT
+        if (store[key]?.state === 'enqueued') {
+          store[key].state = 'dispatched';
+          store[key].dispatched_at = args[numKeys];
+          store[key].worker_id = args[numKeys + 1];
+          return 1;
         }
-
-        if (script.includes('"completed"') && script.includes('ZREM')) {
-          // COMPLETE_SCRIPT
-          if (store[key]?.state === 'dispatched') {
-            const indexKey = args[1];
-            const indexMember = args[numKeys + 1];
-            store[key].state = 'completed';
-            store[key].completed_at = args[numKeys];
-            sortedSets[indexKey]?.delete(indexMember);
-            delete store[key];
-            return 1;
-          }
-          return 0;
-        }
-
-        if (script.includes('"failed"')) {
-          // FAIL_SCRIPT
-          if (store[key]?.state === 'dispatched') {
-            store[key].state = 'failed';
-            store[key].completed_at = args[numKeys];
-            store[key].error = args[numKeys + 1];
-            store[key].error_stack = args[numKeys + 2];
-            return 1;
-          }
-          return 0;
-        }
-
-        if (script.includes('"interrupted"')) {
-          // INTERRUPT_SCRIPT
-          if (store[key]?.state === 'dispatched') {
-            store[key].state = 'interrupted';
-            store[key].completed_at = args[numKeys];
-            store[key].error = args[numKeys + 1];
-            return 1;
-          }
-          return 0;
-        }
-
         return 0;
-      },
-    ),
+      }
+
+      if (script.includes('"completed"') && script.includes('ZREM')) {
+        // COMPLETE_SCRIPT
+        if (store[key]?.state === 'dispatched') {
+          const indexKey = args[1];
+          const indexMember = args[numKeys + 1];
+          store[key].state = 'completed';
+          store[key].completed_at = args[numKeys];
+          sortedSets[indexKey]?.delete(indexMember);
+          delete store[key];
+          return 1;
+        }
+        return 0;
+      }
+
+      if (script.includes('"failed"')) {
+        // FAIL_SCRIPT
+        if (store[key]?.state === 'dispatched') {
+          store[key].state = 'failed';
+          store[key].completed_at = args[numKeys];
+          store[key].error = args[numKeys + 1];
+          store[key].error_stack = args[numKeys + 2];
+          return 1;
+        }
+        return 0;
+      }
+
+      if (script.includes('"interrupted"')) {
+        // INTERRUPT_SCRIPT
+        if (store[key]?.state === 'dispatched') {
+          store[key].state = 'interrupted';
+          store[key].completed_at = args[numKeys];
+          store[key].error = args[numKeys + 1];
+          return 1;
+        }
+        return 0;
+      }
+
+      return 0;
+    }),
     _store: store,
     _sortedSets: sortedSets,
     _lists: lists,
@@ -163,9 +157,7 @@ describe('WalService', () => {
 
   describe('key generation', () => {
     it('should generate correct WAL entry key', () => {
-      expect(wal.walEntryKey('account:a-1', 'msg-1')).toBe(
-        'test:wal:server-1:account:a-1:msg-1',
-      );
+      expect(wal.walEntryKey('account:a-1', 'msg-1')).toBe('test:wal:server-1:account:a-1:msg-1');
     });
 
     it('should generate correct WAL index key', () => {

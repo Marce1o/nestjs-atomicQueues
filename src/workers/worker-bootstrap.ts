@@ -14,6 +14,7 @@
  */
 
 import { parentPort, workerData } from 'worker_threads';
+import { ISerializedMessage } from '../domain';
 import {
   WorkerBootstrapData,
   WorkerInboundMessage,
@@ -36,7 +37,8 @@ const data = workerData as WorkerBootstrapData;
 const stateView = new Int32Array(data.stateBuffer);
 const baseIndex = (data.workerId * WORKER_SLOT_SIZE) / 4;
 
-let handlerExecutor: any = null;
+let handlerExecutor: { execute(message: unknown, entityKey: string): Promise<unknown> } | null =
+  null;
 let activeJobs = 0;
 let completedTotal = 0;
 let failedTotal = 0;
@@ -71,13 +73,10 @@ async function bootstrap(): Promise<void> {
 
     // Import the user's module
     const moduleFile = await import(data.modulePath);
-    const ModuleClass =
-      moduleFile[data.moduleExportName] || moduleFile.default;
+    const ModuleClass = moduleFile[data.moduleExportName] || moduleFile.default;
 
     if (!ModuleClass) {
-      throw new Error(
-        `Could not find export '${data.moduleExportName}' in ${data.modulePath}`,
-      );
+      throw new Error(`Could not find export '${data.moduleExportName}' in ${data.modulePath}`);
     }
 
     // Boot a standalone NestJS ApplicationContext (no HTTP server)
@@ -88,9 +87,8 @@ async function bootstrap(): Promise<void> {
     // Extract the handler executor
     // We try to get HandlerExecutor from the DI container
     try {
-      const { HandlerExecutor } = await import(
-        '../services/handler-executor/handler-executor.service'
-      );
+      const { HandlerExecutor } =
+        await import('../services/handler-executor/handler-executor.service');
       handlerExecutor = app.get(HandlerExecutor);
     } catch {
       throw new Error(
@@ -163,7 +161,11 @@ port.on('message', async (msg: WorkerInboundMessage) => {
   }
 });
 
-async function handleExecute(msg: { ticket: string; entityKey: string; message: any }): Promise<void> {
+async function handleExecute(msg: {
+  ticket: string;
+  entityKey: string;
+  message: ISerializedMessage;
+}): Promise<void> {
   if (draining) {
     send({
       type: 'error',
@@ -181,7 +183,7 @@ async function handleExecute(msg: { ticket: string; entityKey: string; message: 
   const startTime = Date.now();
 
   try {
-    const result = await handlerExecutor.execute(msg.message, msg.entityKey);
+    const result = await handlerExecutor!.execute(msg.message, msg.entityKey);
 
     completedTotal++;
     totalExecutionMs += Date.now() - startTime;

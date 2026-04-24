@@ -15,8 +15,10 @@ import {
 } from '../services';
 import { WalService } from '../wal';
 import { WorkerPoolService } from '../workers';
+import { GrpcServerService, GrpcClientPool } from '../grpc';
+import { ClusterDiscoveryService, ServerRingService, LeaderElectionService } from '../cluster';
 
-const ATOMIC_QUEUES_SERVER_ID = 'ATOMIC_QUEUES_SERVER_ID';
+export const ATOMIC_QUEUES_SERVER_ID = 'ATOMIC_QUEUES_SERVER_ID';
 
 const CORE_SERVICES: Provider[] = [
   HandlerExecutor,
@@ -26,6 +28,11 @@ const CORE_SERVICES: Provider[] = [
   ShutdownService,
   MessageRouter,
   WorkerPoolService,
+  GrpcServerService,
+  GrpcClientPool,
+  ClusterDiscoveryService,
+  ServerRingService,
+  LeaderElectionService,
 ];
 
 export interface AtomicQueuesModuleAsyncOptions {
@@ -82,6 +89,7 @@ export class AtomicQueuesModule {
         {
           provide: ATOMIC_QUEUES_CONFIG,
           useFactory: options.useFactory,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           inject: (options.inject || []) as any[],
         },
         {
@@ -96,8 +104,8 @@ export class AtomicQueuesModule {
         },
         {
           provide: WalService,
-          useFactory: (redis: Redis, config: IAtomicQueuesModuleConfig, serverId: string) => {
-            return new WalService(redis, config, serverId);
+          useFactory: (redis: Redis, config: IAtomicQueuesModuleConfig, sid: string) => {
+            return new WalService(redis, config, sid);
           },
           inject: [ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG, ATOMIC_QUEUES_SERVER_ID],
         },

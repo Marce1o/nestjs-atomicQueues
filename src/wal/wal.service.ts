@@ -3,12 +3,7 @@ import Redis from 'ioredis';
 import { ISerializedMessage } from '../domain';
 import { resolveKeyPrefix } from '../utils';
 import { IWalEntry, IWalConfig, IWalRecoveryResult, WalState } from './wal.types';
-import {
-  DISPATCH_SCRIPT,
-  COMPLETE_SCRIPT,
-  FAIL_SCRIPT,
-  INTERRUPT_SCRIPT,
-} from './wal.scripts';
+import { DISPATCH_SCRIPT, COMPLETE_SCRIPT, FAIL_SCRIPT, INTERRUPT_SCRIPT } from './wal.scripts';
 
 /**
  * Write-Ahead Log service.
@@ -180,11 +175,8 @@ export class WalService {
     const pendingMessages: ISerializedMessage[] = [];
 
     for (const member of members) {
-      // member format: "entityKey:messageId"
-      const lastColon = member.lastIndexOf(':');
       // entityKey can itself contain colons (e.g. "account:a-123")
-      // member is "account:a-123:msg-uuid"
-      // We need to parse the messageId (UUID) from the end
+      // member is "account:a-123:msg-uuid" — split and take last segment as messageId
       const parts = member.split(':');
       const messageId = parts[parts.length - 1];
       const entityKey = parts.slice(0, -1).join(':');

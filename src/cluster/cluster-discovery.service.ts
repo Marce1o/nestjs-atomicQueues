@@ -187,13 +187,7 @@ export class ClusterDiscoveryService implements OnModuleInit, OnApplicationShutd
 
   private async heartbeat(): Promise<void> {
     const key = this.getNodeKey(this.serverId);
-    await this.redis.eval(
-      HEARTBEAT_SCRIPT,
-      1,
-      key,
-      Date.now().toString(),
-      this.nodeTTL.toString(),
-    );
+    await this.redis.eval(HEARTBEAT_SCRIPT, 1, key, Date.now().toString(), this.nodeTTL.toString());
   }
 
   private async reconcile(): Promise<void> {

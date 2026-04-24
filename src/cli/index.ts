@@ -104,47 +104,55 @@ async function runIntrospect(args: string[]): Promise<void> {
   console.log('');
 }
 
-function formatFields(spec: { schema?: Record<string, any> }): string[] {
+interface JsonSchemaLike {
+  type?: string;
+  items?: JsonSchemaLike;
+  enum?: unknown[];
+  properties?: Record<string, JsonSchemaLike>;
+  required?: string[];
+}
+
+function formatFields(spec: { schema?: JsonSchemaLike }): string[] {
   if (!spec.schema?.properties) return [];
   return formatSchemaFields(spec.schema);
 }
 
-function formatSchemaFields(schema: Record<string, any>): string[] {
+function formatSchemaFields(schema: JsonSchemaLike): string[] {
   if (!schema.properties) return [];
   const required = new Set<string>(schema.required ?? []);
 
   return Object.entries(schema.properties).map(([name, propSchema]) => {
-    const type = jsonSchemaTypeLabel(propSchema as any);
+    const type = jsonSchemaTypeLabel(propSchema);
     const opt = required.has(name) ? '' : '?';
     return `${name}${opt}: ${type}`;
   });
 }
 
-function jsonSchemaTypeLabel(schema: { type?: string; items?: any; enum?: any[] }): string {
-  if (!schema.type) return 'any';
+function jsonSchemaTypeLabel(schema: JsonSchemaLike): string {
+  if (!schema.type) return 'unknown';
   switch (schema.type) {
     case 'string':
-      return schema.enum ? schema.enum.map((v: any) => `"${v}"`).join(' | ') : 'string';
+      return schema.enum ? schema.enum.map((v) => `"${v}"`).join(' | ') : 'string';
     case 'number':
     case 'integer':
       return 'number';
     case 'boolean':
       return 'boolean';
     case 'array':
-      return schema.items ? `${jsonSchemaTypeLabel(schema.items)}[]` : 'any[]';
+      return schema.items ? `${jsonSchemaTypeLabel(schema.items)}[]` : 'unknown[]';
     case 'object':
       return 'object';
     case 'null':
       return 'null';
     default:
-      return 'any';
+      return 'unknown';
   }
 }
 
-function buildExampleData(spec: { schema?: Record<string, any> }): string {
+function buildExampleData(spec: { schema?: JsonSchemaLike }): string {
   if (!spec.schema?.properties) return '{ ... }';
   const entries = Object.entries(spec.schema.properties).map(([name, propSchema]) => {
-    const type = (propSchema as any).type;
+    const type = propSchema.type;
     const example =
       type === 'string'
         ? `'...'`

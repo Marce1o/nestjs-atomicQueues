@@ -1,4 +1,8 @@
-import { EntityContract, MessageSpec, RegistrySnapshot } from '../../domain/interfaces/registry.types';
+import {
+  EntityContract,
+  MessageSpec,
+  RegistrySnapshot,
+} from '../../domain/interfaces/registry.types';
 import { IMessageRef } from '../../domain';
 
 // ═══════════════════════════════════════════════════════════════════════════

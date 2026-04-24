@@ -1,10 +1,5 @@
 import { Injectable, Logger, Inject, Type } from '@nestjs/common';
-import {
-  IAtomicQueuesModuleConfig,
-  IMessageRef,
-  Reply,
-  InferReply,
-} from '../../domain';
+import { IAtomicQueuesModuleConfig, IMessageRef, Reply, InferReply } from '../../domain';
 import { getEntityType } from '../../decorators';
 import { resolveKeyPrefix } from '../../utils';
 import { MessageRouter } from '../message-router';

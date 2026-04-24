@@ -3,17 +3,12 @@ import { Worker } from 'worker_threads';
 import * as path from 'path';
 import * as os from 'os';
 import { v4 as uuidv4 } from 'uuid';
-import { ISerializedMessage } from '../domain';
+import { IAtomicQueuesModuleConfig, ISerializedMessage } from '../domain';
 import { ATOMIC_QUEUES_CONFIG } from '../services/constants';
-import { ConsistentHashRing, HashRingNode } from './consistent-hash';
+import { ConsistentHashRing } from './consistent-hash';
 import { InMemoryDispatcher } from './in-memory-dispatcher';
 import { LivenessMonitor } from './liveness-monitor';
-import {
-  WorkerBootstrapData,
-  WorkerOutboundMessage,
-  WorkerState,
-  WORKER_SLOT_SIZE,
-} from './worker-protocol';
+import { WorkerBootstrapData, WorkerOutboundMessage, WORKER_SLOT_SIZE } from './worker-protocol';
 
 interface WorkerHandle {
   workerId: number;
@@ -76,16 +71,14 @@ export class WorkerPoolService implements OnModuleInit, OnApplicationShutdown {
     { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }
   >();
 
-  constructor(
-    @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: any,
-  ) {
+  constructor(@Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig) {
     const wc: WorkerPoolConfig = config.workers ?? {};
     this.minWorkers = wc.min ?? 1;
     this.maxWorkers = wc.max ?? Math.max(1, os.cpus().length - 1);
     this.modulePath = wc.modulePath ?? '';
     this.moduleExportName = wc.moduleExportName ?? 'AppModule';
     this.keyPrefix = config.keyPrefix ?? 'aq';
-    this.redisConfig = config.redis ?? {};
+    this.redisConfig = { ...config.redis };
   }
 
   async onModuleInit(): Promise<void> {
@@ -117,7 +110,9 @@ export class WorkerPoolService implements OnModuleInit, OnApplicationShutdown {
     }
 
     await Promise.all(readyPromises);
-    this.logger.log(`Worker pool started: ${this.workers.size} workers (min=${this.minWorkers}, max=${this.maxWorkers})`);
+    this.logger.log(
+      `Worker pool started: ${this.workers.size} workers (min=${this.minWorkers}, max=${this.maxWorkers})`,
+    );
   }
 
   async onApplicationShutdown(): Promise<void> {
@@ -461,7 +456,9 @@ export class WorkerPoolService implements OnModuleInit, OnApplicationShutdown {
 
     // 5. Spawn replacement if below minimum
     if (this.running && this.workers.size < this.minWorkers) {
-      this.logger.log(`Spawning replacement worker (pool size: ${this.workers.size}/${this.minWorkers})`);
+      this.logger.log(
+        `Spawning replacement worker (pool size: ${this.workers.size}/${this.minWorkers})`,
+      );
       this.spawnWorker().catch((e) => {
         this.logger.error(`Failed to spawn replacement worker: ${(e as Error).message}`);
       });
@@ -514,11 +511,14 @@ export class WorkerPoolService implements OnModuleInit, OnApplicationShutdown {
 
       handle.worker.on('message', onMessage);
 
-      const timer = setTimeout(() => {
-        handle.worker.removeListener('message', onMessage);
-        this.logger.warn(`Worker ${handle.workerId} drain timeout, force terminating`);
-        terminateWorker();
-      }, Math.max(0, deadline - Date.now()));
+      const timer = setTimeout(
+        () => {
+          handle.worker.removeListener('message', onMessage);
+          this.logger.warn(`Worker ${handle.workerId} drain timeout, force terminating`);
+          terminateWorker();
+        },
+        Math.max(0, deadline - Date.now()),
+      );
 
       handle.worker.on('exit', () => {
         clearTimeout(timer);
