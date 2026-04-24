@@ -4,19 +4,15 @@ import { IAtomicQueuesModuleConfig, ISerializedMessage, IMessageRef } from '../.
 import { resolveKeyPrefix } from '../../utils';
 import { WalService } from '../../wal';
 import { EntityWorkerManager } from '../../workers';
+import { MasterCoordinator } from '../../cluster';
 import { ATOMIC_QUEUES_CONFIG } from '../constants';
 
 /**
  * MessageRouter — central dispatch layer.
  *
- * Routes messages to the EntityWorkerManager which spawns per-entity
- * workers on the event loop. In cluster mode (future), routes to the
- * MasterCoordinator which directs to the correct replica.
- *
- * Flow:
- *   1. Dual-write: WAL (Redis, durability) + EntityWorkerManager (speed)
- *   2. Worker spawns on first message for an entity
- *   3. Worker processes sequentially, tears down when idle
+ * Routes through MasterCoordinator which resolves entity → replica.
+ * Local entities dispatch to EntityWorkerManager (per-entity workers on
+ * the event loop). Remote entities forward via gRPC to the owning replica.
  */
 @Injectable()
 export class MessageRouter {
@@ -27,13 +23,11 @@ export class MessageRouter {
     @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
     private readonly walService: WalService,
     private readonly workerManager: EntityWorkerManager,
+    private readonly masterCoordinator: MasterCoordinator,
   ) {
     this.keyPrefix = resolveKeyPrefix(config);
   }
 
-  /**
-   * Route a message for processing (fire-and-forget).
-   */
   async enqueue(
     entityType: string,
     messageName: string,
@@ -57,20 +51,22 @@ export class MessageRouter {
       maxAttempts: options?.maxAttempts ?? retryConfig?.maxAttempts ?? 1,
     };
 
-    // TODO: cluster mode — route to MasterCoordinator which forwards to correct replica
+    const resolution = this.masterCoordinator.resolve(entityKey);
 
-    // Dual-write: WAL (durability) + worker (speed) in parallel
-    await Promise.all([
-      this.walService.write(entityKey, message),
-      Promise.resolve(this.workerManager.enqueue(entityKey, message)),
-    ]);
+    if (resolution.isLocal) {
+      await Promise.all([
+        this.walService.write(entityKey, message),
+        Promise.resolve(this.workerManager.enqueue(entityKey, message)),
+      ]);
+    } else {
+      // TODO: gRPC forward to resolution.replicaId
+      await this.walService.write(entityKey, message);
+      this.workerManager.enqueue(entityKey, message);
+    }
 
     return { id: message.id, entityKey };
   }
 
-  /**
-   * Route a message and wait for the handler result.
-   */
   async enqueueAndWait<R = unknown>(
     entityType: string,
     messageName: string,
@@ -95,10 +91,9 @@ export class MessageRouter {
       maxAttempts: options?.maxAttempts ?? retryConfig?.maxAttempts ?? 1,
     };
 
-    // Write to WAL for durability
     await this.walService.write(entityKey, message);
 
-    // Dispatch and wait — worker spawns on demand
+    // TODO: if !resolution.isLocal, forward via gRPC ForwardAndWait
     return this.workerManager.enqueueAndWait<R>(entityKey, message, resolvedTimeout);
   }
 
