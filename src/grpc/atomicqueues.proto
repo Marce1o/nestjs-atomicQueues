@@ -3,15 +3,48 @@ syntax = "proto3";
 package atomicqueues.v1;
 
 service AtomicQueuesNode {
-  // Fire-and-forget: forward a message to the entity owner.
+  // ─── Master ↔ Sub-replica: worker management ──────────────────────────
+
+  // Master tells a replica to spawn a worker for an entity
+  rpc SpawnWorker (SpawnWorkerRequest) returns (SpawnWorkerResponse);
+
+  // Master (or peer) sends a message to an entity's worker on this replica
+  rpc EnqueueToWorker (EnqueueToWorkerRequest) returns (EnqueueToWorkerResponse);
+
+  // Same but waits for handler result (server-streaming for keepalive)
+  rpc EnqueueToWorkerAndWait (EnqueueToWorkerRequest) returns (stream ResultEnvelope);
+
+  // Master tells a replica to teardown an idle worker
+  rpc TeardownWorker (TeardownWorkerRequest) returns (TeardownWorkerResponse);
+
+  // Master queries a replica for its active workers (for table rebuild)
+  rpc ListWorkers (ListWorkersRequest) returns (ListWorkersResponse);
+
+  // ─── Sub-replica → Master: petition routing ───────────────────────────
+
+  // Sub-replica forwards a handler petition to the master
+  rpc Petition (PetitionRequest) returns (PetitionResponse);
+
+  // Same but waits for result
+  rpc PetitionAndWait (PetitionRequest) returns (stream ResultEnvelope);
+
+  // Sub-replica tells master a worker went idle
+  rpc ReportIdle (ReportIdleRequest) returns (ReportIdleResponse);
+
+  // ─── Master ↔ Master: cross-service ───────────────────────────────────
+
+  // Forward a message to another service's master
   rpc Forward (MessageEnvelope) returns (ForwardAck);
 
-  // Request-reply: forward and stream back the result when handler completes.
+  // Forward and wait for result from another service's master
   rpc ForwardAndWait (MessageEnvelope) returns (stream ResultEnvelope);
 
-  // Health check
+  // ─── Health ───────────────────────────────────────────────────────────
+
   rpc Ping (HealthRequest) returns (HealthResponse);
 }
+
+// ─── Messages ─────────────────────────────────────────────────────────────
 
 message MessageEnvelope {
   string id              = 1;
@@ -41,13 +74,79 @@ message ResultEnvelope {
   }
 }
 
+// ─── Worker management (Master → Replica) ─────────────────────────────────
+
+message SpawnWorkerRequest {
+  string entity_key = 1;
+}
+
+message SpawnWorkerResponse {
+  bool   spawned = 1;        // true if new, false if already existed
+  string error   = 2;
+}
+
+message EnqueueToWorkerRequest {
+  string entity_key       = 1;
+  MessageEnvelope message = 2;
+}
+
+message EnqueueToWorkerResponse {
+  bool   accepted      = 1;
+  string reject_reason = 2;
+}
+
+message TeardownWorkerRequest {
+  string entity_key = 1;
+}
+
+message TeardownWorkerResponse {
+  bool torn_down = 1;
+}
+
+message ListWorkersRequest {}
+
+message ListWorkersResponse {
+  repeated WorkerInfo workers = 1;
+}
+
+message WorkerInfo {
+  string entity_key    = 1;
+  int32  queue_depth   = 2;
+  bool   is_processing = 3;
+  int64  last_active   = 4;
+}
+
+// ─── Petition (Replica → Master) ──────────────────────────────────────────
+
+message PetitionRequest {
+  string entity_key       = 1;
+  MessageEnvelope message = 2;
+}
+
+message PetitionResponse {
+  bool   accepted      = 1;
+  string reject_reason = 2;
+}
+
+message ReportIdleRequest {
+  string entity_key = 1;
+  string replica_id = 2;
+}
+
+message ReportIdleResponse {
+  bool should_teardown = 1;  // master confirms teardown
+}
+
+// ─── Health ───────────────────────────────────────────────────────────────
+
 message HealthRequest {
   string sender_id = 1;
 }
 
 message HealthResponse {
   string server_id              = 1;
-  int32  active_workers         = 2;
-  int32  queue_depth            = 3;
-  repeated string entity_types  = 4;
+  bool   is_master              = 2;
+  int32  active_workers         = 3;
+  int32  queue_depth            = 4;
+  repeated string entity_types  = 5;
 }
