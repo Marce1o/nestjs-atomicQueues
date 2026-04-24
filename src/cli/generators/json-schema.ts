@@ -1,4 +1,4 @@
-import { RegistrySnapshot } from '../../services/registry/registry.types';
+import { RegistrySnapshot } from '../../domain/interfaces/registry.types';
 
 export function generateJsonSchema(snapshot: RegistrySnapshot): Record<string, any> {
   const output: Record<string, any> = {

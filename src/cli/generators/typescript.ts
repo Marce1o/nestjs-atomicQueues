@@ -1,4 +1,4 @@
-import { RegistrySnapshot } from '../../services/registry/registry.types';
+import { RegistrySnapshot } from '../../domain/interfaces/registry.types';
 
 export function generateTypeScript(snapshot: RegistrySnapshot): string {
   const lines: string[] = [];

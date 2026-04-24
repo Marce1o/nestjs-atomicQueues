@@ -14,7 +14,7 @@ export interface IRedisConfig {
  * Retry policy configuration
  */
 export interface IRetryPolicy {
-  /** Maximum number of attempts (default: 3) */
+  /** Maximum number of attempts (default: 1 — strictly once) */
   maxAttempts?: number;
   /** Backoff strategy */
   backoff?: 'fixed' | 'exponential';
@@ -30,53 +30,87 @@ export interface IRetryPolicy {
 export interface IEntityConfig {
   /** Default property name for entity ID extraction */
   defaultEntityId?: string;
-  /** Gate TTL in seconds (default: 30) */
-  gateTTL?: number;
   /** Retry policy for this entity type */
   retry?: IRetryPolicy;
   /** Default timeout in ms for enqueueAndWait on this entity type */
   replyTimeout?: number;
+  /** Behavior when a message is found in "dispatched" state on recovery */
+  onInterrupt?: 'dead-letter' | 'retry';
 }
 
 /**
- * Executor pool configuration
+ * Worker thread pool configuration
  */
-export interface IExecutorConfig {
-  /** Number of concurrent executors (default: 1) */
-  poolSize?: number;
-  /** Default gate TTL in seconds (default: 30) */
-  gateTTL?: number;
-  /** Gate refresh interval in ms (default: gateTTL * 500) */
-  gateRefreshInterval?: number;
-  /** Global default timeout in ms for enqueueAndWait (default: gateTTL * 2 * 1000) */
-  defaultReplyTimeout?: number;
+export interface IWorkerConfig {
+  /** Path to the NestJS module file. Auto-discovered if omitted. */
+  modulePath?: string;
+  /** Name of the exported module class (default: 'AppModule') */
+  moduleExportName?: string;
+  /** Minimum number of worker threads (default: 1) */
+  min?: number;
+  /** Maximum number of worker threads (default: os.cpus().length - 1) */
+  max?: number;
+  /** Auto-scaling configuration */
+  scaling?: IScalingConfig;
 }
 
 /**
- * Distributed registry configuration (optional, for cross-service)
+ * Auto-scaling configuration for the worker pool
  */
-export interface IRegistryConfig {
-  /** Enable the distributed registry (default: false) */
+export interface IScalingConfig {
+  /** Evaluate scaling every N ms (default: 5000) */
+  evaluationInterval?: number;
+  /** Scale up when avg queue depth per worker exceeds this (default: 10) */
+  scaleUpThreshold?: number;
+  /** Scale down when avg queue depth is below this for cooldown period (default: 2) */
+  scaleDownThreshold?: number;
+  /** Cooldown in ms before scaling down (default: 30000) */
+  scaleDownCooldown?: number;
+  /** Cooldown in ms after scaling up (default: 10000) */
+  scaleUpCooldown?: number;
+}
+
+/**
+ * gRPC inter-server communication configuration
+ */
+export interface IGrpcConfig {
+  /** Enable gRPC transport (default: false) */
   enabled?: boolean;
-  /** Service name for identification in the registry */
-  serviceName?: string;
-  /** Validate payload schemas on send (default: false) */
-  schemaValidation?: boolean;
-  /** Heartbeat interval in ms (default: 10000) */
-  heartbeatInterval?: number;
-  /** Registration TTL in seconds (default: 30) */
-  registrationTTL?: number;
+  /** gRPC listen address (default: '0.0.0.0:50051') */
+  listenAddress?: string;
+  /** Advertised address for other servers (default: os.hostname() + ':50051') */
+  advertisedAddress?: string;
+  /** Unique server ID (default: auto-generated UUID) */
+  serverId?: string;
+  /** Replica group name — identifies which replicas run the same code */
+  serviceGroup?: string;
+  /** TLS configuration */
+  tls?: { certPath: string; keyPath: string; caPath?: string };
+  /** Max forwarding hops to prevent loops (default: 3) */
+  maxForwardHops?: number;
 }
 
 /**
- * Main module configuration
+ * Write-ahead log configuration
+ */
+export interface IWalConfig {
+  /** Enable WAL persistence (default: true) */
+  enabled?: boolean;
+  /** Cleanup batch interval in ms (default: 5000) */
+  cleanupInterval?: number;
+  /** Safety TTL for WAL entries in seconds (default: 86400 = 24h) */
+  entryTTL?: number;
+}
+
+/**
+ * Main module configuration — v3
  */
 export interface IAtomicQueuesModuleConfig {
   /** Redis connection configuration */
   redis: IRedisConfig;
 
-  /** Executor pool configuration */
-  executor?: IExecutorConfig;
+  /** Worker thread pool configuration */
+  workers?: IWorkerConfig;
 
   /** Default retry policy */
   retry?: IRetryPolicy;
@@ -84,8 +118,11 @@ export interface IAtomicQueuesModuleConfig {
   /** Per-entity-type overrides */
   entities?: Record<string, IEntityConfig>;
 
-  /** Distributed registry (cross-service communication) */
-  registry?: IRegistryConfig;
+  /** gRPC inter-server communication */
+  grpc?: IGrpcConfig;
+
+  /** Write-ahead log persistence */
+  wal?: IWalConfig;
 
   /** Prefix for all Redis keys (default: 'aq') */
   keyPrefix?: string;

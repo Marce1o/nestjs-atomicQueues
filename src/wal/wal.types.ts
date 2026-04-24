@@ -1,4 +1,4 @@
-import { ISerializedMessage } from '../domain';
+import { ISerializedMessage, IWalConfig } from '../domain';
 
 export type WalState = 'enqueued' | 'dispatched' | 'completed' | 'failed' | 'interrupted';
 
@@ -17,14 +17,7 @@ export interface IWalEntry {
   workerId?: number;
 }
 
-export interface IWalConfig {
-  /** Enable WAL persistence (default: true) */
-  enabled?: boolean;
-  /** Cleanup batch interval in ms (default: 5000) */
-  cleanupInterval?: number;
-  /** Safety TTL for WAL entries in seconds (default: 86400 = 24h) */
-  entryTTL?: number;
-}
+export { IWalConfig };
 
 export interface IWalRecoveryResult {
   reEnqueued: number;

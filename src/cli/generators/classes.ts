@@ -2,7 +2,7 @@ import {
   RegistrySnapshot,
   EntityContract,
   MessageSpec,
-} from '../../services/registry/registry.types';
+} from '../../domain/interfaces/registry.types';
 
 export interface GeneratedFile {
   filename: string;

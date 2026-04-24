@@ -1,8 +1,7 @@
-import { Injectable, Logger, Inject } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import Redis from 'ioredis';
 import { ISerializedMessage } from '../domain';
 import { resolveKeyPrefix } from '../utils';
-import { ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG } from '../services/constants';
 import { IWalEntry, IWalConfig, IWalRecoveryResult, WalState } from './wal.types';
 import {
   DISPATCH_SCRIPT,
@@ -11,7 +10,12 @@ import {
   INTERRUPT_SCRIPT,
 } from './wal.scripts';
 
-@Injectable()
+/**
+ * Write-Ahead Log service.
+ *
+ * Constructed via factory in the module (not via DI injection decorators)
+ * because it needs a serverId that's generated at startup.
+ */
 export class WalService {
   private readonly logger = new Logger(WalService.name);
   private readonly keyPrefix: string;
@@ -21,8 +25,8 @@ export class WalService {
   private cleanupTimer: NodeJS.Timeout | null = null;
 
   constructor(
-    @Inject(ATOMIC_QUEUES_REDIS) private readonly redis: Redis,
-    @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: { keyPrefix?: string; wal?: IWalConfig },
+    private readonly redis: Redis,
+    private readonly config: { keyPrefix?: string; wal?: IWalConfig },
     serverId: string,
   ) {
     this.keyPrefix = resolveKeyPrefix(config);

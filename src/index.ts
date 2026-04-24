@@ -3,3 +3,5 @@ export * from './module';
 export * from './services';
 export * from './decorators';
 export * from './utils';
+export * from './workers';
+export * from './wal';
