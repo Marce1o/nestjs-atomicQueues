@@ -12,9 +12,9 @@
 ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣟⡾⣽⣏⢳⢃⣞⠃⡼⢀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡄⠀⠀⠀⠀⠀⠀⠀⠀⠁⢀⣀⠤⠐⢋⡰⣌⣾⣿⣿▀▀█ █▄█ ██▄ █▄█ ██▄ ▄▄█
 ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣟⣮⢳⣿⠶⠁⠖⠃⠀⠁⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠿⠿⠟⠛⠛⠀⠀⠀⠀⢀⡤⠤⠐⠒⣉⠡⣄⠶⣭⣿⣽⣿⣿⣿⣿⣿
 ⣿⣿⣿⣿⣿⣿⣿⡿⠿⢉⡢⠝⠁⠀⠃⠀⠀⠀⠀⠀⠿⠃⠿⠿⠿⠛⠋⠉⠁⠀⠀⠀⠀⠀⠀⠀⠀⣀⠀⣀⢤⣰⣲⣽⣾⡟⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿
-⣿⣟⡿⡚⠏⠁⠀⠀⠐⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⠂⣠⠀⣯⣗⣮⢿⣷⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿z e r o   c o n t e n t i o n
-⣿⢯⡝⠠⠁⠀⠀⠠⠤⠀⠀⠀⠀⡀⠢⣄⣀⡀⠐⠤⡀⠀⠀⠀⢤⣄⣀⠤⣄⣤⢤⣖⡾⠋⢁⡼⠁⣸⡿⣞⣽⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿m u l t i   c o r e
-⣿⣷⣾⣵⣦⣶⣖⣳⣶⣝⣶⣯⣷⣽⣷⣾⣶⣽⣯⣶⠄⠈⠒⣤⣀⠉⠙⠛⠛⠋⠋⢁⣠⠔⠁⠀⢰⣿⣽⣯⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿s t r i c t l y   o n c e
+⣿⣟⡿⡚⠏⠁⠀⠀⠐⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⠂⣠⠀⣯⣗⣮⢿⣷⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿v i r t u a l   a c t o r s
+⣿⢯⡝⠠⠁⠀⠀⠠⠤⠀⠀⠀⠀⡀⠢⣄⣀⡀⠐⠤⡀⠀⠀⠀⢤⣄⣀⠤⣄⣤⢤⣖⡾⠋⢁⡼⠁⣸⡿⣞⣽⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿s t r i c t l y   o n c e
+⣿⣷⣾⣵⣦⣶⣖⣳⣶⣝⣶⣯⣷⣽⣷⣾⣶⣽⣯⣶⠄⠈⠒⣤⣀⠉⠙⠛⠛⠋⠋⢁⣠⠔⠁⠀⢰⣿⣽⣯⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿z e r o   l o c k s
 ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣦⡄⡀⡉⠛⠓⠶⠶⠒⠛⠋⠀⠀⢀⣼⣻⢷⣾⣷⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
 ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣾⣧⡵⣌⣒⢂⠀⣀⣀⣠⣤⣶⣿⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
 ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣿⣾⣷⣯⣿⣧⣿⣷⣿⣷⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
@@ -33,9 +33,9 @@
 
 ## What is atomic-queues?
 
-**Per-entity sequential processing for Node.js with multi-core parallelism.**
+**Per-entity sequential processing with virtual actors for NestJS.**
 
-Messages addressed to the same entity execute sequentially. Messages addressed to different entities execute in parallel across Worker Threads. gRPC handles cross-server routing. Redis provides durability. No distributed locks. No message broker.
+One worker per entity instance, spawned on demand, destroyed when idle. The worker IS the serialization boundary. If only one worker exists for `account:a-123` across the entire cluster, all operations on that account are serial by construction. No locks. No transactions. No race conditions.
 
 **Motto: Strictly once, fail if interrupted.**
 
@@ -46,8 +46,6 @@ npm install atomic-queues ioredis
 ---
 
 ## The Problem
-
-Every distributed system eventually hits one of two failure modes: **state corruption** from concurrent mutations on the same entity, or **throughput collapse** from the locking mechanisms used to prevent it.
 
 ```
 Time    Request A                    Request B                    Database
@@ -60,53 +58,39 @@ T3                                   UPDATE: $100 - $80 = $20     -$60
 Result: Balance is -$60. Both withdrawals succeed. Integrity violated.
 ```
 
-The standard answers (row locks, optimistic locking, Redlock) all trade throughput for correctness. Under load, they become bottlenecks.
+Row locks, optimistic locking, Redlock — they all trade throughput for correctness.
 
 ## The Insight
 
-Serialize at the **message level**, not the database level. Route all operations for a given entity through a single ordered queue. Process that queue sequentially on a dedicated worker thread. Different entities maintain independent queues processed in parallel across threads.
+Don't lock the database. Don't lock the resource. **Route all operations for a given entity through a single worker.** That worker processes messages sequentially. Different entities have their own workers running concurrently.
 
 ```
-  Request A  ─┐
-               │          Entity: account-42 ──► Worker Thread 0
-  Request B  ─┼─► Route  Entity: order-17   ──► Worker Thread 1
-               │          Entity: user-abc   ──► Worker Thread 0
-  Request C  ─┘
-
-  Same entity ──► same thread ──► sequential (no locks)
-  Different entities ──► parallel across threads (full CPU utilization)
+  account:a-1  ──► [Worker] ──► handler1 → handler2 → handler3  (sequential)
+  account:a-2  ──► [Worker] ──► handler1 → handler2              (sequential)
+  order:o-5    ──► [Worker] ──► handler1                          (sequential)
+                                                    (all concurrent across entities)
 ```
 
-Consistent hashing ensures the same entity always routes to the same worker. Sequential guarantee without locks. True parallelism across cores.
+One worker per entity. Spawned when a message arrives. Destroyed when idle. The worker runs on the event loop — async I/O interleaves naturally across entities. No threads, no separate processes, no extra NestJS contexts.
 
 ---
 
 ## Quick Start
 
 ```typescript
-import { Module } from '@nestjs/common';
-import { AtomicQueuesModule } from 'atomic-queues';
-
 @Module({
   imports: [
     AtomicQueuesModule.forRoot({
       redis: { host: 'localhost', port: 6379 },
-      workers: {
-        modulePath: join(__dirname, 'worker.module'),
-        min: 2,
-        max: 8,
-      },
     }),
   ],
 })
 export class AppModule {}
 ```
 
-Define a command and enqueue it:
+That's it. No worker config. No module paths. Define a command and enqueue:
 
 ```typescript
-import { EntityType, QueueEntityId } from 'atomic-queues';
-
 @EntityType('account')
 export class WithdrawCommand {
   constructor(
@@ -125,118 +109,63 @@ export class PaymentService {
 }
 ```
 
-The command routes to a worker thread via consistent hash on `accountId`. All commands for the same account execute sequentially. Different accounts execute in parallel.
-
-### Worker Module
-
-Worker threads boot a lightweight NestJS context. Create a module with your handlers and their dependencies, **without** HTTP/GraphQL infrastructure:
-
-```typescript
-// worker.module.ts — what worker threads boot
-@Module({
-  imports: [
-    PrismaModule,
-    AtomicQueuesModule.forRoot({
-      redis: { url: process.env.REDIS_URL },
-    }),
-    AccountModule,
-    OrderModule,
-  ],
-})
-export class WorkerModule {}
-```
-
-The main thread runs the full app (REST, GraphQL, Swagger). Workers run only the domain layer. This keeps memory per worker low (~50-100MB) while preserving full DI, database access, and handler functionality.
+First message for `account:a-123` spawns a worker. All subsequent messages for that account queue behind it. The handler runs on your app's event loop using your existing DI container.
 
 ---
 
 ## How It Works
 
-### Worker Thread Pool
+### Virtual Actors (EntityWorker)
 
-Each server runs a pool of Worker Threads (default: 1 to `cpus - 1`). Each worker boots its own NestJS `ApplicationContext` with full DI. The pool auto-scales based on queue depth.
+Each entity instance (`account:a-123`, `order:o-5`) gets its own virtual actor — a processor callback with a FIFO message queue. The actor:
 
-### Sticky Partitioning (Consistent Hashing)
+1. Spawns on first message (no pre-registration needed)
+2. Processes messages sequentially (one at a time, on the event loop)
+3. Yields at `await` points (other entities' actors proceed concurrently)
+4. Tears down after idle timeout (configurable, default 30s)
 
-Entity-to-worker assignment uses consistent hashing with 150 virtual nodes per worker:
+### Master Topology (Cluster Mode)
+
+Each replica set elects a **master** via Redis `SET NX`. The master:
+
+- Owns the **worker assignment table**: which `entity:entityId` lives on which replica
+- Routes all petitions: sub-replicas forward via gRPC to the master
+- Spawns workers atomically: decisions happen on the master's event loop (single-threaded = no race conditions)
+- Load balances: new workers go to the least-loaded replica
 
 ```
-hash("account:a-123") mod ring -> Worker 0
-hash("account:a-456") mod ring -> Worker 1
-hash("order:o-789")   mod ring -> Worker 0
+Replica Set: billing-service
+┌──────────────────────────────────────────────┐
+│  Master (elected via Redis)                  │
+│  ├── Assignment Table                        │
+│  │   account:a-1 → replica-2                 │
+│  │   account:a-2 → replica-1                 │
+│  └── Routes petitions, balances load         │
+│                                              │
+│  Replica-1: [worker: account:a-2]            │
+│  Replica-2: [worker: account:a-1]            │
+│  Replica-3: (master pod, no workers yet)     │
+└──────────────────────────────────────────────┘
 ```
 
-Same entity always goes to same worker. Adding/removing a worker only reassigns ~1/N entities.
+Masters interconnect across service groups:
+```
+Master (billing) ←── gRPC ──→ Master (warehouse)
+```
 
 ### Write-Ahead Log (WAL)
 
-Every message is dual-written in parallel:
-1. **In-memory queue** on the main thread (speed)
-2. **Redis WAL** (durability)
+Every message is dual-written: in-memory queue (speed) + Redis WAL (durability). On crash:
+- `enqueued` → re-dispatch (handler never ran)
+- `dispatched` → dead-letter (handler may have partially run, don't re-execute)
 
-If the process crashes, the WAL recovers:
-- `enqueued` state: re-dispatch (handler never ran)
-- `dispatched` state: mark as **interrupted** and dead-letter (handler may have partially run)
+### Master Failover
 
-This is the "strictly once, fail if interrupted" guarantee. We never risk re-executing a handler that may have had side effects.
-
-### Worker Liveness
-
-Workers post heartbeats every 1s via SharedArrayBuffer. The main thread monitors every 2s. If a worker dies:
-1. All in-flight messages are marked `failed` with the captured error
-2. Pending `enqueueAndWait` promises are rejected with the exact error
-3. Worker is force-killed if still alive
-4. Replacement spawned if below minimum
-5. Pending messages reassigned to other workers
-
-### Auto-Elastic Scaling
-
-The pool evaluates every 5s:
-- **Scale up** when average queue depth per worker exceeds threshold
-- **Scale down** after sustained low depth, using freeze-then-transfer to prevent message loss
-
----
-
-## Cross-Server Communication (gRPC)
-
-When running multiple servers or replicas, enable gRPC for direct server-to-server message routing:
-
-```typescript
-AtomicQueuesModule.forRoot({
-  redis: { url: process.env.REDIS_URL },
-  workers: { modulePath: join(__dirname, 'worker.module') },
-  grpc: {
-    enabled: true,
-    listenAddress: '0.0.0.0:50051',
-    advertisedAddress: 'billing-service:50051',
-    serviceGroup: 'billing',
-  },
-})
-```
-
-### Server Ring
-
-Each server replica is a node in a consistent hash ring. Entity ownership is determined by hashing:
-
-```
-hash("account:a-123") -> Server S1b
-hash("order:o-456")   -> Server S2a
-```
-
-When S2a receives a command for `account:a-123`, it forwards via gRPC to S1b. The forwarding is transparent to the caller.
-
-### Discovery
-
-Servers discover each other via Redis heartbeats (5s interval, 15s TTL). Ring changes propagate via Redis pub/sub. If a server crashes, its heartbeat TTL expires and peers remove it from the ring.
-
-### Leader Election
-
-Within each service group (set of replicas running the same code), one replica is elected leader via Redis `SET NX` lock. The leader coordinates WAL recovery and ring changes. If the leader crashes, another replica acquires the lock automatically.
-
-```bash
-# Optional peer dependencies for gRPC (only needed when grpc.enabled: true)
-npm install @grpc/grpc-js @grpc/proto-loader
-```
+1. Master crashes → Redis lock TTL expires (10s)
+2. Another replica acquires lock → becomes new master
+3. New master queries all replicas via gRPC `ListWorkers`
+4. Rebuilds assignment table from live cluster state
+5. Resumes operations
 
 ---
 
@@ -246,43 +175,33 @@ npm install @grpc/grpc-js @grpc/proto-loader
 AtomicQueuesModule.forRoot({
   redis: { host: 'localhost', port: 6379 },
 
-  workers: {
-    modulePath: join(__dirname, 'worker.module'),
-    min: 1,                          // minimum worker threads
-    max: 8,                          // maximum worker threads (default: cpus - 1)
-    scaling: {
-      evaluationInterval: 5000,      // check every 5s
-      scaleUpThreshold: 10,          // scale up when avg depth > 10
-      scaleDownThreshold: 2,         // scale down when avg depth < 2
-      scaleDownCooldown: 30000,      // wait 30s before scaling down
-    },
-  },
-
   entities: {
     account: {
       defaultEntityId: 'accountId',
-      retry: { maxAttempts: 1 },     // default: 1 (strictly once)
+      workerIdleTimeout: 30000,    // teardown after 30s idle
+      retry: { maxAttempts: 1 },   // strictly once
       replyTimeout: 5000,
-      onInterrupt: 'dead-letter',    // or 'retry' for idempotent handlers
+      onInterrupt: 'dead-letter',
     },
   },
 
+  // Cluster mode (optional)
   grpc: {
-    enabled: false,
-    listenAddress: '0.0.0.0:50051',
-    advertisedAddress: 'my-service:50051',
-    serviceGroup: 'my-service',
-  },
-
-  wal: {
     enabled: true,
-    cleanupInterval: 5000,
-    entryTTL: 86400,                 // 24h safety net
+    listenAddress: '0.0.0.0:50051',
+    serviceGroup: 'billing-service',
   },
 
+  wal: { enabled: true },
   keyPrefix: 'aq',
-  verbose: false,
 })
+```
+
+```bash
+# Optional peer dependencies
+npm install @nestjs/cqrs          # CQRS handler auto-wiring
+npm install zod zod-to-json-schema # schema validation
+npm install @grpc/grpc-js @grpc/proto-loader  # cluster mode
 ```
 
 ---
@@ -296,13 +215,12 @@ await queueBus.enqueue(new WithdrawCommand(accountId, 100));
 // Enqueue and wait for result
 const balance = await queueBus.enqueueAndWait(new GetBalanceQuery(accountId));
 
-// Scoped to an entity type
+// Bulk
 await queueBus.forEntity('account').enqueueBulk([charge1, charge2, charge3]);
 
-// Raw string API (cross-service, no class import needed)
+// Raw string API (cross-service)
 await queueBus.enqueue('warehouse', 'ReserveStockCommand', 'SKU-001', {
-  sku: 'SKU-001',
-  quantity: 50,
+  sku: 'SKU-001', quantity: 50,
 });
 ```
 
@@ -312,46 +230,27 @@ await queueBus.enqueue('warehouse', 'ReserveStockCommand', 'SKU-001', {
 
 | Guarantee | Mechanism |
 |---|---|
-| FIFO per entity | Consistent hash routing to single worker thread |
-| Single-writer per entity | Sticky partitioning (no distributed locks) |
-| Strictly-once delivery | WAL state machine: enqueued -> dispatched -> completed |
-| Fail if interrupted | Dispatched messages on crash -> dead-lettered, never re-executed |
-| Parallel across entities | Worker thread pool (multi-core) |
+| FIFO per entity | One worker per entity:entityId with FIFO queue |
+| Single-writer per entity | Only one worker exists across the cluster |
+| Strictly-once delivery | WAL: enqueued -> dispatched -> completed |
+| Fail if interrupted | Dispatched on crash -> dead-lettered, never re-executed |
+| Concurrent across entities | Event loop interleaves at await points |
 | Durability | Redis WAL (parallel write) |
-| Cross-server routing | gRPC with consistent hash server ring |
-| Leader failover | Redis SET NX lock with automatic re-election |
-
----
-
-## Decorator Reference
-
-| Decorator | Purpose |
-|---|---|
-| `@EntityType('type')` | Route a message to an entity type |
-| `@QueueEntityId()` | Mark the property holding the entity ID |
-| `@QueueEntity('type', 'prop')` | Combined entity type + ID |
-| `@JobCommand()` / `@JobCommand('name')` | Auto-route a command class by job name |
-| `@JobQuery()` / `@JobQuery('name')` | Auto-route a query class by job name |
-| `@Schema(zodSchema)` | Attach a Zod schema for validation |
+| Cluster coordination | Master topology with gRPC |
+| Master failover | Redis SET NX lock, automatic re-election + table rebuild |
+| No distributed locks | The worker IS the serialization — not a lock |
 
 ---
 
 ## Migrating from v2
 
-v3 is a breaking change. No backward compatibility.
+**Removed**: `executor`, `registry`, `gateTTL`, `ActorSystem`, `LogService`, `GateService`, `SchedulerService`, `ExecutorPoolService`, `ResultCollector`, `RegistryService`, `workers` config, `WorkerModule`.
 
-**Removed**: `executor` config, `registry` config, `gateTTL`, `ActorSystem`, `LogService`, `GateService`, `SchedulerService`, `ExecutorPoolService`, `ResultCollector`, `RegistryService`. All Redis Lua dispatch scripts.
+**Added**: `EntityWorker`, `EntityWorkerManager`, `MasterCoordinator`, `workerIdleTimeout` in entity config.
 
-**Added**: `workers` config, `grpc` config, `wal` config, `WorkerPoolService`, `MessageRouter`, `WalService`, `ConsistentHashRing`, `AutoScaler`, `LivenessMonitor`, `GrpcServerService`, `GrpcClientPool`, `ClusterDiscoveryService`, `ServerRingService`, `LeaderElectionService`.
+**Unchanged**: All decorators, `QueueBus` public API, CLI generators.
 
-**Unchanged**: All decorators (`@EntityType`, `@QueueEntityId`, `@QueueEntity`, `@JobCommand`, `@JobQuery`, `@Schema`). `QueueBus` public API (`enqueue`, `enqueueAndWait`, `forEntity`, `enqueueClass`, `enqueueRaw`). CLI generators.
-
-**Migration steps**:
-1. Remove `executor` and `registry` from config
-2. Add `workers: { modulePath: join(__dirname, 'worker.module') }` 
-3. Create a `WorkerModule` with your handlers and dependencies (no HTTP/GraphQL)
-4. Remove `gateTTL` from entity configs
-5. Replace `registry.enabled` with `grpc.enabled` if using cross-service
+**Migration**: Remove `executor`/`registry`/`workers` from config. That's it. Workers are now internal.
 
 ---
 

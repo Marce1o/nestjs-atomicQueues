@@ -1,4 +1,11 @@
-import { Injectable, Logger, Inject, OnModuleInit, OnApplicationShutdown } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  Inject,
+  forwardRef,
+  OnModuleInit,
+  OnApplicationShutdown,
+} from '@nestjs/common';
 import * as path from 'path';
 import { IAtomicQueuesModuleConfig, ISerializedMessage } from '../domain';
 import { MessageRouter } from '../services/message-router';
@@ -52,8 +59,9 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
 
   constructor(
     @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
-    private readonly router: MessageRouter,
+    @Inject(forwardRef(() => MessageRouter)) private readonly router: MessageRouter,
     private readonly workerManager: EntityWorkerManager,
+    @Inject(forwardRef(() => MasterCoordinator))
     private readonly masterCoordinator: MasterCoordinator,
   ) {}
 
