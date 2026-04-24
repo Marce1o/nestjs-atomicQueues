@@ -16,7 +16,12 @@ import {
 import { WalService } from '../wal';
 import { EntityWorkerManager } from '../workers';
 import { GrpcServerService, GrpcClientPool } from '../grpc';
-import { ClusterDiscoveryService, ServerRingService, LeaderElectionService } from '../cluster';
+import {
+  ClusterDiscoveryService,
+  ServerRingService,
+  LeaderElectionService,
+  MasterCoordinator,
+} from '../cluster';
 
 export const ATOMIC_QUEUES_SERVER_ID = 'ATOMIC_QUEUES_SERVER_ID';
 
@@ -33,6 +38,7 @@ const CORE_SERVICES: Provider[] = [
   ClusterDiscoveryService,
   ServerRingService,
   LeaderElectionService,
+  MasterCoordinator,
 ];
 
 export interface AtomicQueuesModuleAsyncOptions {
