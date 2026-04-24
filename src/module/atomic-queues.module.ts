@@ -1,37 +1,31 @@
 import { DynamicModule, Global, Module, Provider, Type } from '@nestjs/common';
 import { DiscoveryModule, DiscoveryService, MetadataScanner } from '@nestjs/core';
 import Redis from 'ioredis';
+import { v4 as uuidv4 } from 'uuid';
 import { IAtomicQueuesModuleConfig } from '../domain';
 import {
   ATOMIC_QUEUES_REDIS,
   ATOMIC_QUEUES_CONFIG,
-  LogService,
-  GateService,
-  SchedulerService,
-  ExecutorPoolService,
   HandlerExecutor,
   EntityTypeRegistry,
-  ActorSystem,
   QueueBus,
   CommandDiscoveryService,
   ShutdownService,
-  ResultCollector,
-  RegistryService,
+  MessageRouter,
 } from '../services';
+import { WalService } from '../wal';
+import { WorkerPoolService } from '../workers';
+
+const ATOMIC_QUEUES_SERVER_ID = 'ATOMIC_QUEUES_SERVER_ID';
 
 const CORE_SERVICES: Provider[] = [
-  LogService,
-  GateService,
-  SchedulerService,
-  ExecutorPoolService,
   HandlerExecutor,
   EntityTypeRegistry,
-  ActorSystem,
   QueueBus,
   CommandDiscoveryService,
   ShutdownService,
-  ResultCollector,
-  RegistryService,
+  MessageRouter,
+  WorkerPoolService,
 ];
 
 export interface AtomicQueuesModuleAsyncOptions {
@@ -47,20 +41,36 @@ export interface AtomicQueuesModuleAsyncOptions {
 @Module({})
 export class AtomicQueuesModule {
   static forRoot(config: IAtomicQueuesModuleConfig): DynamicModule {
+    const serverId = config.grpc?.serverId ?? uuidv4();
+
     return {
       module: AtomicQueuesModule,
       imports: [DiscoveryModule],
       providers: [
         { provide: ATOMIC_QUEUES_CONFIG, useValue: config },
+        { provide: ATOMIC_QUEUES_SERVER_ID, useValue: serverId },
         {
           provide: ATOMIC_QUEUES_REDIS,
           useFactory: () => this.buildRedisConnection(config),
+        },
+        {
+          provide: WalService,
+          useFactory: (redis: Redis, cfg: IAtomicQueuesModuleConfig) => {
+            return new WalService(redis, cfg, serverId);
+          },
+          inject: [ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG],
         },
         DiscoveryService,
         MetadataScanner,
         ...CORE_SERVICES,
       ],
-      exports: [ATOMIC_QUEUES_CONFIG, ATOMIC_QUEUES_REDIS, ...CORE_SERVICES],
+      exports: [
+        ATOMIC_QUEUES_CONFIG,
+        ATOMIC_QUEUES_REDIS,
+        ATOMIC_QUEUES_SERVER_ID,
+        WalService,
+        ...CORE_SERVICES,
+      ],
     };
   }
 
@@ -75,15 +85,33 @@ export class AtomicQueuesModule {
           inject: (options.inject || []) as any[],
         },
         {
+          provide: ATOMIC_QUEUES_SERVER_ID,
+          useFactory: (config: IAtomicQueuesModuleConfig) => config.grpc?.serverId ?? uuidv4(),
+          inject: [ATOMIC_QUEUES_CONFIG],
+        },
+        {
           provide: ATOMIC_QUEUES_REDIS,
           useFactory: (config: IAtomicQueuesModuleConfig) => this.buildRedisConnection(config),
           inject: [ATOMIC_QUEUES_CONFIG],
+        },
+        {
+          provide: WalService,
+          useFactory: (redis: Redis, config: IAtomicQueuesModuleConfig, serverId: string) => {
+            return new WalService(redis, config, serverId);
+          },
+          inject: [ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG, ATOMIC_QUEUES_SERVER_ID],
         },
         DiscoveryService,
         MetadataScanner,
         ...CORE_SERVICES,
       ],
-      exports: [ATOMIC_QUEUES_CONFIG, ATOMIC_QUEUES_REDIS, ...CORE_SERVICES],
+      exports: [
+        ATOMIC_QUEUES_CONFIG,
+        ATOMIC_QUEUES_REDIS,
+        ATOMIC_QUEUES_SERVER_ID,
+        WalService,
+        ...CORE_SERVICES,
+      ],
       global: options.isGlobal ?? true,
     };
   }

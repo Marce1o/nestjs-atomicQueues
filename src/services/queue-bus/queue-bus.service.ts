@@ -1,23 +1,15 @@
-import { Injectable, Logger, Inject, Type, Optional, forwardRef } from '@nestjs/common';
-import { DiscoveryService } from '@nestjs/core';
-import { v4 as uuidv4 } from 'uuid';
+import { Injectable, Logger, Inject, Type } from '@nestjs/common';
 import {
   IAtomicQueuesModuleConfig,
-  ISerializedMessage,
   IMessageRef,
   Reply,
   InferReply,
 } from '../../domain';
 import { getEntityType } from '../../decorators';
-import { resolveKeyPrefix, discoverCqrsClasses } from '../../utils';
-import { LogService } from '../log';
-import { ExecutorPoolService } from '../executor-pool';
-import { HandlerExecutor } from '../handler-executor';
-import { ResultCollector } from '../result-collector';
-import { RegistryService } from '../registry';
+import { resolveKeyPrefix } from '../../utils';
+import { MessageRouter } from '../message-router';
 import { ATOMIC_QUEUES_CONFIG } from '../constants';
 import { getJobName, extractData, extractEntityIdExplicit } from './queue-bus.utils';
-import { ClusterContracts } from './cluster-contracts';
 
 export interface EntityTarget {
   enqueue<T extends object>(
@@ -83,13 +75,7 @@ export class QueueBus {
 
   constructor(
     @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
-    private readonly logService: LogService,
-    private readonly executorPool: ExecutorPoolService,
-    private readonly handlerExecutor: HandlerExecutor,
-    private readonly resultCollector: ResultCollector,
-    @Optional()
-    @Inject(forwardRef(() => RegistryService))
-    private readonly registryService?: RegistryService,
+    private readonly router: MessageRouter,
   ) {
     this.keyPrefix = resolveKeyPrefix(config);
   }
@@ -137,7 +123,7 @@ export class QueueBus {
     entityId: string,
     data: Record<string, unknown>,
   ): Promise<IMessageRef> {
-    return this.dispatchRaw(entityType, messageName, entityId, data);
+    return this.router.enqueue(entityType, messageName, entityId, data);
   }
 
   async enqueueRawAndWait<R = unknown>(
@@ -147,7 +133,7 @@ export class QueueBus {
     data: Record<string, unknown>,
     timeout?: number,
   ): Promise<R> {
-    return this.dispatchRawAndWait<R>(entityType, messageName, entityId, data, timeout);
+    return this.router.enqueueAndWait<R>(entityType, messageName, entityId, data, timeout);
   }
 
   // =========================================================================
@@ -230,7 +216,12 @@ export class QueueBus {
         data?: Record<string, unknown>,
       ): Promise<IMessageRef> {
         if (typeof commandOrMsgName === 'string') {
-          return self.dispatchRaw(entityType, commandOrMsgName, entityIdOrOptions as string, data!);
+          return self.router.enqueue(
+            entityType,
+            commandOrMsgName,
+            entityIdOrOptions as string,
+            data!,
+          );
         }
         return self.dispatchClass(
           entityType,
@@ -246,7 +237,7 @@ export class QueueBus {
         timeout?: number,
       ): Promise<unknown> {
         if (typeof commandOrMsgName === 'string') {
-          return self.dispatchRawAndWait(
+          return self.router.enqueueAndWait(
             entityType,
             commandOrMsgName,
             entityIdOrOptions as string,
@@ -275,7 +266,7 @@ export class QueueBus {
         entityId: string,
         data: Record<string, unknown>,
       ): Promise<IMessageRef> {
-        return self.dispatchRaw(entityType, messageName, entityId, data);
+        return self.router.enqueue(entityType, messageName, entityId, data);
       },
 
       enqueueClassAndWait(
@@ -296,7 +287,7 @@ export class QueueBus {
         data: Record<string, unknown>,
         timeout?: number,
       ): Promise<R> {
-        return self.dispatchRawAndWait<R>(entityType, messageName, entityId, data, timeout);
+        return self.router.enqueueAndWait<R>(entityType, messageName, entityId, data, timeout);
       },
 
       async enqueueBulk(
@@ -307,30 +298,13 @@ export class QueueBus {
         for (const cmd of commands) {
           refs.push(await self.dispatchClass(entityType, cmd, options?.entityId));
         }
-        await self.executorPool.tickle();
         return refs;
       },
     };
   }
 
   // =========================================================================
-  // INTROSPECT
-  // =========================================================================
-
-  async introspect(): Promise<ClusterContracts> {
-    if (!this.registryService) {
-      throw new Error(
-        'Cannot introspect: registry is not configured. ' +
-          'Enable it with: registry: { enabled: true, serviceName: "..." }',
-      );
-    }
-
-    const snapshot = await this.registryService.exportSnapshot();
-    return new ClusterContracts(snapshot);
-  }
-
-  // =========================================================================
-  // STATIC REGISTRY
+  // STATIC REGISTRY (preserved for class registration)
   // =========================================================================
 
   private static readonly globalRegistry = new Map<
@@ -366,39 +340,15 @@ export class QueueBus {
     return new Map(QueueBus.globalRegistry);
   }
 
-  static discoverFromCqrs(discoveryService: DiscoveryService): {
-    commands: number;
-    queries: number;
-  } {
-    const providers =
-      (
-        discoveryService as { getProviders?: () => { metatype?: Function | null }[] }
-      ).getProviders?.() ?? [];
-    const { commands, queries } = discoverCqrsClasses(providers);
-
-    for (const [name, cls] of commands) {
-      if (!QueueBus.globalRegistry.has(name)) {
-        QueueBus.register(cls as Type<unknown>, false);
-      }
-    }
-    for (const [name, cls] of queries) {
-      if (!QueueBus.globalRegistry.has(name)) {
-        QueueBus.register(cls as Type<unknown>, true);
-      }
-    }
-
-    return { commands: commands.size, queries: queries.size };
-  }
-
   // =========================================================================
-  // PRIVATE — class-based dispatch (extracts name/data from decorators)
+  // PRIVATE — class-based dispatch
   // =========================================================================
 
   private resolveEntityType(commandOrQuery: object): string {
     const entityType = getEntityType(commandOrQuery.constructor);
     if (!entityType) {
       throw new Error(
-        `Cannot enqueue ${commandOrQuery.constructor.name}. Add @EntityType('type') decorator.`,
+        `Cannot enqueue ${commandOrQuery.constructor.name}. Add @EntityType('type') or @QueueEntity('type') decorator.`,
       );
     }
     return entityType;
@@ -416,7 +366,7 @@ export class QueueBus {
       entityIdOverride ??
       extractEntityIdExplicit(commandOrQuery, data, undefined, entityConfig, this.logger);
 
-    return this.dispatchRaw(entityType, jobName, entityId, data);
+    return this.router.enqueue(entityType, jobName, entityId, data);
   }
 
   private async dispatchClassAndWait<T extends object>(
@@ -432,90 +382,6 @@ export class QueueBus {
       entityIdOverride ??
       extractEntityIdExplicit(commandOrQuery, data, undefined, entityConfig, this.logger);
 
-    return this.dispatchRawAndWait(entityType, jobName, entityId, data, timeout);
-  }
-
-  // =========================================================================
-  // PRIVATE — raw dispatch (message name + plain data, no class needed)
-  // =========================================================================
-
-  private async dispatchRaw(
-    entityType: string,
-    messageName: string,
-    entityId: string,
-    data: Record<string, unknown>,
-  ): Promise<IMessageRef> {
-    const entityKey = `${entityType}:${entityId}`;
-    const entityConfig = this.config.entities?.[entityType];
-    const retryConfig = entityConfig?.retry ?? this.config.retry;
-
-    if (this.registryService?.isEnabled()) {
-      await this.registryService.validate(entityType, messageName, data);
-    }
-
-    const message: ISerializedMessage = {
-      id: uuidv4(),
-      name: messageName,
-      data,
-      entityType,
-      entityId,
-      enqueuedAt: Date.now(),
-      attempts: 0,
-      maxAttempts: retryConfig?.maxAttempts ?? 3,
-    };
-
-    await this.logService.append(entityKey, message);
-    await this.executorPool.tickle();
-
-    return { id: message.id, entityKey };
-  }
-
-  private resolveTimeout(entityType: string, explicit?: number): number {
-    if (explicit !== undefined) return explicit;
-
-    const entityConfig = this.config.entities?.[entityType];
-    if (entityConfig?.replyTimeout) return entityConfig.replyTimeout;
-    if (this.config.executor?.defaultReplyTimeout) return this.config.executor.defaultReplyTimeout;
-
-    const gateTTL = entityConfig?.gateTTL ?? this.config.executor?.gateTTL ?? 30;
-    return gateTTL * 2 * 1000;
-  }
-
-  private async dispatchRawAndWait<R = unknown>(
-    entityType: string,
-    messageName: string,
-    entityId: string,
-    data: Record<string, unknown>,
-    timeout?: number,
-  ): Promise<R> {
-    const entityKey = `${entityType}:${entityId}`;
-    const correlationId = uuidv4();
-    const entityConfig = this.config.entities?.[entityType];
-    const retryConfig = entityConfig?.retry ?? this.config.retry;
-
-    if (this.registryService?.isEnabled()) {
-      await this.registryService.validate(entityType, messageName, data);
-    }
-
-    const message: ISerializedMessage = {
-      id: uuidv4(),
-      name: messageName,
-      data,
-      entityType,
-      entityId,
-      isQuery: true,
-      correlationId,
-      enqueuedAt: Date.now(),
-      attempts: 0,
-      maxAttempts: retryConfig?.maxAttempts ?? 3,
-    };
-
-    const resolvedTimeout = this.resolveTimeout(entityType, timeout);
-    const resultPromise = this.resultCollector.waitForResult<R>(correlationId, resolvedTimeout);
-
-    await this.logService.append(entityKey, message);
-    await this.executorPool.tickle();
-
-    return resultPromise;
+    return this.router.enqueueAndWait(entityType, jobName, entityId, data, timeout);
   }
 }

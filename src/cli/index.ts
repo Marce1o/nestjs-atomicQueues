@@ -6,7 +6,7 @@ import * as path from 'path';
 import { generateTypeScript } from './generators/typescript';
 import { generateJsonSchema } from './generators/json-schema';
 import { generateClasses } from './generators/classes';
-import { RegistrySnapshot, EntityContract } from '../services/registry/registry.types';
+import { RegistrySnapshot, EntityContract } from '../domain/interfaces/registry.types';
 
 async function main() {
   const args = process.argv.slice(2);
