@@ -2,7 +2,7 @@ import { Injectable, Logger, Inject, OnModuleInit, OnApplicationShutdown } from 
 import * as path from 'path';
 import { IAtomicQueuesModuleConfig } from '../domain';
 import { MessageRouter } from '../services/message-router';
-import { WorkerPoolService } from '../workers';
+import { EntityWorkerManager } from '../workers';
 import { ATOMIC_QUEUES_CONFIG } from '../services/constants';
 
 /** Minimal shape of a gRPC unary call (from @grpc/grpc-js). */
@@ -55,7 +55,7 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
   constructor(
     @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
     private readonly router: MessageRouter,
-    private readonly workerPool: WorkerPoolService,
+    private readonly workerManager: EntityWorkerManager,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -209,8 +209,8 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
   private handlePing(_call: GrpcUnaryCall, callback: GrpcCallback): void {
     callback(null, {
       serverId: this.config.grpc?.serverId ?? 'unknown',
-      activeWorkers: this.workerPool.getWorkerCount(),
-      queueDepth: this.workerPool.getTotalQueueDepth(),
+      activeWorkers: this.workerManager.workerCount(),
+      queueDepth: this.workerManager.totalQueueDepth(),
       entityTypes: [], // TODO: populated from EntityTypeRegistry
     });
   }
