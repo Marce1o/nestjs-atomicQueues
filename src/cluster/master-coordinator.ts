@@ -37,6 +37,7 @@ export class MasterCoordinator implements OnModuleInit {
 
   private readonly localReplicaId: string;
   private readonly isClusterMode: boolean;
+  private readonly serviceGroup: string;
 
   constructor(
     @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
@@ -46,6 +47,7 @@ export class MasterCoordinator implements OnModuleInit {
   ) {
     this.localReplicaId = config.grpc?.serverId ?? 'local';
     this.isClusterMode = config.grpc?.enabled ?? false;
+    this.serviceGroup = config.grpc?.serviceGroup ?? 'default';
   }
 
   async onModuleInit(): Promise<void> {
@@ -208,7 +210,9 @@ export class MasterCoordinator implements OnModuleInit {
     this.assignments.clear();
     this.replicaLoad.clear();
 
-    const nodes = this.isClusterMode ? await this.clusterDiscovery.getNodes() : [];
+    const allNodes = this.isClusterMode ? await this.clusterDiscovery.getNodes() : [];
+    // Only manage replicas within our own service group
+    const nodes = allNodes.filter((n) => n.serviceGroup === this.serviceGroup);
 
     for (const node of nodes) {
       this.replicaLoad.set(node.serverId, 0);
@@ -224,9 +228,11 @@ export class MasterCoordinator implements OnModuleInit {
 
         try {
           const client = await this.grpcClientPool.getClient(node.serverId, node.grpcAddress);
+          const deadline = new Date(Date.now() + 1000);
           const workers = await new Promise<Array<{ entityKey: string }>>((resolve, reject) => {
             (client as unknown as Record<string, Function>).listWorkers(
               {},
+              { deadline },
               (err: Error | null, response: Record<string, unknown>) => {
                 if (err) return reject(err);
                 resolve((response.workers as Array<{ entityKey: string }>) ?? []);
@@ -240,8 +246,10 @@ export class MasterCoordinator implements OnModuleInit {
           }
         } catch (err) {
           this.logger.warn(
-            `Failed to query replica ${node.serverId} for workers: ${(err as Error).message}`,
+            `Failed to query replica ${node.serverId} for workers: ${(err as Error).message} — removing from load map`,
           );
+          this.replicaLoad.delete(node.serverId);
+          this.grpcClientPool.removeClient(node.serverId);
         }
       }
 
@@ -254,7 +262,9 @@ export class MasterCoordinator implements OnModuleInit {
   }
 
   private reconcileReplicas(nodes: ClusterNode[]): void {
-    const liveIds = new Set(nodes.map((n) => n.serverId));
+    // Only manage replicas within our own service group
+    const sameGroupNodes = nodes.filter((n) => n.serviceGroup === this.serviceGroup);
+    const liveIds = new Set(sameGroupNodes.map((n) => n.serverId));
 
     // Remove dead replicas and their workers
     for (const [replicaId] of this.replicaLoad) {
@@ -272,7 +282,7 @@ export class MasterCoordinator implements OnModuleInit {
     }
 
     // Add new replicas
-    for (const node of nodes) {
+    for (const node of sameGroupNodes) {
       if (!this.replicaLoad.has(node.serverId)) {
         this.replicaLoad.set(node.serverId, 0);
         this.logger.log(`New replica discovered: ${node.serverId}`);

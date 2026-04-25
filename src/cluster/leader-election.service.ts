@@ -14,7 +14,7 @@ end
 
 const EXTEND_IF_OWNER = `
 if redis.call("GET", KEYS[1]) == ARGV[1] then
-  return redis.call("EXPIRE", KEYS[1], ARGV[2])
+  return redis.call("PEXPIRE", KEYS[1], ARGV[2])
 else
   return 0
 end
@@ -43,9 +43,9 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
   private readonly enabled: boolean;
   private readonly serverId: string;
   private readonly serviceGroup: string;
-  private readonly lockTTL = 10;
-  private readonly renewalIntervalMs = 3000;
-  private readonly acquisitionIntervalMs = 3000;
+  private readonly lockTTLMs: number;
+  private readonly renewalIntervalMs: number;
+  private readonly acquisitionIntervalMs: number;
   private readonly grpcAddress: string;
 
   private isLeader = false;
@@ -63,6 +63,9 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
     this.serverId = config.grpc?.serverId ?? 'unknown';
     this.serviceGroup = config.grpc?.serviceGroup ?? 'default';
     this.grpcAddress = config.grpc?.advertisedAddress ?? '0.0.0.0:50051';
+    this.lockTTLMs = config.grpc?.leaderTTLMs ?? 2000;
+    this.renewalIntervalMs = config.grpc?.leaderRenewalMs ?? 400;
+    this.acquisitionIntervalMs = config.grpc?.leaderAcquisitionMs ?? 400;
   }
 
   async onModuleInit(): Promise<void> {
@@ -120,6 +123,15 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
   }
 
   /**
+   * Get a foreign service group's master gRPC address (reads from Redis).
+   */
+  async getForeignMasterAddress(serviceGroup: string): Promise<string | null> {
+    if (!this.enabled) return null;
+    const addressKey = `${this.keyPrefix}:cluster:leader:${serviceGroup}:address`;
+    return this.redis.get(addressKey);
+  }
+
+  /**
    * Register a listener for leadership changes.
    */
   onLeaderChange(listener: (isLeader: boolean) => void): () => void {
@@ -140,12 +152,11 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
 
   private async tryAcquire(): Promise<void> {
     const key = this.getLeaderKey();
-    const result = await this.redis.set(key, this.serverId, 'EX', this.lockTTL, 'NX');
+    const result = await this.redis.set(key, this.serverId, 'PX', this.lockTTLMs, 'NX');
 
     if (result === 'OK') {
-      // Store master address for other replicas to find
       const addressKey = `${key}:address`;
-      await this.redis.set(addressKey, this.grpcAddress, 'EX', this.lockTTL);
+      await this.redis.set(addressKey, this.grpcAddress, 'PX', this.lockTTLMs);
       this.becomeLeader();
     }
   }
@@ -176,15 +187,13 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
       1,
       key,
       this.serverId,
-      this.lockTTL.toString(),
+      this.lockTTLMs.toString(),
     )) as number;
 
     if (result === 1) {
-      // Also refresh the address key
       const addressKey = `${key}:address`;
-      await this.redis.set(addressKey, this.grpcAddress, 'EX', this.lockTTL);
+      await this.redis.set(addressKey, this.grpcAddress, 'PX', this.lockTTLMs);
     } else {
-      // Lock was lost (expired or stolen)
       this.loseLeadership();
     }
   }

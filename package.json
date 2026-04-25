@@ -30,7 +30,7 @@
     "pack": "npm run build && npm run copy-package && cd dist && npm pack --ignore-scripts && npm run print:local:instructions",
     "test": "jest --testPathIgnorePatterns integration",
     "test:watch": "jest --watch --testPathIgnorePatterns integration",
-    "test:integration": "jest --testPathPattern integration",
+    "test:integration": "jest --testPathPattern integration --runInBand",
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\""
@@ -74,9 +74,13 @@
     }
   },
   "devDependencies": {
+    "@grpc/grpc-js": "^1.14.3",
+    "@grpc/proto-loader": "^0.8.0",
     "@nestjs/common": "^11.1.19",
     "@nestjs/core": "^11.1.19",
     "@nestjs/cqrs": "^11.0.3",
+    "@nestjs/platform-express": "^11.1.19",
+    "@nestjs/testing": "^11.1.19",
     "@types/jest": "^29.5.0",
     "@types/node": "^25.6.0",
     "@types/uuid": "^10.0.0",
@@ -91,6 +95,7 @@
     "rxjs": "^7.8.2",
     "shx": "^0.4.0",
     "ts-jest": "^29.4.9",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "uuid": "^9.0.1"
   },

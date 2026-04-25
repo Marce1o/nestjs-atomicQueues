@@ -112,19 +112,11 @@ export class MessageRouter {
 
   private async clusterDispatch(entityKey: string, message: ISerializedMessage): Promise<void> {
     if (!this.masterCoordinator.isMaster()) {
-      // Not master → petition the master
       await this.petitionMaster(entityKey, message);
       return;
     }
 
-    // We ARE the master → resolve and dispatch
-    const resolution = this.masterCoordinator.resolve(entityKey);
-
-    if (resolution.isLocal) {
-      this.workerManager.enqueue(entityKey, message);
-    } else {
-      await this.forwardToReplica(resolution.replicaId, entityKey, message);
-    }
+    await this.dispatchAsMaster(entityKey, message);
   }
 
   private async clusterDispatchAndWait<R>(
@@ -136,13 +128,53 @@ export class MessageRouter {
       return this.petitionMasterAndWait<R>(entityKey, message, timeout);
     }
 
-    const resolution = this.masterCoordinator.resolve(entityKey);
+    return this.dispatchAsMasterAndWait<R>(entityKey, message, timeout);
+  }
 
+  // =========================================================================
+  // MASTER DISPATCH — handles local, cross-replica, and cross-service
+  // =========================================================================
+
+  /**
+   * Dispatch a message as the master (fire-and-forget).
+   * Called from clusterDispatch and handlePetition in gRPC server.
+   */
+  async dispatchAsMaster(entityKey: string, message: ISerializedMessage): Promise<void> {
+    // Cross-service: forward to foreign service group's master
+    if (!this.isLocalEntityType(message.entityType)) {
+      await this.forwardToForeignService(message);
+      return;
+    }
+
+    const resolution = this.masterCoordinator.resolve(entityKey);
+    if (resolution.isLocal) {
+      this.workerManager.enqueue(entityKey, message);
+    } else {
+      await this.forwardToReplica(resolution.replicaId, entityKey, message);
+    }
+  }
+
+  /**
+   * Dispatch a message as the master and wait for the result.
+   */
+  async dispatchAsMasterAndWait<R>(
+    entityKey: string,
+    message: ISerializedMessage,
+    timeout: number,
+  ): Promise<R> {
+    if (!this.isLocalEntityType(message.entityType)) {
+      return this.forwardToForeignServiceAndWait<R>(message, timeout);
+    }
+
+    const resolution = this.masterCoordinator.resolve(entityKey);
     if (resolution.isLocal) {
       return this.workerManager.enqueueAndWait<R>(entityKey, message, timeout);
     }
-
     return this.forwardToReplicaAndWait<R>(resolution.replicaId, entityKey, message, timeout);
+  }
+
+  private isLocalEntityType(entityType: string): boolean {
+    return entityType in (this.config.entities ?? {});
   }
 
   // =========================================================================
@@ -158,12 +190,14 @@ export class MessageRouter {
     }
 
     const client = await this.grpcClientPool!.getClient('master', masterAddress);
+    const deadline = new Date(Date.now() + 1500);
     await new Promise<void>((resolve, reject) => {
       (client as unknown as Record<string, Function>).petition(
         {
           entityKey,
           message: this.serializeEnvelope(message),
         },
+        { deadline },
         (err: Error | null, response: Record<string, unknown>) => {
           if (err) return reject(err);
           if (!response.accepted) return reject(new Error(response.rejectReason as string));
@@ -228,12 +262,14 @@ export class MessageRouter {
     }
 
     const client = await this.grpcClientPool!.getClient(replicaId, replicaAddress);
+    const deadline = new Date(Date.now() + 1500);
     await new Promise<void>((resolve, reject) => {
       (client as unknown as Record<string, Function>).enqueueToWorker(
         {
           entityKey,
           message: this.serializeEnvelope(message),
         },
+        { deadline },
         (err: Error | null, response: Record<string, unknown>) => {
           if (err) return reject(err);
           if (!response.accepted) return reject(new Error(response.rejectReason as string));
@@ -279,6 +315,70 @@ export class MessageRouter {
         reject(err);
       });
     });
+  }
+
+  // =========================================================================
+  // gRPC — Master → Foreign Master (Cross-Service)
+  // =========================================================================
+
+  private async forwardToForeignService(message: ISerializedMessage): Promise<void> {
+    const serviceGroup = await this.clusterDiscovery?.resolveServiceGroup(message.entityType);
+    if (!serviceGroup) {
+      this.logger.warn(
+        `No service group found for foreign entity type '${message.entityType}' — dropping`,
+      );
+      return;
+    }
+
+    const foreignAddress = await this.leaderElection?.getForeignMasterAddress(serviceGroup);
+    if (!foreignAddress) {
+      this.logger.warn(
+        `Foreign master for group '${serviceGroup}' not found — dropping`,
+      );
+      return;
+    }
+
+    const serverId = this.config.grpc?.serverId ?? 'local';
+    this.logger.log(
+      `Forwarding ${message.name} to foreign service '${serviceGroup}' at ${foreignAddress}`,
+    );
+    await this.grpcClientPool!.forward(
+      `${serviceGroup}-master`,
+      foreignAddress,
+      message,
+      serverId,
+      0,
+    );
+  }
+
+  private async forwardToForeignServiceAndWait<R>(
+    message: ISerializedMessage,
+    timeout: number,
+  ): Promise<R> {
+    const serviceGroup = await this.clusterDiscovery?.resolveServiceGroup(message.entityType);
+    if (!serviceGroup) {
+      throw new Error(
+        `No service group found for foreign entity type '${message.entityType}'`,
+      );
+    }
+
+    const foreignAddress = await this.leaderElection?.getForeignMasterAddress(serviceGroup);
+    if (!foreignAddress) {
+      throw new Error(`Foreign master for group '${serviceGroup}' not found`);
+    }
+
+    const serverId = this.config.grpc?.serverId ?? 'local';
+    this.logger.log(
+      `ForwardAndWait ${message.name} to foreign service '${serviceGroup}' at ${foreignAddress}`,
+    );
+    return this.grpcClientPool!.forwardAndWait<R>(
+      `${serviceGroup}-master`,
+      foreignAddress,
+      message,
+      serverId,
+      0,
+      timeout,
+    );
   }
 
   // =========================================================================
