@@ -46,6 +46,7 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
   private readonly lockTTL = 10;
   private readonly renewalIntervalMs = 3000;
   private readonly acquisitionIntervalMs = 3000;
+  private readonly grpcAddress: string;
 
   private isLeader = false;
   private renewalTimer: NodeJS.Timeout | null = null;
@@ -61,6 +62,7 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
     this.enabled = config.grpc?.enabled ?? false;
     this.serverId = config.grpc?.serverId ?? 'unknown';
     this.serviceGroup = config.grpc?.serviceGroup ?? 'default';
+    this.grpcAddress = config.grpc?.advertisedAddress ?? '0.0.0.0:50051';
   }
 
   async onModuleInit(): Promise<void> {
@@ -104,6 +106,20 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
   }
 
   /**
+   * Get the current master's gRPC address (reads from Redis).
+   * Returns null if no master or not in cluster mode.
+   */
+  /**
+   * Get the current master's gRPC address (reads from Redis).
+   * Returns null if no master or not in cluster mode.
+   */
+  async getMasterAddress(): Promise<string | null> {
+    if (!this.enabled) return null;
+    const addressKey = `${this.getLeaderKey()}:address`;
+    return this.redis.get(addressKey);
+  }
+
+  /**
    * Register a listener for leadership changes.
    */
   onLeaderChange(listener: (isLeader: boolean) => void): () => void {
@@ -127,6 +143,9 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
     const result = await this.redis.set(key, this.serverId, 'EX', this.lockTTL, 'NX');
 
     if (result === 'OK') {
+      // Store master address for other replicas to find
+      const addressKey = `${key}:address`;
+      await this.redis.set(addressKey, this.grpcAddress, 'EX', this.lockTTL);
       this.becomeLeader();
     }
   }
@@ -160,7 +179,11 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
       this.lockTTL.toString(),
     )) as number;
 
-    if (result !== 1) {
+    if (result === 1) {
+      // Also refresh the address key
+      const addressKey = `${key}:address`;
+      await this.redis.set(addressKey, this.grpcAddress, 'EX', this.lockTTL);
+    } else {
       // Lock was lost (expired or stolen)
       this.loseLeadership();
     }

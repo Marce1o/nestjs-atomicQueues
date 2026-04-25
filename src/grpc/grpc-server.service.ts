@@ -93,8 +93,9 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
     });
 
     const proto = grpc.loadPackageDefinition(packageDef);
-    const service = (proto.atomicqueues as Record<string, Record<string, unknown>>).v1
-      .AtomicQueuesNode;
+    const ServiceDef = (proto.atomicqueues as Record<string, Record<string, unknown>>).v1
+      .AtomicQueuesNode as Record<string, unknown>;
+    const service = ServiceDef.service ?? ServiceDef;
 
     this.server = new grpc.Server();
     this.server.addService(service, {
