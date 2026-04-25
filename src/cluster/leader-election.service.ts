@@ -3,22 +3,7 @@ import Redis from 'ioredis';
 import { IAtomicQueuesModuleConfig } from '../domain';
 import { resolveKeyPrefix } from '../utils';
 import { ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG } from '../services/constants';
-
-const RELEASE_IF_OWNER = `
-if redis.call("GET", KEYS[1]) == ARGV[1] then
-  return redis.call("DEL", KEYS[1])
-else
-  return 0
-end
-`;
-
-const EXTEND_IF_OWNER = `
-if redis.call("GET", KEYS[1]) == ARGV[1] then
-  return redis.call("PEXPIRE", KEYS[1], ARGV[2])
-else
-  return 0
-end
-`;
+import { ClusterDiscoveryService, ClusterNode } from './cluster-discovery.service';
 
 @Injectable()
 export class LeaderElectionService implements OnModuleInit, OnApplicationShutdown {
@@ -27,31 +12,22 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
   private readonly enabled: boolean;
   private readonly serverId: string;
   private readonly serviceGroup: string;
-  private readonly lockTTLMs: number;
-  private readonly renewalIntervalMs: number;
-  private readonly acquisitionIntervalMs: number;
-  private readonly grpcAddress: string;
 
   private isLeader = false;
   private leaderEpoch = 0;
-  private lastRenewalSuccess = 0;
-  private renewalTimer: NodeJS.Timeout | null = null;
-  private acquisitionTimer: NodeJS.Timeout | null = null;
+  private unsubscribeRingChange: (() => void) | null = null;
 
   private readonly leaderChangeListeners: Array<(isLeader: boolean) => void> = [];
 
   constructor(
     @Inject(ATOMIC_QUEUES_REDIS) private readonly redis: Redis,
     @Inject(ATOMIC_QUEUES_CONFIG) config: IAtomicQueuesModuleConfig,
+    private readonly clusterDiscovery: ClusterDiscoveryService,
   ) {
     this.keyPrefix = resolveKeyPrefix(config);
     this.enabled = config.grpc?.enabled ?? false;
     this.serverId = config.grpc?.serverId ?? 'unknown';
     this.serviceGroup = config.grpc?.serviceGroup ?? 'default';
-    this.grpcAddress = config.grpc?.advertisedAddress ?? '0.0.0.0:50051';
-    this.lockTTLMs = config.grpc?.leaderTTLMs ?? 2000;
-    this.renewalIntervalMs = config.grpc?.leaderRenewalMs ?? 400;
-    this.acquisitionIntervalMs = config.grpc?.leaderAcquisitionMs ?? 400;
   }
 
   async onModuleInit(): Promise<void> {
@@ -60,24 +36,21 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
       return;
     }
 
-    await this.tryAcquire();
+    const nodes = await this.clusterDiscovery.getNodes();
+    await this.recomputeLeader(nodes);
 
-    this.acquisitionTimer = setInterval(() => {
-      if (!this.isLeader) {
-        this.tryAcquire().catch((err) => {
-          this.logger.error(`Leader acquisition failed: ${(err as Error).message}`);
-        });
-      }
-    }, this.acquisitionIntervalMs);
+    this.unsubscribeRingChange = this.clusterDiscovery.onRingChange((updatedNodes) => {
+      this.recomputeLeader(updatedNodes).catch((err) => {
+        this.logger.error(`Leader recomputation failed: ${(err as Error).message}`);
+      });
+    });
   }
 
   async onApplicationShutdown(): Promise<void> {
-    if (this.renewalTimer) clearInterval(this.renewalTimer);
-    if (this.acquisitionTimer) clearInterval(this.acquisitionTimer);
-
-    if (this.isLeader && this.enabled) {
-      await this.release();
+    if (this.unsubscribeRingChange) {
+      this.unsubscribeRingChange();
     }
+    this.isLeader = false;
   }
 
   // =========================================================================
@@ -92,16 +65,28 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
     return this.leaderEpoch;
   }
 
+  updateSeenEpoch(epoch: number): void {
+    if (epoch > this.leaderEpoch) {
+      this.leaderEpoch = epoch;
+    }
+  }
+
   async getMasterAddress(): Promise<string | null> {
     if (!this.enabled) return null;
-    const addressKey = `${this.getLeaderKey()}:address`;
-    return this.redis.get(addressKey);
+    const nodes = await this.clusterDiscovery.getNodes();
+    const leader = nodes
+      .filter((n) => n.serviceGroup === this.serviceGroup)
+      .sort((a, b) => a.serverId.localeCompare(b.serverId))[0];
+    return leader?.grpcAddress ?? null;
   }
 
   async getForeignMasterAddress(serviceGroup: string): Promise<string | null> {
     if (!this.enabled) return null;
-    const addressKey = `${this.keyPrefix}:cluster:leader:${serviceGroup}:address`;
-    return this.redis.get(addressKey);
+    const nodes = await this.clusterDiscovery.getNodes();
+    const leader = nodes
+      .filter((n) => n.serviceGroup === serviceGroup)
+      .sort((a, b) => a.serverId.localeCompare(b.serverId))[0];
+    return leader?.grpcAddress ?? null;
   }
 
   onLeaderChange(listener: (isLeader: boolean) => void): () => void {
@@ -113,93 +98,29 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
   }
 
   // =========================================================================
-  // INTERNAL — Lock Management
+  // INTERNAL
   // =========================================================================
 
-  private getLeaderKey(): string {
-    return `${this.keyPrefix}:cluster:leader:${this.serviceGroup}`;
-  }
+  private async recomputeLeader(nodes: ClusterNode[]): Promise<void> {
+    const sameGroup = nodes
+      .filter((n) => n.serviceGroup === this.serviceGroup)
+      .sort((a, b) => a.serverId.localeCompare(b.serverId));
 
-  private async tryAcquire(): Promise<void> {
-    const key = this.getLeaderKey();
-    const result = await this.redis.set(key, this.serverId, 'PX', this.lockTTLMs, 'NX');
+    const leaderId = sameGroup[0]?.serverId ?? null;
 
-    if (result === 'OK') {
-      const epochKey = `${key}:epoch`;
+    if (leaderId === this.serverId && !this.isLeader) {
+      this.isLeader = true;
+      const epochKey = `${this.keyPrefix}:cluster:leader:${this.serviceGroup}:epoch`;
       this.leaderEpoch = await this.redis.incr(epochKey);
-
-      const addressKey = `${key}:address`;
-      const pipeline = this.redis.pipeline();
-      pipeline.set(addressKey, this.grpcAddress, 'PX', this.lockTTLMs);
-      pipeline.pexpire(epochKey, this.lockTTLMs * 10);
-      await pipeline.exec();
-
-      this.lastRenewalSuccess = Date.now();
-      this.becomeLeader();
+      this.logger.log(
+        `This server (${this.serverId}) is now the leader for group '${this.serviceGroup}' (epoch ${this.leaderEpoch})`,
+      );
+      this.notifyListeners(true);
+    } else if (leaderId !== this.serverId && this.isLeader) {
+      this.isLeader = false;
+      this.logger.warn(`This server lost leadership for group '${this.serviceGroup}'`);
+      this.notifyListeners(false);
     }
-  }
-
-  private becomeLeader(): void {
-    if (this.isLeader) return;
-
-    this.isLeader = true;
-    this.logger.log(
-      `This server (${this.serverId}) is now the leader for group '${this.serviceGroup}' (epoch ${this.leaderEpoch})`,
-    );
-
-    this.renewalTimer = setInterval(() => {
-      this.renew().catch((err) => {
-        this.logger.error(`Leader lock renewal failed: ${(err as Error).message}`);
-        this.loseLeadership();
-      });
-    }, this.renewalIntervalMs);
-
-    this.notifyListeners(true);
-  }
-
-  private async renew(): Promise<void> {
-    if (Date.now() - this.lastRenewalSuccess > this.lockTTLMs * 0.6) {
-      this.loseLeadership();
-      return;
-    }
-
-    const key = this.getLeaderKey();
-    const result = (await this.redis.eval(
-      EXTEND_IF_OWNER,
-      1,
-      key,
-      this.serverId,
-      this.lockTTLMs.toString(),
-    )) as number;
-
-    if (result === 1) {
-      this.lastRenewalSuccess = Date.now();
-      const addressKey = `${key}:address`;
-      await this.redis.set(addressKey, this.grpcAddress, 'PX', this.lockTTLMs);
-    } else {
-      this.loseLeadership();
-    }
-  }
-
-  private loseLeadership(): void {
-    if (!this.isLeader) return;
-
-    this.isLeader = false;
-    this.logger.warn(`This server lost leadership for group '${this.serviceGroup}'`);
-
-    if (this.renewalTimer) {
-      clearInterval(this.renewalTimer);
-      this.renewalTimer = null;
-    }
-
-    this.notifyListeners(false);
-  }
-
-  private async release(): Promise<void> {
-    const key = this.getLeaderKey();
-    await this.redis.eval(RELEASE_IF_OWNER, 1, key, this.serverId);
-    this.isLeader = false;
-    this.logger.log(`Released leadership for group '${this.serviceGroup}'`);
   }
 
   private notifyListeners(isLeader: boolean): void {

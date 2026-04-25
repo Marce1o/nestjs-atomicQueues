@@ -1,4 +1,4 @@
-import { Injectable, Logger, Inject, Optional, OnApplicationShutdown } from '@nestjs/common';
+import { Injectable, Logger, Inject, Optional, OnModuleInit, OnApplicationShutdown } from '@nestjs/common';
 import { IAtomicQueuesModuleConfig, ISerializedMessage } from '../domain';
 import { ATOMIC_QUEUES_CONFIG } from '../services/constants';
 import { HandlerExecutor } from '../services/handler-executor';
@@ -9,7 +9,7 @@ import { EntityWorker } from './entity-worker';
 const DEFAULT_IDLE_TIMEOUT = 30000;
 
 @Injectable()
-export class EntityWorkerManager implements OnApplicationShutdown {
+export class EntityWorkerManager implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(EntityWorkerManager.name);
   private readonly workers = new Map<string, EntityWorker>();
   private readonly isClusterMode: boolean;
@@ -31,11 +31,35 @@ export class EntityWorkerManager implements OnApplicationShutdown {
     this.serverId = config.grpc?.serverId ?? 'local';
   }
 
+  async onModuleInit(): Promise<void> {
+    if (!this.walService || this.config.wal?.enabled === false) return;
+
+    await this.walService.recover();
+
+    const pending = await this.walService.getPendingMessages();
+    for (const msg of pending) {
+      const entityKey = `${msg.entityType}:${msg.entityId}`;
+      let worker = this.workers.get(entityKey);
+      if (!worker) worker = this.spawnWorker(entityKey);
+      worker.enqueue(msg);
+    }
+
+    if (pending.length > 0) {
+      this.logger.log(`WAL recovery: re-dispatched ${pending.length} pending messages`);
+    }
+
+    this.walService.startCleanup();
+  }
+
   setOnTeardown(callback: (entityKey: string) => void): void {
     this.onTeardownCallback = callback;
   }
 
   async onApplicationShutdown(): Promise<void> {
+    if (this.walService) {
+      this.walService.stopCleanup();
+    }
+
     const drainPromises: Promise<void>[] = [];
     for (const [, worker] of this.workers) {
       drainPromises.push(worker.drain());
@@ -58,9 +82,13 @@ export class EntityWorkerManager implements OnApplicationShutdown {
   // PUBLIC API
   // =========================================================================
 
+  private get walEnabled(): boolean {
+    return !!this.walService && this.config.wal?.enabled !== false;
+  }
+
   async enqueue(entityKey: string, message: ISerializedMessage): Promise<void> {
-    if (this.walService) {
-      await this.walService.write(entityKey, message);
+    if (this.walEnabled) {
+      await this.walService!.write(entityKey, message);
     }
 
     let worker = this.workers.get(entityKey);
@@ -147,20 +175,20 @@ export class EntityWorkerManager implements OnApplicationShutdown {
     const worker = new EntityWorker(
       entityKey,
       async (message, ek) => {
-        if (this.walService) {
-          await this.walService.markDispatched(ek, message.id, 0);
+        if (this.walEnabled) {
+          await this.walService!.markDispatched(ek, message.id, 0);
         }
         return this.handlerExecutor.execute(message, ek);
       },
       (message, result) => {
-        if (this.walService) {
-          this.walService.markCompleted(entityKey, message.id).catch(() => {});
+        if (this.walEnabled) {
+          this.walService!.markCompleted(entityKey, message.id).catch(() => {});
         }
         this.resolveResult(message, result);
       },
       (message, error) => {
-        if (this.walService) {
-          this.walService
+        if (this.walEnabled) {
+          this.walService!
             .markFailed(entityKey, message.id, error.message, error.stack)
             .catch(() => {});
         }

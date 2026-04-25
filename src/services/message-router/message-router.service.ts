@@ -283,7 +283,11 @@ export class MessageRouter {
       const deadline = new Date(Date.now() + 1500);
       await new Promise<void>((resolve, reject) => {
         (client as unknown as Record<string, Function>).enqueueToWorker(
-          { entityKey, message: this.serializeEnvelope(message) },
+          {
+            entityKey,
+            message: this.serializeEnvelope(message),
+            masterEpoch: this.leaderElection?.epoch ?? 0,
+          },
           { deadline },
           (err: Error | null, response: Record<string, unknown>) => {
             if (err) return reject(err);
@@ -327,6 +331,7 @@ export class MessageRouter {
         const stream = (client as unknown as Record<string, Function>).enqueueToWorkerAndWait({
           entityKey,
           message: this.serializeEnvelope(message),
+          masterEpoch: this.leaderElection?.epoch ?? 0,
         });
 
         stream.on('data', (response: Record<string, unknown>) => {

@@ -163,12 +163,15 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
     try {
       const requestEpoch = call.request.masterEpoch as number;
       const currentEpoch = this.leaderElection.epoch;
-      if (requestEpoch > 0 && currentEpoch > 0 && requestEpoch < currentEpoch) {
+      if (currentEpoch > 0 && requestEpoch < currentEpoch) {
         callback(null, {
           accepted: false,
           rejectReason: `Stale epoch ${requestEpoch} < ${currentEpoch}`,
         });
         return;
+      }
+      if (requestEpoch > 0) {
+        this.leaderElection.updateSeenEpoch(requestEpoch);
       }
 
       const entityKey = call.request.entityKey as string;
@@ -184,6 +187,17 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
 
   private async handleEnqueueToWorkerAndWait(call: GrpcServerStreamingCall): Promise<void> {
     try {
+      const requestEpoch = call.request.masterEpoch as number;
+      const currentEpoch = this.leaderElection.epoch;
+      if (currentEpoch > 0 && requestEpoch < currentEpoch) {
+        call.write({ correlationId: '', error: `Stale epoch ${requestEpoch} < ${currentEpoch}` });
+        call.end();
+        return;
+      }
+      if (requestEpoch > 0) {
+        this.leaderElection.updateSeenEpoch(requestEpoch);
+      }
+
       const entityKey = call.request.entityKey as string;
       const envelope = call.request.message as Record<string, unknown>;
       const message = this.deserializeEnvelope(envelope);
