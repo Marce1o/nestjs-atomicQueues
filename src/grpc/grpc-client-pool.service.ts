@@ -5,14 +5,19 @@ import { IAtomicQueuesModuleConfig, ISerializedMessage, IMessageRef } from '../d
 import { ATOMIC_QUEUES_CONFIG } from '../services/constants';
 
 /** Minimal shape of a gRPC client instance (from @grpc/grpc-js). */
+interface GrpcCallOptions {
+  deadline?: Date;
+}
 interface GrpcClientInstance {
   forward(
     envelope: Record<string, unknown>,
+    options: GrpcCallOptions,
     callback: (err: Error | null, response: Record<string, unknown>) => void,
   ): void;
   forwardAndWait(envelope: Record<string, unknown>): GrpcClientStream;
   ping(
     request: Record<string, unknown>,
+    options: GrpcCallOptions,
     callback: (err: Error | null, response: Record<string, unknown>) => void,
   ): void;
   close(): void;
@@ -152,8 +157,9 @@ export class GrpcClientPool implements OnApplicationShutdown {
       hops: hops + 1,
     };
 
+    const deadline = new Date(Date.now() + 1500);
     return new Promise<IMessageRef>((resolve, reject) => {
-      client.forward(envelope, (err: Error | null, response: Record<string, unknown>) => {
+      client.forward(envelope, { deadline }, (err: Error | null, response: Record<string, unknown>) => {
         if (err) {
           reject(new Error(`gRPC forward to ${serverId} failed: ${err.message}`));
           return;
@@ -237,9 +243,11 @@ export class GrpcClientPool implements OnApplicationShutdown {
     const client = await this.getClient(serverId, address);
     const myServerId = this.config.grpc?.serverId ?? 'unknown';
 
+    const deadline = new Date(Date.now() + 1000);
     return new Promise((resolve, _reject) => {
       client.ping(
         { senderId: myServerId },
+        { deadline },
         (err: Error | null, response: Record<string, unknown>) => {
           if (err) {
             resolve({ healthy: false, queueDepth: 0 });

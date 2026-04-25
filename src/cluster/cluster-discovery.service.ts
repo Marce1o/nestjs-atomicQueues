@@ -16,7 +16,7 @@ export interface ClusterNode {
 
 const HEARTBEAT_SCRIPT = `
 redis.call("HSET", KEYS[1], "heartbeat_at", ARGV[1])
-redis.call("EXPIRE", KEYS[1], ARGV[2])
+redis.call("PEXPIRE", KEYS[1], ARGV[2])
 return redis.call("HGET", KEYS[1], "ring_version")
 `;
 
@@ -54,8 +54,8 @@ export class ClusterDiscoveryService implements OnModuleInit, OnApplicationShutd
     this.serverId = config.grpc?.serverId ?? 'unknown';
     this.serviceGroup = config.grpc?.serviceGroup ?? 'default';
     this.grpcAddress = config.grpc?.advertisedAddress ?? '0.0.0.0:50051';
-    this.heartbeatIntervalMs = 5000;
-    this.nodeTTL = 15;
+    this.heartbeatIntervalMs = config.grpc?.heartbeatMs ?? 400;
+    this.nodeTTL = config.grpc?.nodeTTLMs ?? 1500;
   }
 
   async onModuleInit(): Promise<void> {
@@ -165,29 +165,51 @@ export class ClusterDiscoveryService implements OnModuleInit, OnApplicationShutd
     return this.serverId;
   }
 
+  /**
+   * Resolve which service group owns an entity type (via Redis registry).
+   */
+  async resolveServiceGroup(entityType: string): Promise<string | null> {
+    const registryKey = `${this.keyPrefix}:cluster:entity-registry:${entityType}`;
+    return this.redis.get(registryKey);
+  }
+
   // =========================================================================
   // INTERNAL — Registration
   // =========================================================================
 
   private async registerNode(): Promise<void> {
     const key = this.getNodeKey(this.serverId);
+    const entityTypes = Object.keys(this.config.entities ?? {});
     const data: Record<string, string> = {
       server_id: this.serverId,
       grpc_address: this.grpcAddress,
       service_group: this.serviceGroup,
-      entity_types: '', // TODO: populated from EntityTypeRegistry
+      entity_types: entityTypes.join(','),
       ring_version: '0',
       started_at: Date.now().toString(),
       heartbeat_at: Date.now().toString(),
     };
 
     await this.redis.hset(key, data);
-    await this.redis.expire(key, this.nodeTTL);
+    await this.redis.pexpire(key, this.nodeTTL);
+
+    // Register entity type → service group mapping for cross-service routing
+    for (const et of entityTypes) {
+      const registryKey = `${this.keyPrefix}:cluster:entity-registry:${et}`;
+      await this.redis.set(registryKey, this.serviceGroup, 'PX', this.nodeTTL * 2);
+    }
   }
 
   private async heartbeat(): Promise<void> {
     const key = this.getNodeKey(this.serverId);
     await this.redis.eval(HEARTBEAT_SCRIPT, 1, key, Date.now().toString(), this.nodeTTL.toString());
+
+    // Refresh entity type registry TTLs
+    const entityTypes = Object.keys(this.config.entities ?? {});
+    for (const et of entityTypes) {
+      const registryKey = `${this.keyPrefix}:cluster:entity-registry:${et}`;
+      await this.redis.pexpire(registryKey, this.nodeTTL * 2);
+    }
   }
 
   private async reconcile(): Promise<void> {

@@ -58,6 +58,16 @@ export interface IGrpcConfig {
   tls?: { certPath: string; keyPath: string; caPath?: string };
   /** Max forwarding hops to prevent loops (default: 3) */
   maxForwardHops?: number;
+  /** Heartbeat interval in ms (default: 400) */
+  heartbeatMs?: number;
+  /** Node considered dead after this many ms without heartbeat (default: 1500) */
+  nodeTTLMs?: number;
+  /** Leader lock TTL in ms (default: 2000) */
+  leaderTTLMs?: number;
+  /** Leader lock renewal interval in ms (default: 400) */
+  leaderRenewalMs?: number;
+  /** Leader acquisition poll interval in ms (default: 400) */
+  leaderAcquisitionMs?: number;
 }
 
 /**

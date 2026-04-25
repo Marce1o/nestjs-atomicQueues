@@ -224,18 +224,8 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
       const envelope = call.request.message as Record<string, unknown>;
       const message = this.deserializeEnvelope(envelope);
 
-      // Master resolves: which replica?
-      const resolution = this.masterCoordinator.resolve(entityKey);
-
-      if (resolution.isLocal) {
-        this.workerManager.enqueue(entityKey, message);
-      } else {
-        // TODO: forward to resolution.replicaId via GrpcClientPool.enqueueToWorker()
-        this.logger.warn(
-          `Cross-replica forward to ${resolution.replicaId} — falling back to local`,
-        );
-        this.workerManager.enqueue(entityKey, message);
-      }
+      // Delegate to MessageRouter's master dispatch (handles cross-replica + cross-service)
+      await this.router.dispatchAsMaster(entityKey, message);
 
       callback(null, { accepted: true, rejectReason: '' });
     } catch (err) {
@@ -249,7 +239,7 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
       const envelope = call.request.message as Record<string, unknown>;
       const message = this.deserializeEnvelope(envelope);
 
-      const result = await this.workerManager.enqueueAndWait(entityKey, message, 60000);
+      const result = await this.router.dispatchAsMasterAndWait(entityKey, message, 60000);
 
       call.write({
         correlationId: message.correlationId ?? '',
