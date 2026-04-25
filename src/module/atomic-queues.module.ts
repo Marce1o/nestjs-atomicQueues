@@ -3,6 +3,7 @@ import { DiscoveryModule, DiscoveryService, MetadataScanner } from '@nestjs/core
 import Redis from 'ioredis';
 import { v4 as uuidv4 } from 'uuid';
 import { IAtomicQueuesModuleConfig } from '../domain';
+import { initFastId } from '../utils';
 import {
   ATOMIC_QUEUES_REDIS,
   ATOMIC_QUEUES_CONFIG,
@@ -55,6 +56,7 @@ export interface AtomicQueuesModuleAsyncOptions {
 export class AtomicQueuesModule {
   static forRoot(config: IAtomicQueuesModuleConfig): DynamicModule {
     const serverId = config.grpc?.serverId ?? uuidv4();
+    initFastId(serverId);
 
     return {
       module: AtomicQueuesModule,
@@ -100,7 +102,11 @@ export class AtomicQueuesModule {
         },
         {
           provide: ATOMIC_QUEUES_SERVER_ID,
-          useFactory: (config: IAtomicQueuesModuleConfig) => config.grpc?.serverId ?? uuidv4(),
+          useFactory: (config: IAtomicQueuesModuleConfig) => {
+            const sid = config.grpc?.serverId ?? uuidv4();
+            initFastId(sid);
+            return sid;
+          },
           inject: [ATOMIC_QUEUES_CONFIG],
         },
         {

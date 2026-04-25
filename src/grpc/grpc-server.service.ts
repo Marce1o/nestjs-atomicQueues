@@ -10,7 +10,7 @@ import * as path from 'path';
 import { IAtomicQueuesModuleConfig, ISerializedMessage } from '../domain';
 import { MessageRouter } from '../services/message-router';
 import { EntityWorkerManager } from '../workers';
-import { MasterCoordinator } from '../cluster';
+import { MasterCoordinator, LeaderElectionService } from '../cluster';
 import { ATOMIC_QUEUES_CONFIG } from '../services/constants';
 
 interface GrpcUnaryCall {
@@ -63,6 +63,7 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
     private readonly workerManager: EntityWorkerManager,
     @Inject(forwardRef(() => MasterCoordinator))
     private readonly masterCoordinator: MasterCoordinator,
+    private readonly leaderElection: LeaderElectionService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -158,13 +159,23 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
     }
   }
 
-  private handleEnqueueToWorker(call: GrpcUnaryCall, callback: GrpcCallback): void {
+  private async handleEnqueueToWorker(call: GrpcUnaryCall, callback: GrpcCallback): Promise<void> {
     try {
+      const requestEpoch = call.request.masterEpoch as number;
+      const currentEpoch = this.leaderElection.epoch;
+      if (requestEpoch > 0 && currentEpoch > 0 && requestEpoch < currentEpoch) {
+        callback(null, {
+          accepted: false,
+          rejectReason: `Stale epoch ${requestEpoch} < ${currentEpoch}`,
+        });
+        return;
+      }
+
       const entityKey = call.request.entityKey as string;
       const envelope = call.request.message as Record<string, unknown>;
       const message = this.deserializeEnvelope(envelope);
 
-      this.workerManager.enqueue(entityKey, message);
+      await this.workerManager.enqueue(entityKey, message);
       callback(null, { accepted: true, rejectReason: '' });
     } catch (err) {
       callback(null, { accepted: false, rejectReason: (err as Error).message });

@@ -20,22 +20,6 @@ else
 end
 `;
 
-/**
- * Leader Election Service.
- *
- * Within each service group (set of replicas running the same code),
- * exactly ONE replica is the leader. Adapted from v1's ServiceQueueManager.
- *
- * Uses Redis SET NX with TTL for distributed lock:
- * - Lock key: `{prefix}:cluster:leader:{serviceGroup}`
- * - Lock value: serverId of the leader
- * - TTL: 10s, renewed every 3s
- *
- * Leader responsibilities:
- * - WAL recovery for the service group on startup
- * - Ring change coordination
- * - Arbitrating conflicting claims during rapid ring changes
- */
 @Injectable()
 export class LeaderElectionService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(LeaderElectionService.name);
@@ -49,6 +33,8 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
   private readonly grpcAddress: string;
 
   private isLeader = false;
+  private leaderEpoch = 0;
+  private lastRenewalSuccess = 0;
   private renewalTimer: NodeJS.Timeout | null = null;
   private acquisitionTimer: NodeJS.Timeout | null = null;
 
@@ -56,7 +42,7 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
 
   constructor(
     @Inject(ATOMIC_QUEUES_REDIS) private readonly redis: Redis,
-    @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
+    @Inject(ATOMIC_QUEUES_CONFIG) config: IAtomicQueuesModuleConfig,
   ) {
     this.keyPrefix = resolveKeyPrefix(config);
     this.enabled = config.grpc?.enabled ?? false;
@@ -70,15 +56,12 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
 
   async onModuleInit(): Promise<void> {
     if (!this.enabled) {
-      // Single-server mode: this node is always the leader
       this.isLeader = true;
       return;
     }
 
-    // Try to acquire leadership
     await this.tryAcquire();
 
-    // Start periodic acquisition attempts (in case current leader dies)
     this.acquisitionTimer = setInterval(() => {
       if (!this.isLeader) {
         this.tryAcquire().catch((err) => {
@@ -101,39 +84,26 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
   // PUBLIC API
   // =========================================================================
 
-  /**
-   * Check if this server is the leader.
-   */
   getIsLeader(): boolean {
     return this.isLeader;
   }
 
-  /**
-   * Get the current master's gRPC address (reads from Redis).
-   * Returns null if no master or not in cluster mode.
-   */
-  /**
-   * Get the current master's gRPC address (reads from Redis).
-   * Returns null if no master or not in cluster mode.
-   */
+  get epoch(): number {
+    return this.leaderEpoch;
+  }
+
   async getMasterAddress(): Promise<string | null> {
     if (!this.enabled) return null;
     const addressKey = `${this.getLeaderKey()}:address`;
     return this.redis.get(addressKey);
   }
 
-  /**
-   * Get a foreign service group's master gRPC address (reads from Redis).
-   */
   async getForeignMasterAddress(serviceGroup: string): Promise<string | null> {
     if (!this.enabled) return null;
     const addressKey = `${this.keyPrefix}:cluster:leader:${serviceGroup}:address`;
     return this.redis.get(addressKey);
   }
 
-  /**
-   * Register a listener for leadership changes.
-   */
   onLeaderChange(listener: (isLeader: boolean) => void): () => void {
     this.leaderChangeListeners.push(listener);
     return () => {
@@ -155,8 +125,16 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
     const result = await this.redis.set(key, this.serverId, 'PX', this.lockTTLMs, 'NX');
 
     if (result === 'OK') {
+      const epochKey = `${key}:epoch`;
+      this.leaderEpoch = await this.redis.incr(epochKey);
+
       const addressKey = `${key}:address`;
-      await this.redis.set(addressKey, this.grpcAddress, 'PX', this.lockTTLMs);
+      const pipeline = this.redis.pipeline();
+      pipeline.set(addressKey, this.grpcAddress, 'PX', this.lockTTLMs);
+      pipeline.pexpire(epochKey, this.lockTTLMs * 10);
+      await pipeline.exec();
+
+      this.lastRenewalSuccess = Date.now();
       this.becomeLeader();
     }
   }
@@ -166,10 +144,9 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
 
     this.isLeader = true;
     this.logger.log(
-      `This server (${this.serverId}) is now the leader for group '${this.serviceGroup}'`,
+      `This server (${this.serverId}) is now the leader for group '${this.serviceGroup}' (epoch ${this.leaderEpoch})`,
     );
 
-    // Start renewal
     this.renewalTimer = setInterval(() => {
       this.renew().catch((err) => {
         this.logger.error(`Leader lock renewal failed: ${(err as Error).message}`);
@@ -181,6 +158,11 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
   }
 
   private async renew(): Promise<void> {
+    if (Date.now() - this.lastRenewalSuccess > this.lockTTLMs * 0.6) {
+      this.loseLeadership();
+      return;
+    }
+
     const key = this.getLeaderKey();
     const result = (await this.redis.eval(
       EXTEND_IF_OWNER,
@@ -191,6 +173,7 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
     )) as number;
 
     if (result === 1) {
+      this.lastRenewalSuccess = Date.now();
       const addressKey = `${key}:address`;
       await this.redis.set(addressKey, this.grpcAddress, 'PX', this.lockTTLMs);
     } else {

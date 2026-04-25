@@ -316,7 +316,10 @@ export class WalService {
 
   private async cleanup(): Promise<void> {
     const indexKey = this.walIndexKey();
-    const members = await this.redis.zrange(indexKey, 0, -1);
+    const staleThreshold = Date.now() - this.entryTTL * 1000;
+    const members = await this.redis.zrangebyscore(indexKey, 0, staleThreshold);
+
+    if (members.length === 0) return;
 
     let cleaned = 0;
     for (const member of members) {
@@ -328,8 +331,10 @@ export class WalService {
       const state = await this.redis.hget(entryKey, 'state');
 
       if (!state || state === 'completed' || state === 'failed' || state === 'interrupted') {
-        await this.redis.del(entryKey);
-        await this.redis.zrem(indexKey, member);
+        const pipeline = this.redis.pipeline();
+        pipeline.del(entryKey);
+        pipeline.zrem(indexKey, member);
+        await pipeline.exec();
         cleaned++;
       }
     }

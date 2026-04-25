@@ -202,14 +202,15 @@ export class ClusterDiscoveryService implements OnModuleInit, OnApplicationShutd
 
   private async heartbeat(): Promise<void> {
     const key = this.getNodeKey(this.serverId);
-    await this.redis.eval(HEARTBEAT_SCRIPT, 1, key, Date.now().toString(), this.nodeTTL.toString());
-
-    // Refresh entity type registry TTLs
     const entityTypes = Object.keys(this.config.entities ?? {});
+    const pipeline = this.redis.pipeline();
+
+    pipeline.eval(HEARTBEAT_SCRIPT, 1, key, Date.now().toString(), this.nodeTTL.toString());
     for (const et of entityTypes) {
-      const registryKey = `${this.keyPrefix}:cluster:entity-registry:${et}`;
-      await this.redis.pexpire(registryKey, this.nodeTTL * 2);
+      pipeline.pexpire(`${this.keyPrefix}:cluster:entity-registry:${et}`, this.nodeTTL * 2);
     }
+
+    await pipeline.exec();
   }
 
   private async reconcile(): Promise<void> {

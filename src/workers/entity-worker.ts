@@ -27,12 +27,18 @@ export class EntityWorker {
     private readonly onError: (message: ISerializedMessage, error: Error) => void,
     private readonly onIdle: (entityKey: string) => void,
     private readonly idleTimeoutMs: number,
+    private readonly maxQueueDepth: number = 0,
   ) {}
 
   /**
    * Enqueue a message. If not currently processing, starts immediately.
    */
   enqueue(message: ISerializedMessage): void {
+    if (this.maxQueueDepth > 0 && this.queue.length >= this.maxQueueDepth) {
+      throw new Error(
+        `Backpressure: ${this.entityKey} queue depth ${this.queue.length} >= ${this.maxQueueDepth}`,
+      );
+    }
     this.queue.push(message);
     this.clearIdleTimer();
     this._lastActiveAt = Date.now();
