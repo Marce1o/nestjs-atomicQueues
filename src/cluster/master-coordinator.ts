@@ -73,6 +73,10 @@ export class MasterCoordinator implements OnModuleInit {
   } {
     const epoch = this.isClusterMode ? this.leaderElection.epoch : 0;
 
+    if (this.rebuilding) {
+      return { replicaId: this.localReplicaId, isLocal: true, needsSpawn: true, epoch };
+    }
+
     if (!this.isClusterMode || !this.isMaster()) {
       const existing = this.assignments.has(entityKey);
       if (!existing) {

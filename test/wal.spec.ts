@@ -306,23 +306,14 @@ describe('WalService', () => {
       expect(deadLettered.deadLetterReason).toContain('interrupted');
     });
 
-    it('should retry interrupted messages when policy is retry', async () => {
+    it('should always dead-letter dispatched messages (at-most-once)', async () => {
       const msg = createMessage({ id: 'inflight-2', attempts: 0, maxAttempts: 3 });
       await wal.write('account:a-1', msg);
       await wal.markDispatched('account:a-1', 'inflight-2', 0);
 
-      const result = await wal.recover({ account: 'retry' });
-      expect(result.reEnqueued).toBe(1);
-      expect(result.interrupted).toBe(0);
-    });
-
-    it('should dead-letter when retry exceeds max attempts', async () => {
-      const msg = createMessage({ id: 'inflight-3', attempts: 2, maxAttempts: 3 });
-      await wal.write('account:a-1', msg);
-      await wal.markDispatched('account:a-1', 'inflight-3', 0);
-
-      const result = await wal.recover({ account: 'retry' });
+      const result = await wal.recover();
       expect(result.interrupted).toBe(1);
+      expect(result.reEnqueued).toBe(0);
       expect(redis._lists['test:dead:account']).toHaveLength(1);
     });
 

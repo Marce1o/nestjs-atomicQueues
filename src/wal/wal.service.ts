@@ -161,10 +161,7 @@ export class WalService {
   // RECOVERY — run on startup to resolve orphaned entries
   // =========================================================================
 
-  async recover(
-    onInterruptPolicy: Record<string, 'dead-letter' | 'retry'> = {},
-    defaultPolicy: 'dead-letter' | 'retry' = 'dead-letter',
-  ): Promise<IWalRecoveryResult> {
+  async recover(): Promise<IWalRecoveryResult> {
     const indexKey = this.walIndexKey();
     const members = await this.redis.zrange(indexKey, 0, -1);
 
@@ -172,18 +169,13 @@ export class WalService {
     let interrupted = 0;
     let cleaned = 0;
 
-    const pendingMessages: ISerializedMessage[] = [];
-
     for (const member of members) {
-      // entityKey can itself contain colons (e.g. "account:a-123")
-      // member is "account:a-123:msg-uuid" — split and take last segment as messageId
       const parts = member.split(':');
       const messageId = parts[parts.length - 1];
       const entityKey = parts.slice(0, -1).join(':');
 
       const entry = await this.getEntry(entityKey, messageId);
       if (!entry) {
-        // Stale index entry — remove it
         await this.redis.zrem(indexKey, member);
         cleaned++;
         continue;
@@ -191,35 +183,17 @@ export class WalService {
 
       switch (entry.state) {
         case 'enqueued':
-          // Handler never ran — safe to re-dispatch
-          pendingMessages.push(entry.message);
           reEnqueued++;
           break;
 
         case 'dispatched': {
-          // INTERRUPTED — process crashed during handler execution
-          const entityType = entry.message.entityType;
-          const policy = onInterruptPolicy[entityType] ?? defaultPolicy;
+          await this.deadLetter(
+            entry.message.entityType,
+            entry.message,
+            'interrupted: process crashed during execution',
+          );
+          interrupted++;
 
-          if (policy === 'retry') {
-            entry.message.attempts++;
-            if (entry.message.attempts < entry.message.maxAttempts) {
-              pendingMessages.push(entry.message);
-              reEnqueued++;
-            } else {
-              await this.deadLetter(entityType, entry.message, 'interrupted: max retries exceeded');
-              interrupted++;
-            }
-          } else {
-            await this.deadLetter(
-              entityType,
-              entry.message,
-              'interrupted: process crashed during execution',
-            );
-            interrupted++;
-          }
-
-          // Clean the WAL entry
           const entryKey = this.walEntryKey(entityKey, messageId);
           await this.redis.del(entryKey);
           await this.redis.zrem(indexKey, member);
@@ -229,7 +203,6 @@ export class WalService {
         case 'completed':
         case 'failed':
         case 'interrupted': {
-          // Stale — should have been cleaned up
           const entryKey = this.walEntryKey(entityKey, messageId);
           await this.redis.del(entryKey);
           await this.redis.zrem(indexKey, member);

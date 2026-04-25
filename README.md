@@ -126,17 +126,20 @@ Each entity instance (`account:a-123`, `order:o-5`) gets its own virtual actor �
 
 ### Master Topology (Cluster Mode)
 
-Each replica set elects a **master** via Redis `SET NX`. The master:
+Each replica set has a **deterministic master** — the node with the lowest `serverId` among live nodes in the same `serviceGroup`. No locks, no elections, no Redlock. All nodes read the same Redis-backed heartbeat registry and independently compute who the master is.
+
+The master:
 
 - Owns the **worker assignment table**: which `entity:entityId` lives on which replica
 - Routes all petitions: sub-replicas forward via gRPC to the master
 - Spawns workers atomically: decisions happen on the master's event loop (single-threaded = no race conditions)
 - Load balances: new workers go to the least-loaded replica
+- **Epoch fences** every dispatch: replicas reject commands from stale masters
 
 ```
 Replica Set: billing-service
 ┌──────────────────────────────────────────────┐
-│  Master (elected via Redis)                  │
+│  Master (deterministic: lowest serverId)     │
 │  ├── Assignment Table                        │
 │  │   account:a-1 → replica-2                 │
 │  │   account:a-2 → replica-1                 │
@@ -155,17 +158,22 @@ Master (billing) ←── gRPC ──→ Master (warehouse)
 
 ### Write-Ahead Log (WAL)
 
-Every message is dual-written: in-memory queue (speed) + Redis WAL (durability). On crash:
-- `enqueued` → re-dispatch (handler never ran)
-- `dispatched` → dead-letter (handler may have partially run, don't re-execute)
+Every message is dual-written: in-memory queue (speed) + Redis WAL (durability). Recovery runs automatically on startup:
+- `enqueued` → re-dispatch (handler never ran — this is the first attempt, not a retry)
+- `dispatched` → dead-letter (handler was running when the process crashed — never re-execute)
+- `completed` / `failed` / `interrupted` → cleanup (stale terminal entries)
+
+A background cleanup timer evicts terminal WAL entries on a configurable interval.
 
 ### Master Failover
 
-1. Master crashes → Redis lock TTL expires (10s)
-2. Another replica acquires lock → becomes new master
+1. Master crashes → heartbeat TTL expires (~1.5s)
+2. Remaining nodes recompute leader from node list → next-lowest `serverId` becomes master
 3. New master queries all replicas via gRPC `ListWorkers`
-4. Rebuilds assignment table from live cluster state
+4. Rebuilds assignment table from live cluster state (new messages route locally during rebuild to prevent dual-write)
 5. Resumes operations
+
+No split-brain: leadership is a pure function of the live node set. No lock expiry window. Epoch fencing rejects any stale-master commands that arrive during transitions.
 
 ---
 
@@ -179,9 +187,7 @@ AtomicQueuesModule.forRoot({
     account: {
       defaultEntityId: 'accountId',
       workerIdleTimeout: 30000,    // teardown after 30s idle
-      retry: { maxAttempts: 1 },   // strictly once
       replyTimeout: 5000,
-      onInterrupt: 'dead-letter',
     },
   },
 
@@ -190,6 +196,7 @@ AtomicQueuesModule.forRoot({
     enabled: true,
     listenAddress: '0.0.0.0:50051',
     serviceGroup: 'billing-service',
+    // serverId: auto-generated UUID (override for stable identity across restarts)
   },
 
   wal: { enabled: true },
@@ -232,13 +239,15 @@ await queueBus.enqueue('warehouse', 'ReserveStockCommand', 'SKU-001', {
 |---|---|
 | FIFO per entity | One worker per entity:entityId with FIFO queue |
 | Single-writer per entity | Only one worker exists across the cluster |
-| Strictly-once delivery | WAL: enqueued -> dispatched -> completed |
-| Fail if interrupted | Dispatched on crash -> dead-lettered, never re-executed |
+| At-most-once delivery | WAL: enqueued -> dispatched -> completed. Never re-executed after dispatch. |
+| Fail if interrupted | Dispatched on crash -> dead-lettered, source notified |
 | Concurrent across entities | Event loop interleaves at await points |
-| Durability | Redis WAL (parallel write) |
-| Cluster coordination | Master topology with gRPC |
-| Master failover | Redis SET NX lock, automatic re-election + table rebuild |
-| No distributed locks | The worker IS the serialization — not a lock |
+| Durability | Redis WAL (dual-write: in-memory + Redis) |
+| Auto-recovery | WAL recovery + cleanup run automatically on startup |
+| Cluster coordination | Deterministic master topology with gRPC |
+| Master failover | Heartbeat expiry -> deterministic re-election + assignment table rebuild |
+| Epoch fencing | Replicas reject commands from stale masters |
+| No distributed locks | The worker IS the serialization — not a lock, not Redlock, not SET NX |
 
 ---
 
