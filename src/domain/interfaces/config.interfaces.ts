@@ -38,6 +38,8 @@ export interface IEntityConfig {
   onInterrupt?: 'dead-letter' | 'retry';
   /** Idle timeout in ms before worker teardown (default: 30000) */
   workerIdleTimeout?: number;
+  /** Max pending messages per entity worker (0 = unbounded, default: 0) */
+  workerMaxQueueDepth?: number;
 }
 
 /**

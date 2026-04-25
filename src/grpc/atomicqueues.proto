@@ -88,6 +88,7 @@ message SpawnWorkerResponse {
 message EnqueueToWorkerRequest {
   string entity_key       = 1;
   MessageEnvelope message = 2;
+  int64  master_epoch     = 3;
 }
 
 message EnqueueToWorkerResponse {

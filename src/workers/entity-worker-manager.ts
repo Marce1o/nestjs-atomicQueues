@@ -1,54 +1,52 @@
-import { Injectable, Logger, Inject, OnApplicationShutdown } from '@nestjs/common';
-import { v4 as uuidv4 } from 'uuid';
+import { Injectable, Logger, Inject, Optional, OnApplicationShutdown } from '@nestjs/common';
 import { IAtomicQueuesModuleConfig, ISerializedMessage } from '../domain';
 import { ATOMIC_QUEUES_CONFIG } from '../services/constants';
 import { HandlerExecutor } from '../services/handler-executor';
+import { WalService } from '../wal';
+import { fastId } from '../utils';
 import { EntityWorker } from './entity-worker';
 
 const DEFAULT_IDLE_TIMEOUT = 30000;
 
-/**
- * EntityWorkerManager — manages per-entity workers on this replica.
- *
- * Each entity:entityId gets its own EntityWorker (processor callback on the
- * event loop). Workers are spawned on first message and torn down after idle
- * timeout. Only ONE worker per entity exists across the entire cluster —
- * the MasterCoordinator ensures this.
- *
- * On a single server (no gRPC), this acts as both the worker manager
- * and the coordinator.
- */
 @Injectable()
 export class EntityWorkerManager implements OnApplicationShutdown {
   private readonly logger = new Logger(EntityWorkerManager.name);
   private readonly workers = new Map<string, EntityWorker>();
+  private readonly isClusterMode: boolean;
+  private readonly serverId: string;
 
-  /** Pending enqueueAndWait promises: correlationId -> { resolve, reject, timer } */
   private readonly pendingResults = new Map<
     string,
     { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }
   >();
 
+  private onTeardownCallback: ((entityKey: string) => void) | null = null;
+
   constructor(
     @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
     private readonly handlerExecutor: HandlerExecutor,
-  ) {}
+    @Optional() private readonly walService?: WalService,
+  ) {
+    this.isClusterMode = config.grpc?.enabled ?? false;
+    this.serverId = config.grpc?.serverId ?? 'local';
+  }
+
+  setOnTeardown(callback: (entityKey: string) => void): void {
+    this.onTeardownCallback = callback;
+  }
 
   async onApplicationShutdown(): Promise<void> {
-    // Drain all workers
     const drainPromises: Promise<void>[] = [];
     for (const [, worker] of this.workers) {
       drainPromises.push(worker.drain());
     }
     await Promise.all(drainPromises);
 
-    // Destroy workers
     for (const [, worker] of this.workers) {
       worker.destroy();
     }
     this.workers.clear();
 
-    // Reject pending results
     for (const [, entry] of this.pendingResults) {
       clearTimeout(entry.timer);
       entry.reject(new Error('Application shutting down'));
@@ -60,10 +58,11 @@ export class EntityWorkerManager implements OnApplicationShutdown {
   // PUBLIC API
   // =========================================================================
 
-  /**
-   * Enqueue a message. Spawns a worker if none exists for this entity.
-   */
-  enqueue(entityKey: string, message: ISerializedMessage): void {
+  async enqueue(entityKey: string, message: ISerializedMessage): Promise<void> {
+    if (this.walService) {
+      await this.walService.write(entityKey, message);
+    }
+
     let worker = this.workers.get(entityKey);
     if (!worker) {
       worker = this.spawnWorker(entityKey);
@@ -71,16 +70,13 @@ export class EntityWorkerManager implements OnApplicationShutdown {
     worker.enqueue(message);
   }
 
-  /**
-   * Enqueue a message and wait for the result.
-   */
   enqueueAndWait<R = unknown>(
     entityKey: string,
     message: ISerializedMessage,
     timeout: number,
   ): Promise<R> {
     return new Promise<R>((resolve, reject) => {
-      const correlationId = uuidv4();
+      const correlationId = fastId();
       const taggedMessage = { ...message, correlationId };
 
       const timer = setTimeout(() => {
@@ -94,23 +90,20 @@ export class EntityWorkerManager implements OnApplicationShutdown {
         timer,
       });
 
-      this.enqueue(entityKey, taggedMessage);
+      this.enqueue(entityKey, taggedMessage).catch((err) => {
+        this.pendingResults.delete(correlationId);
+        clearTimeout(timer);
+        reject(err);
+      });
     });
   }
 
-  /**
-   * Spawn a worker for an entity (called by MasterCoordinator).
-   * Returns true if spawned, false if already exists.
-   */
   spawn(entityKey: string): boolean {
     if (this.workers.has(entityKey)) return false;
     this.spawnWorker(entityKey);
     return true;
   }
 
-  /**
-   * Teardown a worker (called by MasterCoordinator or idle timeout).
-   */
   async teardown(entityKey: string): Promise<void> {
     const worker = this.workers.get(entityKey);
     if (!worker) return;
@@ -121,30 +114,18 @@ export class EntityWorkerManager implements OnApplicationShutdown {
     this.logger.debug(`Worker torn down: ${entityKey}`);
   }
 
-  /**
-   * Check if a worker exists for an entity.
-   */
   hasWorker(entityKey: string): boolean {
     return this.workers.has(entityKey);
   }
 
-  /**
-   * List all active worker entity keys on this replica.
-   */
   listWorkers(): string[] {
     return Array.from(this.workers.keys());
   }
 
-  /**
-   * Get the number of active workers.
-   */
   workerCount(): number {
     return this.workers.size;
   }
 
-  /**
-   * Get total queued messages across all workers.
-   */
   totalQueueDepth(): number {
     let total = 0;
     for (const worker of this.workers.values()) {
@@ -161,18 +142,33 @@ export class EntityWorkerManager implements OnApplicationShutdown {
     const entityType = entityKey.split(':')[0];
     const entityConfig = this.config.entities?.[entityType];
     const idleTimeout = entityConfig?.workerIdleTimeout ?? DEFAULT_IDLE_TIMEOUT;
+    const maxQueueDepth = entityConfig?.workerMaxQueueDepth ?? 0;
 
     const worker = new EntityWorker(
       entityKey,
-      // Processor: execute handler via NestJS DI on this event loop
-      (message, ek) => this.handlerExecutor.execute(message, ek),
-      // On result
-      (message, result) => this.resolveResult(message, result),
-      // On error
-      (message, error) => this.rejectResult(message, error),
-      // On idle
+      async (message, ek) => {
+        if (this.walService) {
+          await this.walService.markDispatched(ek, message.id, 0);
+        }
+        return this.handlerExecutor.execute(message, ek);
+      },
+      (message, result) => {
+        if (this.walService) {
+          this.walService.markCompleted(entityKey, message.id).catch(() => {});
+        }
+        this.resolveResult(message, result);
+      },
+      (message, error) => {
+        if (this.walService) {
+          this.walService
+            .markFailed(entityKey, message.id, error.message, error.stack)
+            .catch(() => {});
+        }
+        this.rejectResult(message, error);
+      },
       (ek) => this.handleWorkerIdle(ek),
       idleTimeout,
+      maxQueueDepth,
     );
 
     this.workers.set(entityKey, worker);
@@ -202,12 +198,14 @@ export class EntityWorkerManager implements OnApplicationShutdown {
 
   private handleWorkerIdle(entityKey: string): void {
     this.logger.debug(`Worker idle: ${entityKey}`);
-    // In single-server mode, just teardown directly.
-    // In cluster mode, MasterCoordinator handles this via gRPC.
     const worker = this.workers.get(entityKey);
     if (worker && !worker.isProcessing && worker.queueDepth === 0) {
       worker.destroy();
       this.workers.delete(entityKey);
+
+      if (this.onTeardownCallback) {
+        this.onTeardownCallback(entityKey);
+      }
     }
   }
 }

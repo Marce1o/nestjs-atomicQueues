@@ -1,30 +1,26 @@
 import { Injectable, Logger, Inject, Optional, forwardRef } from '@nestjs/common';
-import { v4 as uuidv4 } from 'uuid';
 import { IAtomicQueuesModuleConfig, ISerializedMessage, IMessageRef } from '../../domain';
-import { resolveKeyPrefix } from '../../utils';
-import { WalService } from '../../wal';
+import { fastId, retry } from '../../utils';
 import { EntityWorkerManager } from '../../workers';
-import { MasterCoordinator, ClusterDiscoveryService, LeaderElectionService } from '../../cluster';
+import {
+  MasterCoordinator,
+  ClusterDiscoveryService,
+  ClusterNode,
+  LeaderElectionService,
+} from '../../cluster';
 import { GrpcClientPool } from '../../grpc';
 import { ATOMIC_QUEUES_CONFIG } from '../constants';
 
-/**
- * MessageRouter — central dispatch layer.
- *
- * Single-server: dispatches directly to local EntityWorkerManager.
- * Cluster mode:
- *   - Non-master replicas → gRPC Petition to master
- *   - Master → resolve entity→replica, dispatch locally or gRPC EnqueueToWorker
- */
 @Injectable()
 export class MessageRouter {
   private readonly logger = new Logger(MessageRouter.name);
-  private readonly keyPrefix: string;
   private readonly isClusterMode: boolean;
+
+  private nodeCache: { nodes: ClusterNode[]; expiresAt: number } | null = null;
+  private masterCache: { address: string | null; expiresAt: number } | null = null;
 
   constructor(
     @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
-    private readonly walService: WalService,
     private readonly workerManager: EntityWorkerManager,
     @Inject(forwardRef(() => MasterCoordinator))
     private readonly masterCoordinator: MasterCoordinator,
@@ -32,8 +28,12 @@ export class MessageRouter {
     @Optional() private readonly clusterDiscovery?: ClusterDiscoveryService,
     @Optional() private readonly leaderElection?: LeaderElectionService,
   ) {
-    this.keyPrefix = resolveKeyPrefix(config);
     this.isClusterMode = config.grpc?.enabled ?? false;
+  }
+
+  invalidateTopologyCache(): void {
+    this.nodeCache = null;
+    this.masterCache = null;
   }
 
   async enqueue(
@@ -47,7 +47,7 @@ export class MessageRouter {
     const retryConfig = this.config.entities?.[entityType]?.retry ?? this.config.retry;
 
     const message: ISerializedMessage = {
-      id: uuidv4(),
+      id: fastId(),
       name: messageName,
       data,
       entityType,
@@ -59,15 +59,10 @@ export class MessageRouter {
       maxAttempts: options?.maxAttempts ?? retryConfig?.maxAttempts ?? 1,
     };
 
-    // WAL write for durability (all paths)
-    await this.walService.write(entityKey, message);
-
-    // Cluster mode: route through master topology
     if (this.isClusterMode) {
       await this.clusterDispatch(entityKey, message);
     } else {
-      // Single-server: direct local dispatch
-      this.workerManager.enqueue(entityKey, message);
+      await this.workerManager.enqueue(entityKey, message);
     }
 
     return { id: message.id, entityKey };
@@ -86,7 +81,7 @@ export class MessageRouter {
     const resolvedTimeout = this.resolveTimeout(entityType, timeout);
 
     const message: ISerializedMessage = {
-      id: uuidv4(),
+      id: fastId(),
       name: messageName,
       data,
       entityType,
@@ -96,8 +91,6 @@ export class MessageRouter {
       attempts: 0,
       maxAttempts: options?.maxAttempts ?? retryConfig?.maxAttempts ?? 1,
     };
-
-    await this.walService.write(entityKey, message);
 
     if (this.isClusterMode) {
       return this.clusterDispatchAndWait<R>(entityKey, message, resolvedTimeout);
@@ -132,15 +125,10 @@ export class MessageRouter {
   }
 
   // =========================================================================
-  // MASTER DISPATCH — handles local, cross-replica, and cross-service
+  // MASTER DISPATCH
   // =========================================================================
 
-  /**
-   * Dispatch a message as the master (fire-and-forget).
-   * Called from clusterDispatch and handlePetition in gRPC server.
-   */
   async dispatchAsMaster(entityKey: string, message: ISerializedMessage): Promise<void> {
-    // Cross-service: forward to foreign service group's master
     if (!this.isLocalEntityType(message.entityType)) {
       await this.forwardToForeignService(message);
       return;
@@ -148,15 +136,12 @@ export class MessageRouter {
 
     const resolution = this.masterCoordinator.resolve(entityKey);
     if (resolution.isLocal) {
-      this.workerManager.enqueue(entityKey, message);
+      await this.workerManager.enqueue(entityKey, message);
     } else {
       await this.forwardToReplica(resolution.replicaId, entityKey, message);
     }
   }
 
-  /**
-   * Dispatch a message as the master and wait for the result.
-   */
   async dispatchAsMasterAndWait<R>(
     entityKey: string,
     message: ISerializedMessage,
@@ -178,33 +163,47 @@ export class MessageRouter {
   }
 
   // =========================================================================
-  // gRPC — Replica → Master (Petition)
+  // gRPC — Replica → Master (Petition) — NO FALLBACK-TO-LOCAL
   // =========================================================================
 
   private async petitionMaster(entityKey: string, message: ISerializedMessage): Promise<void> {
-    const masterAddress = await this.getMasterAddress();
-    if (!masterAddress) {
-      this.logger.warn('No master found — processing locally as fallback');
-      this.workerManager.enqueue(entityKey, message);
-      return;
-    }
+    await retry(
+      async () => {
+        if (this.masterCoordinator.isMaster()) {
+          await this.dispatchAsMaster(entityKey, message);
+          return;
+        }
 
-    const client = await this.grpcClientPool!.getClient('master', masterAddress);
-    const deadline = new Date(Date.now() + 1500);
-    await new Promise<void>((resolve, reject) => {
-      (client as unknown as Record<string, Function>).petition(
-        {
-          entityKey,
-          message: this.serializeEnvelope(message),
+        const masterAddress = await this.getMasterAddress();
+        if (!masterAddress) {
+          throw new Error('No master available');
+        }
+
+        this.masterCache = null;
+        const client = await this.grpcClientPool!.getClient('master', masterAddress);
+        const deadline = new Date(Date.now() + 1500);
+        await new Promise<void>((resolve, reject) => {
+          (client as unknown as Record<string, Function>).petition(
+            { entityKey, message: this.serializeEnvelope(message) },
+            { deadline },
+            (err: Error | null, response: Record<string, unknown>) => {
+              if (err) return reject(err);
+              if (!response.accepted) return reject(new Error(response.rejectReason as string));
+              resolve();
+            },
+          );
+        });
+      },
+      {
+        maxAttempts: 3,
+        baseDelay: 50,
+        exponential: true,
+        onRetry: (attempt) => {
+          this.masterCache = null;
+          this.logger.warn(`Petition retry ${attempt} for ${entityKey}`);
         },
-        { deadline },
-        (err: Error | null, response: Record<string, unknown>) => {
-          if (err) return reject(err);
-          if (!response.accepted) return reject(new Error(response.rejectReason as string));
-          resolve();
-        },
-      );
-    });
+      },
+    );
   }
 
   private async petitionMasterAndWait<R>(
@@ -212,41 +211,58 @@ export class MessageRouter {
     message: ISerializedMessage,
     timeout: number,
   ): Promise<R> {
-    const masterAddress = await this.getMasterAddress();
-    if (!masterAddress) {
-      this.logger.warn('No master found — processing locally as fallback');
-      return this.workerManager.enqueueAndWait<R>(entityKey, message, timeout);
-    }
-
-    const client = await this.grpcClientPool!.getClient('master', masterAddress);
-    return new Promise<R>((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error(`Petition timeout after ${timeout}ms`)),
-        timeout,
-      );
-
-      const stream = (client as unknown as Record<string, Function>).petitionAndWait({
-        entityKey,
-        message: this.serializeEnvelope(message),
-      });
-
-      stream.on('data', (response: Record<string, unknown>) => {
-        clearTimeout(timer);
-        if (response.error) reject(new Error(response.error as string));
-        else if (response.result) {
-          resolve(JSON.parse(Buffer.from(response.result as Buffer).toString()) as R);
+    return retry(
+      async () => {
+        if (this.masterCoordinator.isMaster()) {
+          return this.dispatchAsMasterAndWait<R>(entityKey, message, timeout);
         }
-      });
 
-      stream.on('error', (err: Error) => {
-        clearTimeout(timer);
-        reject(err);
-      });
-    });
+        const masterAddress = await this.getMasterAddress();
+        if (!masterAddress) {
+          throw new Error('No master available');
+        }
+
+        this.masterCache = null;
+        const client = await this.grpcClientPool!.getClient('master', masterAddress);
+        return new Promise<R>((resolve, reject) => {
+          const timer = setTimeout(
+            () => reject(new Error(`Petition timeout after ${timeout}ms`)),
+            timeout,
+          );
+
+          const stream = (client as unknown as Record<string, Function>).petitionAndWait({
+            entityKey,
+            message: this.serializeEnvelope(message),
+          });
+
+          stream.on('data', (response: Record<string, unknown>) => {
+            clearTimeout(timer);
+            if (response.error) reject(new Error(response.error as string));
+            else if (response.result) {
+              resolve(JSON.parse(Buffer.from(response.result as Buffer).toString()) as R);
+            }
+          });
+
+          stream.on('error', (err: Error) => {
+            clearTimeout(timer);
+            reject(err);
+          });
+        });
+      },
+      {
+        maxAttempts: 3,
+        baseDelay: 50,
+        exponential: true,
+        onRetry: (attempt) => {
+          this.masterCache = null;
+          this.logger.warn(`PetitionAndWait retry ${attempt} for ${entityKey}`);
+        },
+      },
+    );
   }
 
   // =========================================================================
-  // gRPC — Master → Replica (EnqueueToWorker)
+  // gRPC — Master → Replica (EnqueueToWorker) — REASSIGN ON FAILURE
   // =========================================================================
 
   private async forwardToReplica(
@@ -256,27 +272,35 @@ export class MessageRouter {
   ): Promise<void> {
     const replicaAddress = await this.getReplicaAddress(replicaId);
     if (!replicaAddress) {
-      this.logger.warn(`Replica ${replicaId} not found — processing locally`);
-      this.workerManager.enqueue(entityKey, message);
+      this.masterCoordinator.release(entityKey);
+      this.nodeCache = null;
+      await this.dispatchAsMaster(entityKey, message);
       return;
     }
 
-    const client = await this.grpcClientPool!.getClient(replicaId, replicaAddress);
-    const deadline = new Date(Date.now() + 1500);
-    await new Promise<void>((resolve, reject) => {
-      (client as unknown as Record<string, Function>).enqueueToWorker(
-        {
-          entityKey,
-          message: this.serializeEnvelope(message),
-        },
-        { deadline },
-        (err: Error | null, response: Record<string, unknown>) => {
-          if (err) return reject(err);
-          if (!response.accepted) return reject(new Error(response.rejectReason as string));
-          resolve();
-        },
+    try {
+      const client = await this.grpcClientPool!.getClient(replicaId, replicaAddress);
+      const deadline = new Date(Date.now() + 1500);
+      await new Promise<void>((resolve, reject) => {
+        (client as unknown as Record<string, Function>).enqueueToWorker(
+          { entityKey, message: this.serializeEnvelope(message) },
+          { deadline },
+          (err: Error | null, response: Record<string, unknown>) => {
+            if (err) return reject(err);
+            if (!response.accepted) return reject(new Error(response.rejectReason as string));
+            resolve();
+          },
+        );
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Forward to ${replicaId} failed: ${(err as Error).message} — reassigning`,
       );
-    });
+      this.masterCoordinator.release(entityKey);
+      this.grpcClientPool!.removeClient(replicaId);
+      this.nodeCache = null;
+      await this.dispatchAsMaster(entityKey, message);
+    }
   }
 
   private async forwardToReplicaAndWait<R>(
@@ -287,34 +311,46 @@ export class MessageRouter {
   ): Promise<R> {
     const replicaAddress = await this.getReplicaAddress(replicaId);
     if (!replicaAddress) {
-      return this.workerManager.enqueueAndWait<R>(entityKey, message, timeout);
+      this.masterCoordinator.release(entityKey);
+      this.nodeCache = null;
+      return this.dispatchAsMasterAndWait<R>(entityKey, message, timeout);
     }
 
-    const client = await this.grpcClientPool!.getClient(replicaId, replicaAddress);
-    return new Promise<R>((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error(`Forward timeout after ${timeout}ms`)),
-        timeout,
+    try {
+      const client = await this.grpcClientPool!.getClient(replicaId, replicaAddress);
+      return await new Promise<R>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error(`Forward timeout after ${timeout}ms`)),
+          timeout,
+        );
+
+        const stream = (client as unknown as Record<string, Function>).enqueueToWorkerAndWait({
+          entityKey,
+          message: this.serializeEnvelope(message),
+        });
+
+        stream.on('data', (response: Record<string, unknown>) => {
+          clearTimeout(timer);
+          if (response.error) reject(new Error(response.error as string));
+          else if (response.result) {
+            resolve(JSON.parse(Buffer.from(response.result as Buffer).toString()) as R);
+          }
+        });
+
+        stream.on('error', (err: Error) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+      });
+    } catch (err) {
+      this.logger.warn(
+        `ForwardAndWait to ${replicaId} failed: ${(err as Error).message} — reassigning`,
       );
-
-      const stream = (client as unknown as Record<string, Function>).enqueueToWorkerAndWait({
-        entityKey,
-        message: this.serializeEnvelope(message),
-      });
-
-      stream.on('data', (response: Record<string, unknown>) => {
-        clearTimeout(timer);
-        if (response.error) reject(new Error(response.error as string));
-        else if (response.result) {
-          resolve(JSON.parse(Buffer.from(response.result as Buffer).toString()) as R);
-        }
-      });
-
-      stream.on('error', (err: Error) => {
-        clearTimeout(timer);
-        reject(err);
-      });
-    });
+      this.masterCoordinator.release(entityKey);
+      this.grpcClientPool!.removeClient(replicaId);
+      this.nodeCache = null;
+      return this.dispatchAsMasterAndWait<R>(entityKey, message, timeout);
+    }
   }
 
   // =========================================================================
@@ -339,9 +375,6 @@ export class MessageRouter {
     }
 
     const serverId = this.config.grpc?.serverId ?? 'local';
-    this.logger.log(
-      `Forwarding ${message.name} to foreign service '${serviceGroup}' at ${foreignAddress}`,
-    );
     await this.grpcClientPool!.forward(
       `${serviceGroup}-master`,
       foreignAddress,
@@ -368,9 +401,6 @@ export class MessageRouter {
     }
 
     const serverId = this.config.grpc?.serverId ?? 'local';
-    this.logger.log(
-      `ForwardAndWait ${message.name} to foreign service '${serviceGroup}' at ${foreignAddress}`,
-    );
     return this.grpcClientPool!.forwardAndWait<R>(
       `${serviceGroup}-master`,
       foreignAddress,
@@ -382,17 +412,28 @@ export class MessageRouter {
   }
 
   // =========================================================================
-  // HELPERS
+  // HELPERS — cached topology lookups
   // =========================================================================
 
   private async getMasterAddress(): Promise<string | null> {
     if (!this.leaderElection) return null;
-    return this.leaderElection.getMasterAddress();
+    if (this.masterCache && Date.now() < this.masterCache.expiresAt) {
+      return this.masterCache.address;
+    }
+    const address = await this.leaderElection.getMasterAddress();
+    this.masterCache = { address, expiresAt: Date.now() + 1000 };
+    return address;
   }
 
   private async getReplicaAddress(replicaId: string): Promise<string | null> {
     if (!this.clusterDiscovery) return null;
-    const nodes = await this.clusterDiscovery.getNodes();
+    let nodes: ClusterNode[];
+    if (this.nodeCache && Date.now() < this.nodeCache.expiresAt) {
+      nodes = this.nodeCache.nodes;
+    } else {
+      nodes = await this.clusterDiscovery.getNodes();
+      this.nodeCache = { nodes, expiresAt: Date.now() + 1000 };
+    }
     const node = nodes.find((n) => n.serverId === replicaId);
     return node?.grpcAddress ?? null;
   }

@@ -4,6 +4,7 @@ import { ATOMIC_QUEUES_CONFIG } from '../services/constants';
 import { GrpcClientPool } from '../grpc';
 import { LeaderElectionService } from './leader-election.service';
 import { ClusterDiscoveryService, ClusterNode } from './cluster-discovery.service';
+import { ServerRingService } from './server-ring.service';
 
 export interface WorkerAssignment {
   replicaId: string;
@@ -11,38 +12,23 @@ export interface WorkerAssignment {
   lastActiveAt: number;
 }
 
-/**
- * MasterCoordinator — the brain of the replica set.
- *
- * Only active on the elected master replica. Manages the worker assignment
- * table: which entity:entityId worker lives on which replica. All petitions
- * route through the master, which either forwards to the owning replica
- * or spawns a new worker on the least-loaded one.
- *
- * Atomicity: all decisions happen on the master's event loop, which is
- * single-threaded. No locks needed for assignment table mutations.
- *
- * In single-server mode (no gRPC), the coordinator acts locally —
- * it IS the only replica, so all workers are local.
- */
 @Injectable()
 export class MasterCoordinator implements OnModuleInit {
   private readonly logger = new Logger(MasterCoordinator.name);
 
-  /** entityKey → which replica owns the worker */
   private readonly assignments = new Map<string, WorkerAssignment>();
-
-  /** replicaId → worker count (for load balancing) */
   private readonly replicaLoad = new Map<string, number>();
 
   private readonly localReplicaId: string;
   private readonly isClusterMode: boolean;
   private readonly serviceGroup: string;
+  private rebuilding = false;
 
   constructor(
     @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
     private readonly leaderElection: LeaderElectionService,
     private readonly clusterDiscovery: ClusterDiscoveryService,
+    private readonly serverRing: ServerRingService,
     @Optional() private readonly grpcClientPool?: GrpcClientPool,
   ) {
     this.localReplicaId = config.grpc?.serverId ?? 'local';
@@ -52,13 +38,11 @@ export class MasterCoordinator implements OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     if (!this.isClusterMode) {
-      // Single-server: this replica is always the master
       this.replicaLoad.set(this.localReplicaId, 0);
       this.logger.log('MasterCoordinator running in single-server mode');
       return;
     }
 
-    // Listen for leadership changes
     this.leaderElection.onLeaderChange((isLeader) => {
       if (isLeader) {
         this.logger.log('This replica is now the master — rebuilding assignment table');
@@ -70,7 +54,6 @@ export class MasterCoordinator implements OnModuleInit {
       }
     });
 
-    // Listen for cluster changes (replica joins/leaves)
     this.clusterDiscovery.onRingChange((nodes) => {
       if (this.isMaster()) {
         this.reconcileReplicas(nodes);
@@ -79,27 +62,26 @@ export class MasterCoordinator implements OnModuleInit {
   }
 
   // =========================================================================
-  // PUBLIC API — called by MessageRouter
+  // PUBLIC API
   // =========================================================================
 
-  /**
-   * Resolve where a message should be processed.
-   * Returns the replicaId that owns (or should own) the worker.
-   *
-   * In single-server mode, always returns the local replica.
-   * In cluster mode, checks assignment table and spawns if needed.
-   */
-  resolve(entityKey: string): { replicaId: string; isLocal: boolean; needsSpawn: boolean } {
+  resolve(entityKey: string): {
+    replicaId: string;
+    isLocal: boolean;
+    needsSpawn: boolean;
+    epoch: number;
+  } {
+    const epoch = this.isClusterMode ? this.leaderElection.epoch : 0;
+
     if (!this.isClusterMode || !this.isMaster()) {
-      // Single-server or not master: always local
       const existing = this.assignments.has(entityKey);
       if (!existing) {
         this.assignWorker(entityKey, this.localReplicaId);
       }
-      return { replicaId: this.localReplicaId, isLocal: true, needsSpawn: !existing };
+      return { replicaId: this.localReplicaId, isLocal: true, needsSpawn: !existing, epoch };
     }
 
-    // Cluster mode, this is the master
+    // Tier 1: assignment table (authoritative if present)
     const assignment = this.assignments.get(entityKey);
     if (assignment) {
       assignment.lastActiveAt = Date.now();
@@ -107,23 +89,32 @@ export class MasterCoordinator implements OnModuleInit {
         replicaId: assignment.replicaId,
         isLocal: assignment.replicaId === this.localReplicaId,
         needsSpawn: false,
+        epoch,
       };
     }
 
-    // No worker exists — spawn on least loaded replica
-    const targetReplica = this.pickLeastLoaded();
+    // Tier 2: consistent hash ring (deterministic fallback)
+    let targetReplica: string;
+    if (this.serverRing.size > 0) {
+      const separatorIdx = entityKey.indexOf(':');
+      const entityType = entityKey.substring(0, separatorIdx);
+      const entityId = entityKey.substring(separatorIdx + 1);
+      const owner = this.serverRing.getOwner(entityType, entityId);
+      targetReplica = owner?.serverId ?? this.pickLeastLoaded();
+    } else {
+      targetReplica = this.pickLeastLoaded();
+    }
+
     this.assignWorker(entityKey, targetReplica);
 
     return {
       replicaId: targetReplica,
       isLocal: targetReplica === this.localReplicaId,
       needsSpawn: true,
+      epoch,
     };
   }
 
-  /**
-   * Remove a worker assignment (called on idle teardown).
-   */
   release(entityKey: string): void {
     const assignment = this.assignments.get(entityKey);
     if (assignment) {
@@ -132,31 +123,19 @@ export class MasterCoordinator implements OnModuleInit {
     }
   }
 
-  /**
-   * Check if this replica is the master.
-   */
   isMaster(): boolean {
     if (!this.isClusterMode) return true;
     return this.leaderElection.getIsLeader();
   }
 
-  /**
-   * Get the assignment table (for debugging / gRPC ListWorkers).
-   */
   getAssignments(): Map<string, WorkerAssignment> {
     return new Map(this.assignments);
   }
 
-  /**
-   * Get the total number of assigned workers across the cluster.
-   */
   totalAssignedWorkers(): number {
     return this.assignments.size;
   }
 
-  /**
-   * Get load per replica.
-   */
   getReplicaLoad(): Map<string, number> {
     return new Map(this.replicaLoad);
   }
@@ -207,11 +186,10 @@ export class MasterCoordinator implements OnModuleInit {
   // =========================================================================
 
   private async rebuildAssignmentTable(): Promise<void> {
-    this.assignments.clear();
+    this.rebuilding = true;
     this.replicaLoad.clear();
 
     const allNodes = this.isClusterMode ? await this.clusterDiscovery.getNodes() : [];
-    // Only manage replicas within our own service group
     const nodes = allNodes.filter((n) => n.serviceGroup === this.serviceGroup);
 
     for (const node of nodes) {
@@ -219,7 +197,6 @@ export class MasterCoordinator implements OnModuleInit {
     }
     this.replicaLoad.set(this.localReplicaId, 0);
 
-    // Query each replica for its active workers via gRPC ListWorkers
     if (this.isClusterMode && this.grpcClientPool) {
       let totalRecovered = 0;
 
@@ -241,7 +218,12 @@ export class MasterCoordinator implements OnModuleInit {
           });
 
           for (const w of workers) {
-            this.assignWorker(w.entityKey, node.serverId);
+            this.assignments.set(w.entityKey, {
+              replicaId: node.serverId,
+              assignedAt: Date.now(),
+              lastActiveAt: Date.now(),
+            });
+            this.incrementLoad(node.serverId);
             totalRecovered++;
           }
         } catch (err) {
@@ -259,19 +241,18 @@ export class MasterCoordinator implements OnModuleInit {
     } else {
       this.logger.log(`Assignment table rebuilt: ${this.replicaLoad.size} replicas, 0 workers`);
     }
+
+    this.rebuilding = false;
   }
 
   private reconcileReplicas(nodes: ClusterNode[]): void {
-    // Only manage replicas within our own service group
     const sameGroupNodes = nodes.filter((n) => n.serviceGroup === this.serviceGroup);
     const liveIds = new Set(sameGroupNodes.map((n) => n.serverId));
 
-    // Remove dead replicas and their workers
     for (const [replicaId] of this.replicaLoad) {
       if (!liveIds.has(replicaId) && replicaId !== this.localReplicaId) {
         this.logger.warn(`Replica ${replicaId} is gone — removing its workers`);
 
-        // Remove all assignments for the dead replica
         for (const [entityKey, assignment] of this.assignments) {
           if (assignment.replicaId === replicaId) {
             this.assignments.delete(entityKey);
@@ -281,7 +262,6 @@ export class MasterCoordinator implements OnModuleInit {
       }
     }
 
-    // Add new replicas
     for (const node of sameGroupNodes) {
       if (!this.replicaLoad.has(node.serverId)) {
         this.replicaLoad.set(node.serverId, 0);
