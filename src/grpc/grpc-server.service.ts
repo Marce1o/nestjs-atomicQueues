@@ -2,6 +2,7 @@ import {
   Injectable,
   Logger,
   Inject,
+  Optional,
   forwardRef,
   OnModuleInit,
   OnApplicationShutdown,
@@ -10,7 +11,7 @@ import * as path from 'path';
 import { IAtomicQueuesModuleConfig, ISerializedMessage } from '../domain';
 import { MessageRouter } from '../services/message-router';
 import { EntityWorkerManager } from '../workers';
-import { MasterCoordinator, LeaderElectionService } from '../cluster';
+import { MasterCoordinator, LeaderElectionService, ClusterDiscoveryService } from '../cluster';
 import { ATOMIC_QUEUES_CONFIG } from '../services/constants';
 
 interface GrpcUnaryCall {
@@ -20,6 +21,8 @@ interface GrpcUnaryCall {
 interface GrpcServerStreamingCall extends GrpcUnaryCall {
   write(message: Record<string, unknown>): void;
   end(): void;
+  on(event: 'cancelled', listener: () => void): void;
+  cancelled: boolean;
 }
 
 type GrpcCallback = (err: Error | null, response?: Record<string, unknown>) => void;
@@ -56,6 +59,9 @@ interface ProtoLoaderModule {
 export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(GrpcServerService.name);
   private server: GrpcServer | null = null;
+  private activePetitions = 0;
+  private readonly maxConcurrentPetitions: number;
+  private nodeAddressCache: { map: Map<string, string>; expiresAt: number } | null = null;
 
   constructor(
     @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
@@ -64,7 +70,10 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
     @Inject(forwardRef(() => MasterCoordinator))
     private readonly masterCoordinator: MasterCoordinator,
     private readonly leaderElection: LeaderElectionService,
-  ) {}
+    @Optional() private readonly clusterDiscovery?: ClusterDiscoveryService,
+  ) {
+    this.maxConcurrentPetitions = config.grpc?.maxConcurrentPetitions ?? 50;
+  }
 
   async onModuleInit(): Promise<void> {
     if (!this.config.grpc?.enabled) return;
@@ -110,6 +119,7 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
       petition: this.handlePetition.bind(this),
       petitionAndWait: this.handlePetitionAndWait.bind(this),
       reportIdle: this.handleReportIdle.bind(this),
+      reportWorkers: this.handleReportWorkers.bind(this),
       // Master → Master: cross-service
       forward: this.handleForward.bind(this),
       forwardAndWait: this.handleForwardAndWait.bind(this),
@@ -132,6 +142,10 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
     });
 
     this.logger.log(`gRPC server listening on ${listenAddress}`);
+
+    this.masterCoordinator.setWorkerListProvider(() =>
+      Promise.resolve(this.workerManager.listWorkers()),
+    );
   }
 
   async onApplicationShutdown(): Promise<void> {
@@ -181,17 +195,27 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
       await this.workerManager.enqueue(entityKey, message);
       callback(null, { accepted: true, rejectReason: '' });
     } catch (err) {
-      callback(null, { accepted: false, rejectReason: (err as Error).message });
+      const errorMsg = (err as Error).message;
+      const rejectReason =
+        errorMsg === 'WORKER_LIMIT_EXCEEDED' || errorMsg === 'QUEUE_DEPTH_EXCEEDED'
+          ? 'RESOURCE_EXHAUSTED'
+          : errorMsg;
+      callback(null, { accepted: false, rejectReason });
     }
   }
 
   private async handleEnqueueToWorkerAndWait(call: GrpcServerStreamingCall): Promise<void> {
+    const abortController = new AbortController();
+    call.on('cancelled', () => abortController.abort());
+
     try {
       const requestEpoch = call.request.masterEpoch as number;
       const currentEpoch = this.leaderElection.epoch;
       if (currentEpoch > 0 && requestEpoch < currentEpoch) {
-        call.write({ correlationId: '', error: `Stale epoch ${requestEpoch} < ${currentEpoch}` });
-        call.end();
+        if (!call.cancelled) {
+          call.write({ correlationId: '', error: `Stale epoch ${requestEpoch} < ${currentEpoch}` });
+          call.end();
+        }
         return;
       }
       if (requestEpoch > 0) {
@@ -202,19 +226,27 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
       const envelope = call.request.message as Record<string, unknown>;
       const message = this.deserializeEnvelope(envelope);
 
-      const result = await this.workerManager.enqueueAndWait(entityKey, message, 60000);
+      const result = await this.workerManager.enqueueAndWait(
+        entityKey, message, this.resolveAndWaitTimeout(message.entityType), abortController.signal,
+      );
 
-      call.write({
-        correlationId: message.correlationId ?? '',
-        result: Buffer.from(JSON.stringify(result), 'utf-8'),
-      });
-      call.end();
+      if (!call.cancelled) {
+        call.write({
+          correlationId: message.correlationId ?? '',
+          result: Buffer.from(JSON.stringify(result), 'utf-8'),
+        });
+        call.end();
+      }
     } catch (err) {
-      call.write({
-        correlationId: '',
-        error: (err as Error).message,
-      });
-      call.end();
+      if (!call.cancelled) {
+        const errorMsg = (err as Error).message;
+        const error =
+          errorMsg === 'WORKER_LIMIT_EXCEEDED' || errorMsg === 'QUEUE_DEPTH_EXCEEDED'
+            ? 'RESOURCE_EXHAUSTED'
+            : errorMsg;
+        call.write({ correlationId: '', error });
+        call.end();
+      }
     }
   }
 
@@ -244,36 +276,105 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
   // =========================================================================
 
   private async handlePetition(call: GrpcUnaryCall, callback: GrpcCallback): Promise<void> {
+    if (!this.masterCoordinator.isMaster()) {
+      callback(null, { accepted: false, rejectReason: 'NOT_MASTER' });
+      return;
+    }
+    const requestEpoch = call.request.masterEpoch as number;
+    const currentEpoch = this.leaderElection.epoch;
+    if (requestEpoch > 0 && requestEpoch > currentEpoch) {
+      callback(null, { accepted: false, rejectReason: 'STALE_MASTER' });
+      return;
+    }
+    if (this.masterCoordinator.isRebuildingTable()) {
+      callback(null, { accepted: false, rejectReason: 'MASTER_REBUILDING' });
+      return;
+    }
+    if (this.maxConcurrentPetitions > 0 && this.activePetitions >= this.maxConcurrentPetitions) {
+      callback(null, { accepted: false, rejectReason: 'RESOURCE_EXHAUSTED' });
+      return;
+    }
+
+    this.activePetitions++;
     try {
       const entityKey = call.request.entityKey as string;
       const envelope = call.request.message as Record<string, unknown>;
       const message = this.deserializeEnvelope(envelope);
 
-      // Delegate to MessageRouter's master dispatch (handles cross-replica + cross-service)
       await this.router.dispatchAsMaster(entityKey, message);
 
-      callback(null, { accepted: true, rejectReason: '' });
+      const resolution = this.masterCoordinator.resolve(entityKey);
+      const assignedReplicaAddr = await this.getReplicaAddress(resolution.replicaId);
+      callback(null, {
+        accepted: true,
+        rejectReason: '',
+        assignedReplicaId: resolution.replicaId,
+        assignedReplicaAddr,
+      });
     } catch (err) {
       callback(null, { accepted: false, rejectReason: (err as Error).message });
+    } finally {
+      this.activePetitions--;
     }
   }
 
   private async handlePetitionAndWait(call: GrpcServerStreamingCall): Promise<void> {
+    if (!this.masterCoordinator.isMaster()) {
+      call.write({ correlationId: '', error: 'NOT_MASTER' });
+      call.end();
+      return;
+    }
+    const requestEpoch = call.request.masterEpoch as number;
+    const currentEpoch = this.leaderElection.epoch;
+    if (requestEpoch > 0 && requestEpoch > currentEpoch) {
+      call.write({ correlationId: '', error: 'STALE_MASTER' });
+      call.end();
+      return;
+    }
+    if (this.masterCoordinator.isRebuildingTable()) {
+      call.write({ correlationId: '', error: 'MASTER_REBUILDING' });
+      call.end();
+      return;
+    }
+    if (this.maxConcurrentPetitions > 0 && this.activePetitions >= this.maxConcurrentPetitions) {
+      call.write({ correlationId: '', error: 'RESOURCE_EXHAUSTED' });
+      call.end();
+      return;
+    }
+
+    this.activePetitions++;
+    let cancelled = false;
+    const cancelPromise = new Promise<never>((_, reject) => {
+      call.on('cancelled', () => {
+        cancelled = true;
+        reject(new Error('Stream cancelled by client'));
+      });
+    });
+
     try {
       const entityKey = call.request.entityKey as string;
       const envelope = call.request.message as Record<string, unknown>;
       const message = this.deserializeEnvelope(envelope);
 
-      const result = await this.router.dispatchAsMasterAndWait(entityKey, message, 60000);
+      const result = await Promise.race([
+        this.router.dispatchAsMasterAndWait(entityKey, message, this.resolveAndWaitTimeout(message.entityType)),
+        cancelPromise,
+      ]);
 
-      call.write({
-        correlationId: message.correlationId ?? '',
-        result: Buffer.from(JSON.stringify(result), 'utf-8'),
-      });
-      call.end();
+      if (!cancelled) {
+        call.write({
+          correlationId: message.correlationId ?? '',
+          result: Buffer.from(JSON.stringify(result), 'utf-8'),
+        });
+        call.end();
+      }
     } catch (err) {
-      call.write({ correlationId: '', error: (err as Error).message });
-      call.end();
+      if (!cancelled) {
+        call.write({ correlationId: '', error: (err as Error).message });
+        call.end();
+      }
+    } finally {
+      this.activePetitions--;
     }
   }
 
@@ -283,6 +384,15 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
     callback(null, { shouldTeardown: true });
   }
 
+  private handleReportWorkers(call: GrpcUnaryCall, callback: GrpcCallback): void {
+    const replicaId = call.request.replicaId as string;
+    const entityKeys = call.request.entityKeys as string[];
+    const epoch = call.request.epoch as number;
+
+    const accepted = this.masterCoordinator.acceptWorkerReport(replicaId, entityKeys, epoch);
+    callback(null, { accepted, rejectReason: accepted ? '' : 'EPOCH_MISMATCH_OR_NOT_MASTER' });
+  }
+
   // =========================================================================
   // Master → Master: cross-service
   // =========================================================================
@@ -290,6 +400,10 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
   private async handleForward(call: GrpcUnaryCall, callback: GrpcCallback): Promise<void> {
     try {
       const envelope = call.request;
+      const senderEpoch = envelope.senderEpoch as number;
+      if (senderEpoch > 0) {
+        this.logger.debug(`Forward from origin=${envelope.originServer} epoch=${senderEpoch}`);
+      }
       const data = JSON.parse(Buffer.from(envelope.payload as Buffer).toString('utf-8'));
 
       await this.router.enqueue(
@@ -311,30 +425,49 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
   }
 
   private async handleForwardAndWait(call: GrpcServerStreamingCall): Promise<void> {
+    let cancelled = false;
+    const cancelPromise = new Promise<never>((_, reject) => {
+      call.on('cancelled', () => {
+        cancelled = true;
+        reject(new Error('Stream cancelled by client'));
+      });
+    });
+
     try {
       const envelope = call.request;
+      const senderEpoch = envelope.senderEpoch as number;
+      if (senderEpoch > 0) {
+        this.logger.debug(`ForwardAndWait from origin=${envelope.originServer} epoch=${senderEpoch}`);
+      }
       const data = JSON.parse(Buffer.from(envelope.payload as Buffer).toString('utf-8'));
 
-      const result = await this.router.enqueueAndWait(
-        envelope.entityType as string,
-        envelope.name as string,
-        envelope.entityId as string,
-        data,
-        60000,
-        { maxAttempts: envelope.maxAttempts as number },
-      );
+      const result = await Promise.race([
+        this.router.enqueueAndWait(
+          envelope.entityType as string,
+          envelope.name as string,
+          envelope.entityId as string,
+          data,
+          this.resolveAndWaitTimeout(envelope.entityType as string),
+          { maxAttempts: envelope.maxAttempts as number },
+        ),
+        cancelPromise,
+      ]);
 
-      call.write({
-        correlationId: envelope.correlationId as string,
-        result: Buffer.from(JSON.stringify(result), 'utf-8'),
-      });
-      call.end();
+      if (!cancelled) {
+        call.write({
+          correlationId: envelope.correlationId as string,
+          result: Buffer.from(JSON.stringify(result), 'utf-8'),
+        });
+        call.end();
+      }
     } catch (err) {
-      call.write({
-        correlationId: call.request.correlationId as string,
-        error: (err as Error).message,
-      });
-      call.end();
+      if (!cancelled) {
+        call.write({
+          correlationId: call.request.correlationId as string,
+          error: (err as Error).message,
+        });
+        call.end();
+      }
     }
   }
 
@@ -355,6 +488,32 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
   // =========================================================================
   // Helpers
   // =========================================================================
+
+  private resolveAndWaitTimeout(entityType?: string): number {
+    if (entityType) {
+      const entityConfig = this.config.entities?.[entityType];
+      if (entityConfig?.replyTimeout) return entityConfig.replyTimeout;
+    }
+    return this.config.grpc?.deadlines?.andWaitMs ?? 60000;
+  }
+
+  private async getReplicaAddress(replicaId: string): Promise<string> {
+    const localId = this.config.grpc?.serverId ?? 'local';
+    if (replicaId === localId) {
+      return this.config.grpc?.advertisedAddress ?? this.config.grpc?.listenAddress ?? '';
+    }
+    if (!this.clusterDiscovery) return '';
+    if (this.nodeAddressCache && Date.now() < this.nodeAddressCache.expiresAt) {
+      return this.nodeAddressCache.map.get(replicaId) ?? '';
+    }
+    const nodes = await this.clusterDiscovery.getNodes();
+    const map = new Map<string, string>();
+    for (const node of nodes) {
+      map.set(node.serverId, node.grpcAddress);
+    }
+    this.nodeAddressCache = { map, expiresAt: Date.now() + 2000 };
+    return map.get(replicaId) ?? '';
+  }
 
   private deserializeEnvelope(envelope: Record<string, unknown>): ISerializedMessage {
     const payload = envelope.payload

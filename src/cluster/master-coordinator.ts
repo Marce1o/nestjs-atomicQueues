@@ -23,6 +23,7 @@ export class MasterCoordinator implements OnModuleInit {
   private readonly isClusterMode: boolean;
   private readonly serviceGroup: string;
   private rebuilding = false;
+  private workerListProvider: (() => Promise<string[]>) | null = null;
 
   constructor(
     @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
@@ -51,6 +52,7 @@ export class MasterCoordinator implements OnModuleInit {
         this.logger.log('This replica lost master role — clearing assignment table');
         this.assignments.clear();
         this.replicaLoad.clear();
+        this.pushWorkersToMaster();
       }
     });
 
@@ -132,6 +134,10 @@ export class MasterCoordinator implements OnModuleInit {
     return this.leaderElection.getIsLeader();
   }
 
+  isRebuildingTable(): boolean {
+    return this.rebuilding;
+  }
+
   getAssignments(): Map<string, WorkerAssignment> {
     return new Map(this.assignments);
   }
@@ -142,6 +148,37 @@ export class MasterCoordinator implements OnModuleInit {
 
   getReplicaLoad(): Map<string, number> {
     return new Map(this.replicaLoad);
+  }
+
+  setWorkerListProvider(provider: () => Promise<string[]>): void {
+    this.workerListProvider = provider;
+  }
+
+  acceptWorkerReport(replicaId: string, entityKeys: string[], epoch: number): boolean {
+    if (!this.isMaster()) return false;
+    if (epoch > 0 && epoch !== this.leaderElection.epoch) return false;
+
+    if (!this.replicaLoad.has(replicaId)) {
+      this.replicaLoad.set(replicaId, 0);
+    }
+
+    let added = 0;
+    for (const entityKey of entityKeys) {
+      if (!this.assignments.has(entityKey)) {
+        this.assignments.set(entityKey, {
+          replicaId,
+          assignedAt: Date.now(),
+          lastActiveAt: Date.now(),
+        });
+        this.incrementLoad(replicaId);
+        added++;
+      }
+    }
+
+    this.logger.log(
+      `Accepted worker report from ${replicaId}: ${entityKeys.length} reported, ${added} new assignments`,
+    );
+    return true;
   }
 
   // =========================================================================
@@ -209,7 +246,7 @@ export class MasterCoordinator implements OnModuleInit {
 
         try {
           const client = await this.grpcClientPool.getClient(node.serverId, node.grpcAddress);
-          const deadline = new Date(Date.now() + 1000);
+          const deadline = new Date(Date.now() + (this.config.grpc?.deadlines?.syncMs ?? 1000));
           const workers = await new Promise<Array<{ entityKey: string }>>((resolve, reject) => {
             (client as unknown as Record<string, Function>).listWorkers(
               {},
@@ -271,6 +308,42 @@ export class MasterCoordinator implements OnModuleInit {
         this.replicaLoad.set(node.serverId, 0);
         this.logger.log(`New replica discovered: ${node.serverId}`);
       }
+    }
+  }
+
+  private async pushWorkersToMaster(): Promise<void> {
+    if (!this.grpcClientPool || !this.workerListProvider) return;
+
+    const workers = await this.workerListProvider();
+    if (workers.length === 0) return;
+
+    const masterAddress = await this.leaderElection.getMasterAddress();
+    if (!masterAddress) {
+      this.logger.warn('Cannot push workers: no master address found');
+      return;
+    }
+
+    try {
+      const client = await this.grpcClientPool.getClient('master', masterAddress);
+      const deadline = new Date(Date.now() + (this.config.grpc?.deadlines?.syncMs ?? 1000));
+      await new Promise<void>((resolve, reject) => {
+        (client as unknown as Record<string, Function>).reportWorkers(
+          {
+            replicaId: this.localReplicaId,
+            entityKeys: workers,
+            epoch: 0,
+          },
+          { deadline },
+          (err: Error | null, response: Record<string, unknown>) => {
+            if (err) return reject(err);
+            if (!response.accepted) return reject(new Error(response.rejectReason as string));
+            resolve();
+          },
+        );
+      });
+      this.logger.log(`Pushed ${workers.length} workers to new master at ${masterAddress}`);
+    } catch (err) {
+      this.logger.warn(`Failed to push workers to master: ${(err as Error).message}`);
     }
   }
 }
