@@ -5,6 +5,11 @@ import { getConstructorParamNames } from '../../decorators/utils';
 import { discoverCqrsClasses } from '../../utils';
 import { CommandDiscoveryService } from '../command-discovery';
 
+export type MessageHandler<T = unknown> = (
+  data: Record<string, unknown>,
+  context: { entityType: string; entityId: string; messageId: string },
+) => Promise<T> | T;
+
 @Injectable()
 export class HandlerExecutor implements OnModuleInit {
   private readonly logger = new Logger(HandlerExecutor.name);
@@ -13,6 +18,7 @@ export class HandlerExecutor implements OnModuleInit {
   private queryBus: IQueryBus | null = null;
 
   private commandRegistry = new Map<string, { targetClass: Type<unknown>; isQuery: boolean }>();
+  private functionRegistry = new Map<string, MessageHandler>();
   private commandDiscovery: CommandDiscoveryService | null = null;
 
   constructor(
@@ -83,7 +89,13 @@ export class HandlerExecutor implements OnModuleInit {
     this.commandRegistry.set(className, { targetClass, isQuery });
   }
 
+  registerHandler(messageName: string, handler: MessageHandler): void {
+    this.functionRegistry.set(messageName, handler);
+  }
+
   canHandle(entityType: string, messageName: string): boolean {
+    if (this.functionRegistry.has(messageName)) return true;
+
     if (this.commandDiscovery?.hasHandler(messageName, entityType)) return true;
 
     if (this.commandRegistry.has(messageName)) return true;
@@ -93,6 +105,11 @@ export class HandlerExecutor implements OnModuleInit {
 
   async execute(message: ISerializedMessage, entityKey: string): Promise<unknown> {
     const { name, data, entityType, entityId } = message;
+
+    const fn = this.functionRegistry.get(name);
+    if (fn) {
+      return fn(data, { entityType, entityId, messageId: message.id });
+    }
 
     if (this.commandDiscovery) {
       const fakeJob = { name, data, id: message.id };

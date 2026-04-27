@@ -92,6 +92,10 @@ describe('QueueBus instance', () => {
     enqueueAndWait: jest.fn().mockResolvedValue({ result: 42 }),
   };
 
+  const mockHandlerExecutor = {
+    registerHandler: jest.fn(),
+  };
+
   const mockConfig = {
     redis: { host: 'localhost', port: 6379 },
     keyPrefix: 'test',
@@ -105,7 +109,7 @@ describe('QueueBus instance', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    bus = new QueueBus(mockConfig as any, mockRouter as any);
+    bus = new QueueBus(mockConfig as any, mockRouter as any, mockHandlerExecutor as any);
   });
 
   describe('enqueue (direct with @EntityType)', () => {
@@ -191,6 +195,23 @@ describe('QueueBus instance', () => {
       expect(mockRouter.enqueue).toHaveBeenCalledWith('order', 'ShipOrderCommand', 'o-1', {
         carrier: 'express',
       });
+    });
+
+    it('should register plain function handler via forEntity', () => {
+      const handler = jest.fn();
+      const target = bus.forEntity('order');
+      target.handle('ShipOrder', handler);
+
+      expect(mockHandlerExecutor.registerHandler).toHaveBeenCalledWith('ShipOrder', handler);
+    });
+  });
+
+  describe('handle (plain function)', () => {
+    it('should register a plain function handler', () => {
+      const handler = jest.fn();
+      bus.handle('TransferFunds', handler);
+
+      expect(mockHandlerExecutor.registerHandler).toHaveBeenCalledWith('TransferFunds', handler);
     });
   });
 });

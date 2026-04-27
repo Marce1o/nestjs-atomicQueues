@@ -3,6 +3,7 @@ import { IAtomicQueuesModuleConfig, IMessageRef, Reply, InferReply } from '../..
 import { getEntityType } from '../../decorators';
 import { resolveKeyPrefix } from '../../utils';
 import { MessageRouter } from '../message-router';
+import { HandlerExecutor, MessageHandler } from '../handler-executor';
 import { ATOMIC_QUEUES_CONFIG } from '../constants';
 import { getJobName, extractData, extractEntityIdExplicit } from './queue-bus.utils';
 
@@ -61,6 +62,8 @@ export interface EntityTarget {
     commands: T[],
     options?: { entityId?: string },
   ): Promise<IMessageRef[]>;
+
+  handle(messageName: string, handler: MessageHandler): void;
 }
 
 @Injectable()
@@ -71,6 +74,7 @@ export class QueueBus {
   constructor(
     @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
     private readonly router: MessageRouter,
+    private readonly handlerExecutor: HandlerExecutor,
   ) {
     this.keyPrefix = resolveKeyPrefix(config);
   }
@@ -295,7 +299,19 @@ export class QueueBus {
         }
         return refs;
       },
+
+      handle(messageName: string, handler: MessageHandler): void {
+        self.handlerExecutor.registerHandler(messageName, handler);
+      },
     };
+  }
+
+  // =========================================================================
+  // PLAIN FUNCTION HANDLERS
+  // =========================================================================
+
+  handle(messageName: string, handler: MessageHandler): void {
+    this.handlerExecutor.registerHandler(messageName, handler);
   }
 
   // =========================================================================
