@@ -26,6 +26,10 @@ async function main() {
     return runGenerate(args.slice(1));
   }
 
+  if (command === 'dlq') {
+    return runDlq(args.slice(1));
+  }
+
   console.error(`Unknown command: ${command}`);
   printUsage();
   process.exit(1);
@@ -267,10 +271,147 @@ async function runGenerate(args: string[]): Promise<void> {
   }
 }
 
+// ─── dlq ────────────────────────────────────────────────────────────────────
+
+async function runDlq(args: string[]): Promise<void> {
+  const subcommand = args[0];
+  if (!subcommand || subcommand === '--help') {
+    console.log(`
+  dlq list [entity-type]                List dead-lettered messages (counts or entries)
+  dlq purge <entity-type> [--before <ts>]  Purge dead-letter entries
+  dlq replay <entity-type> [--id <id>] [--all]  Publish replay request via Pub/Sub
+    `);
+    return;
+  }
+
+  const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
+  const prefixIdx = args.indexOf('--prefix');
+  const keyPrefix = prefixIdx >= 0 ? args[prefixIdx + 1] : 'aq';
+  const redis = new Redis(redisUrl);
+
+  try {
+    if (subcommand === 'list') {
+      await dlqList(redis, keyPrefix, args.slice(1));
+    } else if (subcommand === 'purge') {
+      await dlqPurge(redis, keyPrefix, args.slice(1));
+    } else if (subcommand === 'replay') {
+      await dlqReplay(redis, keyPrefix, args.slice(1));
+    } else {
+      console.error(`Unknown dlq subcommand: ${subcommand}`);
+      process.exit(1);
+    }
+  } finally {
+    await redis.quit();
+  }
+}
+
+async function dlqList(redis: Redis, keyPrefix: string, args: string[]): Promise<void> {
+  const entityType = args.find((a) => !a.startsWith('--'));
+
+  if (entityType) {
+    const deadKey = `${keyPrefix}:dead:${entityType}`;
+    const limitIdx = args.indexOf('--limit');
+    const limit = limitIdx >= 0 ? parseInt(args[limitIdx + 1], 10) : 50;
+    const entries = await redis.lrange(deadKey, 0, limit - 1);
+    const total = await redis.llen(deadKey);
+
+    if (entries.length === 0) {
+      console.log(`No dead-letter entries for '${entityType}'.`);
+      return;
+    }
+
+    console.log(`\n  Dead-letter queue: ${entityType}  (${total} total, showing ${entries.length})\n`);
+    for (const raw of entries) {
+      const entry = JSON.parse(raw);
+      const ts = new Date(entry.deadLetteredAt).toISOString();
+      console.log(`  [${ts}]  ${entry.name}  entity=${entry.entityType}:${entry.entityId}  reason=${entry.deadLetterReason}`);
+    }
+    console.log('');
+    return;
+  }
+
+  const keys = await scanKeys(redis, `${keyPrefix}:dead:*`);
+  if (keys.length === 0) {
+    console.log('No dead-letter queues found.');
+    return;
+  }
+
+  console.log(`\n  Dead-letter queues  (prefix: ${keyPrefix})\n`);
+  for (const key of keys) {
+    const entityName = key.replace(`${keyPrefix}:dead:`, '');
+    const count = await redis.llen(key);
+    console.log(`  ${entityName}: ${count} entries`);
+  }
+  console.log('');
+}
+
+async function dlqPurge(redis: Redis, keyPrefix: string, args: string[]): Promise<void> {
+  const entityType = args.find((a) => !a.startsWith('--'));
+  if (!entityType) {
+    console.error('Usage: dlq purge <entity-type> [--before <timestamp-ms>]');
+    process.exit(1);
+  }
+
+  const deadKey = `${keyPrefix}:dead:${entityType}`;
+  const beforeIdx = args.indexOf('--before');
+
+  if (beforeIdx >= 0) {
+    const beforeTs = parseInt(args[beforeIdx + 1], 10);
+    const entries = await redis.lrange(deadKey, 0, -1);
+    let purged = 0;
+    for (const raw of entries) {
+      const entry = JSON.parse(raw);
+      if (entry.deadLetteredAt < beforeTs) {
+        await redis.lrem(deadKey, 1, raw);
+        purged++;
+      }
+    }
+    console.log(`Purged ${purged} entries from ${entityType} DLQ (before ${new Date(beforeTs).toISOString()}).`);
+  } else {
+    const count = await redis.llen(deadKey);
+    await redis.del(deadKey);
+    console.log(`Purged all ${count} entries from ${entityType} DLQ.`);
+  }
+}
+
+async function dlqReplay(redis: Redis, keyPrefix: string, args: string[]): Promise<void> {
+  const entityType = args.find((a) => !a.startsWith('--'));
+  if (!entityType) {
+    console.error('Usage: dlq replay <entity-type> [--id <message-id>] [--all]');
+    process.exit(1);
+  }
+
+  const idIdx = args.indexOf('--id');
+  const replayAll = args.includes('--all');
+  const channel = `${keyPrefix}:dlq:replay`;
+
+  if (idIdx >= 0) {
+    const messageId = args[idIdx + 1];
+    const payload = JSON.stringify({ entityType, messageId });
+    await redis.publish(channel, payload);
+    console.log(`Published replay request for message ${messageId} on ${entityType}.`);
+  } else if (replayAll) {
+    const deadKey = `${keyPrefix}:dead:${entityType}`;
+    const entries = await redis.lrange(deadKey, 0, -1);
+    if (entries.length === 0) {
+      console.log(`No dead-letter entries for '${entityType}'.`);
+      return;
+    }
+    for (const raw of entries) {
+      const entry = JSON.parse(raw);
+      const payload = JSON.stringify({ entityType, messageId: entry.id, message: entry });
+      await redis.publish(channel, payload);
+    }
+    console.log(`Published ${entries.length} replay requests for ${entityType}.`);
+  } else {
+    console.error('Specify --id <message-id> or --all');
+    process.exit(1);
+  }
+}
+
 // ─── shared ──────────────────────────────────────────────────────────────────
 
-async function fetchSnapshot(redis: Redis, keyPrefix: string): Promise<RegistrySnapshot> {
-  const pattern = `${keyPrefix}:registry:*`;
+async function scanKeys(redis: Redis, pattern: string): Promise<string[]> {
   const keys: string[] = [];
   let cursor = '0';
   do {
@@ -278,6 +419,11 @@ async function fetchSnapshot(redis: Redis, keyPrefix: string): Promise<RegistryS
     cursor = nextCursor;
     keys.push(...foundKeys);
   } while (cursor !== '0');
+  return keys;
+}
+
+async function fetchSnapshot(redis: Redis, keyPrefix: string): Promise<RegistrySnapshot> {
+  const keys = await scanKeys(redis, `${keyPrefix}:registry:*`);
 
   const entities: EntityContract[] = [];
   for (const key of keys) {
@@ -304,6 +450,9 @@ Commands:
   generate --ts [--output <path>]                         Generate TypeScript interfaces + DispatchMap
   generate --json-schema [--output <path>]                Generate JSON Schema
   generate --snapshot [--output <path>]                   Export full registry snapshot
+  dlq list [entity-type]                                  List dead-letter queues or entries
+  dlq purge <entity-type> [--before <ts>]                 Purge dead-letter entries
+  dlq replay <entity-type> [--id <id>] [--all]            Publish replay request via Pub/Sub
 
 Options:
   --output, -o <path>  Output directory (--classes) or file (other formats)
@@ -319,6 +468,10 @@ Examples:
   npx atomic-queues generate --classes -o src/generated
   npx atomic-queues generate --classes -o src/generated --entities warehouse,billing
   npx atomic-queues generate --ts --output ./generated/contracts.ts
+  npx atomic-queues dlq list
+  npx atomic-queues dlq list warehouse
+  npx atomic-queues dlq purge warehouse --before 1714000000000
+  npx atomic-queues dlq replay warehouse --all
 
 Usage (after --classes):
   import { ReserveStockCommand, GetStockQuery } from './generated/warehouse';
