@@ -283,56 +283,134 @@ In cluster mode, the master also enforces `maxConcurrentPetitions` to bound peti
 
 ## Configuration
 
+### Minimal (single server)
+
 ```typescript
 AtomicQueuesModule.forRoot({
-  // Required
   redis: { host: 'localhost', port: 6379 },
-  entities: {
-    account: {
-      onInterrupt: 'dead-letter',   // 'dead-letter' (default) | 'retry'
-      defaultEntityId: 'accountId',
-      workerIdleTimeout: 30_000,     // ms before idle worker teardown
-      workerMaxQueueDepth: 1000,     // per-worker backpressure
-      replyTimeout: 5000,
-    },
-  },
-
-  // Global admission control
-  maxTotalWorkers: 10_000,           // max concurrent entity workers (0 = unbounded)
-  maxTotalQueueDepth: 100_000,       // max total pending messages (0 = unbounded)
-
-  // WAL
-  wal: {
-    keyPrefix: 'aq',                 // Redis key prefix
-    cleanupIntervalMs: 60_000,       // periodic WAL cleanup
-  },
-
-  // Cluster mode (requires @grpc/grpc-js)
-  grpc: {
-    enabled: true,
-    serverId: 'server-1',            // unique per node
-    host: '0.0.0.0',
-    port: 50051,
-    serviceGroup: 'default',         // logical grouping for multi-service deployments
-    heartbeatMs: 2000,
-    nodeTTLMs: 6000,
-    leaderTTLMs: 10000,
-    maxConcurrentPetitions: 50,
-
-    // Circuit breaker (per-peer gRPC connections)
-    circuitBreakerFailureThreshold: 5,
-    circuitBreakerCooldownMs: 10_000,
-
-    // Peer connectivity monitoring
-    peerMonitorEnabled: true,
-    peerMonitorDebounceMs: 3000,
-
-    // Redis health monitoring
-    redisHealthCheckIntervalMs: 2000,
-    redisHealthFailureThreshold: 3,
-  },
 })
 ```
+
+That's it. Everything else has defaults. Add `entities` to customize per-entity behavior, `grpc` to enable cluster mode.
+
+### Full reference
+
+#### `AtomicQueuesModule.forRoot(config)`
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `redis` | `IRedisConfig` | **yes** | — | Redis connection. Accepts `{ host, port, password, db }` or `{ url }` |
+| `entities` | `Record<string, IEntityConfig>` | no | `{}` | Per-entity-type overrides (see below) |
+| `keyPrefix` | `string` | no | `'aq'` | Prefix for all Redis keys |
+| `maxTotalWorkers` | `number` | no | `10000` | Max concurrent entity workers across all types. `0` = unbounded |
+| `maxTotalQueueDepth` | `number` | no | `100000` | Max total pending messages across all workers. `0` = unbounded |
+| `retry` | `IRetryPolicy` | no | `{ maxAttempts: 1 }` | Default retry policy (strictly-once by default) |
+| `wal` | `IWalConfig` | no | `{ enabled: true }` | Write-ahead log settings |
+| `grpc` | `IGrpcConfig` | no | `{ enabled: false }` | Cluster mode — omit entirely for single-server |
+| `verbose` | `boolean` | no | `false` | Enable verbose logging |
+
+#### `IEntityConfig` — per entity type
+
+```typescript
+entities: {
+  account: { /* all fields optional */ },
+  order: { onInterrupt: 'dead-letter', workerIdleTimeout: 60_000 },
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `defaultEntityId` | `string` | — | Property name used as entity ID when `@QueueEntityId` is not present |
+| `onInterrupt` | `'dead-letter' \| 'retry'` | `'dead-letter'` | What to do when a message is found mid-execution on recovery |
+| `workerIdleTimeout` | `number` (ms) | `30000` | How long an idle worker lives before teardown |
+| `workerMaxQueueDepth` | `number` | `0` (unbounded) | Max pending messages per worker. Rejects with `QUEUE_DEPTH_EXCEEDED` |
+| `replyTimeout` | `number` (ms) | `5000` | Default timeout for `enqueueAndWait` on this entity type |
+| `retry` | `IRetryPolicy` | inherits root | Per-entity retry policy override |
+
+#### `IRetryPolicy`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `maxAttempts` | `number` | `1` | Total attempts. `1` = strictly once, no retries |
+| `backoff` | `'fixed' \| 'exponential'` | `'exponential'` | Backoff strategy between retries |
+| `backoffDelay` | `number` (ms) | `1000` | Base delay between retries |
+| `maxDelay` | `number` (ms) | `30000` | Maximum delay cap for exponential backoff |
+
+#### `IWalConfig` — write-ahead log
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `boolean` | `true` | Disable WAL for testing only — **never disable in production** |
+| `cleanupInterval` | `number` (ms) | `5000` | How often to evict completed/failed WAL entries |
+| `entryTTL` | `number` (seconds) | `86400` (24h) | Safety TTL for WAL entries in Redis |
+
+#### `IGrpcConfig` — cluster mode
+
+Omit entirely for single-server. Set `enabled: true` to activate.
+
+```typescript
+grpc: {
+  enabled: true,
+  listenAddress: '0.0.0.0:50051',
+  advertisedAddress: '10.0.1.5:50051',
+  serverId: 'billing-1',
+  serviceGroup: 'billing',
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `boolean` | `false` | Enable gRPC cluster transport |
+| `listenAddress` | `string` | `'0.0.0.0:50051'` | Address the gRPC server binds to |
+| `advertisedAddress` | `string` | `os.hostname() + ':50051'` | Address other nodes use to reach this one |
+| `serverId` | `string` | auto-generated UUID | Unique node ID. Must be stable across restarts for predictable leader election |
+| `serviceGroup` | `string` | `'default'` | Logical grouping — nodes in the same group form a replica set |
+| `maxForwardHops` | `number` | `3` | Max cross-service forwarding hops to prevent loops |
+| `maxConcurrentPetitions` | `number` | `50` | Max in-flight petitions the master processes. `0` = unbounded |
+
+**Timing (ms)**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `heartbeatMs` | `400` | How often this node heartbeats to Redis |
+| `nodeTTLMs` | `1500` | Node considered dead after this long without heartbeat |
+| `reconcileIntervalMs` | `2000` | How often to scan Redis for membership changes |
+| `leaderTTLMs` | `2000` | Leader lock TTL |
+| `leaderRenewalMs` | `400` | Leader lock renewal interval |
+| `leaderDebounceMs` | `800` | Debounce window before recomputing leader after ring changes |
+
+**Health monitoring**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `peerMonitorEnabled` | `true` | Watch gRPC channel state for fast failure detection |
+| `peerSuspectDebounceMs` | `500` | Debounce before declaring a peer suspected-dead |
+| `redisHealthCheckMs` | `500` | Redis PING interval |
+| `redisHealthFailureThreshold` | `3` | Consecutive PING failures before degraded mode |
+
+**Circuit breaker (per-peer gRPC connections)**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `circuitBreakerFailureThreshold` | `3` | Consecutive failures before opening the circuit |
+| `circuitBreakerCooldownMs` | `2000` | Time before a half-open probe is allowed |
+
+**gRPC keepalive**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `keepaliveTimeMs` | `10000` | Keepalive ping interval (minimum enforced by grpc-js) |
+| `keepaliveTimeoutMs` | `5000` | Connection dead if no keepalive response |
+
+**RPC deadlines** (`deadlines` sub-object)
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `deadlines.forwardMs` | `1500` | Deadline for fire-and-forget RPCs (forward, petition, enqueueToWorker) |
+| `deadlines.pingMs` | `1000` | Deadline for health ping |
+| `deadlines.andWaitMs` | `60000` | Default deadline for `*AndWait` RPCs when no `replyTimeout` is set |
+| `deadlines.syncMs` | `1000` | Deadline for `listWorkers` during master table rebuild |
+| `deadlines.connectivityWatchMs` | `30000` | Timeout for peer connectivity watch loop re-arm |
 
 ---
 
