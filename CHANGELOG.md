@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-04-26
+
+### ⚠ BREAKING CHANGES
+
+- **Execution model replaced.** Shared executor pool + Redis gates replaced by dedicated Worker Threads per entity instance. Each `entity:entityId` gets its own in-memory worker with sequential FIFO processing.
+- **Actor surface removed.** `@Actor`, `@On`, `ActorSystem`, `ActorRegistry`, actor state persistence — all removed. Use `@CommandHandler`/`@QueryHandler` from `@nestjs/cqrs` or plain function handlers via `queueBus.handle()`.
+- **Executor pool removed.** `ExecutorPoolService`, `SchedulerService`, `GateService`, `LogService`, `ResultCollector` — all removed. Workers now process directly; no polling, no gates, no shared dispatch loop.
+- **Registry removed.** `RegistryService`, schema validation, `ClusterContracts`, `queueBus.introspect()` — removed. Entity types are now discovered from CQRS handler metadata and module config.
+- **`IAtomicQueuesModuleConfig` restructured.** Removed `executor`, `registry`, `defaultReplyTimeout`, `gateTTL`, actor-related options. Added `grpc`, `wal`, `maxTotalWorkers`, `maxTotalQueueDepth`.
+- **`IEntityConfig` restructured.** Removed `gateTTL`, `actorIdleTimeout`, `statePersistence`. Added `workerIdleTimeout`, `workerMaxQueueDepth`, `onInterrupt`.
+
+### Added
+
+- **Worker Thread execution.** One worker per `entity:entityId`, sequential message processing, concurrent + parallel across entities. Workers auto-spawn on first message and teardown after idle timeout (default 30s).
+- **Write-ahead log (WAL).** Lua-based state machine tracks every message through `enqueued → dispatched → completed/failed`. Messages found in `dispatched` state on recovery are dead-lettered (or retried, configurable via `onInterrupt`).
+- **gRPC cluster topology.** Multi-server support with consistent hash ring, lock-free leader election, epoch fencing, and master assignment table. Messages are forwarded to the correct server automatically.
+- **Cluster health monitoring.** `GrpcPeerMonitor` (channel state watching), `RedisHealthMonitor` (PING-based), per-peer circuit breakers. Degraded Redis triggers automatic step-down.
+- **`MessageRouter` service.** Unified routing layer — handles local dispatch, master petition, cached assignment forwarding, and request-reply semantics.
+- **Consistent hash ring.** 150 virtual nodes per server, O(log N) lookup, incremental rebalancing on topology changes.
+- **Plain function handlers.** `queueBus.handle('PlaceOrder', async (data, ctx) => { ... })` — no CQRS, no decorators, no classes. Also available via `forEntity().handle()`.
+- **CLI dead-letter commands.** `npx atomic-queues dlq list`, `dlq purge`, `dlq replay` for inspecting and managing dead-lettered messages.
+- **Global admission control.** `maxTotalWorkers` and `maxTotalQueueDepth` caps to prevent unbounded resource growth.
+
+### Deprecated
+
+- **`@JobCommand` / `@JobQuery` decorators.** Use `@EntityType` + `@QueueEntityId` with standard `@CommandHandler`/`@QueryHandler`, or plain function handlers.
+- **Two-argument `@QueueEntity('type', 'idProp')`.** Use `@EntityType('type')` + `@QueueEntityId()` instead.
+
+### Removed
+
+- `ActorSystem`, `ActorRegistry`, `@Actor`, `@On` — actor surface
+- `ExecutorPoolService` — shared executor pool
+- `SchedulerService` — Lua dispatch scheduler
+- `GateService` — Redis gate mutex
+- `LogService` — message log manager
+- `ResultCollector` — multiplexed result subscriber
+- `RegistryService`, `SchemaConverter` — distributed contract registry
+- `@Schema` decorator, schema validation, `ClusterContracts`, codegen `--classes`
+- `WIRE-PROTOCOL.md` — documented v2 Redis key layout, now obsolete
+
+---
+
 ## [2.1.1] - 2026-04-22
 
 ### Changed
