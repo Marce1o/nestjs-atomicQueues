@@ -31,6 +31,9 @@ service AtomicQueuesNode {
   // Sub-replica tells master a worker went idle
   rpc ReportIdle (ReportIdleRequest) returns (ReportIdleResponse);
 
+  // Replica → Master: push worker list after failover
+  rpc ReportWorkers (ReportWorkersRequest) returns (ReportWorkersResponse);
+
   // ─── Master ↔ Master: cross-service ───────────────────────────────────
 
   // Forward a message to another service's master
@@ -59,6 +62,7 @@ message MessageEnvelope {
   int32  max_attempts    = 10;
   string origin_server   = 11;
   int32  hops            = 12;
+  int64  sender_epoch    = 13;
 }
 
 message ForwardAck {
@@ -122,11 +126,14 @@ message WorkerInfo {
 message PetitionRequest {
   string entity_key       = 1;
   MessageEnvelope message = 2;
+  int64  master_epoch     = 3;
 }
 
 message PetitionResponse {
-  bool   accepted      = 1;
-  string reject_reason = 2;
+  bool   accepted              = 1;
+  string reject_reason         = 2;
+  string assigned_replica_id   = 3;
+  string assigned_replica_addr = 4;
 }
 
 message ReportIdleRequest {
@@ -136,6 +143,17 @@ message ReportIdleRequest {
 
 message ReportIdleResponse {
   bool should_teardown = 1;  // master confirms teardown
+}
+
+message ReportWorkersRequest {
+  string replica_id            = 1;
+  repeated string entity_keys  = 2;
+  int64  epoch                 = 3;
+}
+
+message ReportWorkersResponse {
+  bool   accepted      = 1;
+  string reject_reason = 2;
 }
 
 // ─── Health ───────────────────────────────────────────────────────────────
