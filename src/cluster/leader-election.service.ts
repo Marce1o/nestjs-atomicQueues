@@ -1,4 +1,11 @@
-import { Injectable, Logger, Inject, Optional, OnModuleInit, OnApplicationShutdown } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  Inject,
+  Optional,
+  OnModuleInit,
+  OnApplicationShutdown,
+} from '@nestjs/common';
 import Redis from 'ioredis';
 import { IAtomicQueuesModuleConfig } from '../domain';
 import { resolveKeyPrefix } from '../utils';

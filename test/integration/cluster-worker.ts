@@ -16,7 +16,13 @@ import { NestFactory } from '@nestjs/core';
 import { Module, Injectable } from '@nestjs/common';
 import { CommandHandler, ICommandHandler, CqrsModule } from '@nestjs/cqrs';
 import Redis from 'ioredis';
-import { AtomicQueuesModule, QueueBus, EntityType, LeaderElectionService, ClusterDiscoveryService } from '../../src';
+import {
+  AtomicQueuesModule,
+  QueueBus,
+  EntityType,
+  LeaderElectionService,
+  ClusterDiscoveryService,
+} from '../../src';
 import { ATOMIC_QUEUES_REDIS } from '../../src/services/constants';
 
 // ─── Messages ────────────────────────────────────────────────────────────────
@@ -116,12 +122,24 @@ interface EnqueueBatchMessage {
   }>;
 }
 
-interface GetStateMessage { type: 'get-state'; }
-interface GetLeaderMessage { type: 'get-leader'; }
-interface ShutdownMessage { type: 'shutdown'; }
-interface PauseRedisMessage { type: 'pause-redis'; }
-interface ResumeRedisMessage { type: 'resume-redis'; }
-interface GetHealthMessage { type: 'get-health'; }
+interface GetStateMessage {
+  type: 'get-state';
+}
+interface GetLeaderMessage {
+  type: 'get-leader';
+}
+interface ShutdownMessage {
+  type: 'shutdown';
+}
+interface PauseRedisMessage {
+  type: 'pause-redis';
+}
+interface ResumeRedisMessage {
+  type: 'resume-redis';
+}
+interface GetHealthMessage {
+  type: 'get-health';
+}
 
 type WorkerMessage =
   | BootMessage
@@ -148,9 +166,11 @@ function send(msg: Record<string, unknown>): void {
 
 async function boot(config: BootMessage['config']): Promise<void> {
   const handlerModule =
-    config.handlers === 'counter' ? CounterHandlerModule :
-    config.handlers === 'remote' ? RemoteHandlerModule :
-    AllHandlersModule;
+    config.handlers === 'counter'
+      ? CounterHandlerModule
+      : config.handlers === 'remote'
+        ? RemoteHandlerModule
+        : AllHandlersModule;
 
   @Module({
     imports: [
@@ -185,9 +205,7 @@ async function boot(config: BootMessage['config']): Promise<void> {
 
 async function handleEnqueue(msg: EnqueueMessage): Promise<void> {
   try {
-    const ref = await queueBus.enqueueRaw(
-      msg.entityType, msg.messageName, msg.entityId, msg.data,
-    );
+    const ref = await queueBus.enqueueRaw(msg.entityType, msg.messageName, msg.entityId, msg.data);
     send({ type: 'enqueue-result', id: ref.id, success: true });
   } catch (err: any) {
     send({ type: 'enqueue-result', id: null, success: false, error: err.message });
@@ -196,9 +214,7 @@ async function handleEnqueue(msg: EnqueueMessage): Promise<void> {
 
 async function handleEnqueueBatch(msg: EnqueueBatchMessage): Promise<void> {
   const results = await Promise.allSettled(
-    msg.messages.map((m) =>
-      queueBus.enqueueRaw(m.entityType, m.messageName, m.entityId, m.data),
-    ),
+    msg.messages.map((m) => queueBus.enqueueRaw(m.entityType, m.messageName, m.entityId, m.data)),
   );
   const errors = results
     .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
@@ -216,9 +232,7 @@ function handleGetState(): void {
   send({
     type: 'state',
     counters: Object.fromEntries(counters),
-    remoteWork: Object.fromEntries(
-      Array.from(remoteWork.entries()).map(([k, v]) => [k, v.length]),
-    ),
+    remoteWork: Object.fromEntries(Array.from(remoteWork.entries()).map(([k, v]) => [k, v.length])),
   });
 }
 
@@ -265,15 +279,27 @@ function handleGetHealth(): void {
 
 process.on('message', async (msg: WorkerMessage) => {
   switch (msg.type) {
-    case 'boot':         return boot(msg.config).catch((e) => { send({ type: 'error', error: e.message }); process.exit(1); });
-    case 'enqueue':      return handleEnqueue(msg);
-    case 'enqueue-batch': return handleEnqueueBatch(msg);
-    case 'get-state':    return handleGetState();
-    case 'get-leader':   return handleGetLeader();
-    case 'shutdown':     return handleShutdown();
-    case 'pause-redis':  return handlePauseRedis();
-    case 'resume-redis': return handleResumeRedis();
-    case 'get-health':   return handleGetHealth();
+    case 'boot':
+      return boot(msg.config).catch((e) => {
+        send({ type: 'error', error: e.message });
+        process.exit(1);
+      });
+    case 'enqueue':
+      return handleEnqueue(msg);
+    case 'enqueue-batch':
+      return handleEnqueueBatch(msg);
+    case 'get-state':
+      return handleGetState();
+    case 'get-leader':
+      return handleGetLeader();
+    case 'shutdown':
+      return handleShutdown();
+    case 'pause-redis':
+      return handlePauseRedis();
+    case 'resume-redis':
+      return handleResumeRedis();
+    case 'get-health':
+      return handleGetHealth();
   }
 });
 

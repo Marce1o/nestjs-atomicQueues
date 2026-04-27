@@ -60,7 +60,10 @@ function createMockPeerMonitor(states: Record<string, PeerLivenessState> = {}) {
     _emit(serverId: string, state: PeerLivenessState) {
       for (const l of listeners) l(serverId, state);
     },
-  } as unknown as GrpcPeerMonitor & { _listeners: typeof listeners; _emit: (s: string, st: PeerLivenessState) => void };
+  } as unknown as GrpcPeerMonitor & {
+    _listeners: typeof listeners;
+    _emit: (s: string, st: PeerLivenessState) => void;
+  };
 }
 
 function createMockRedisHealthMonitor(initialHealthy = true) {
@@ -80,7 +83,10 @@ function createMockRedisHealthMonitor(initialHealthy = true) {
     _emit(healthy: boolean) {
       for (const l of listeners) l(healthy);
     },
-  } as unknown as RedisHealthMonitor & { _listeners: typeof listeners; _emit: (h: boolean) => void };
+  } as unknown as RedisHealthMonitor & {
+    _listeners: typeof listeners;
+    _emit: (h: boolean) => void;
+  };
 }
 
 function createService(
@@ -211,7 +217,8 @@ describe('ClusterDiscoveryService — hybrid liveness', () => {
       // Should have called hset again (re-registration)
       const hsetCalls = redis.hset.mock.calls;
       const registrationCalls = hsetCalls.filter(
-        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('cluster:nodes:server-1'),
+        (call: unknown[]) =>
+          typeof call[0] === 'string' && (call[0] as string).includes('cluster:nodes:server-1'),
       );
       expect(registrationCalls.length).toBeGreaterThanOrEqual(2);
 

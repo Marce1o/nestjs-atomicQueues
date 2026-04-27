@@ -40,17 +40,21 @@ function createMockMasterCoordinator(isMaster = true, isRebuilding = false) {
 
 function createMockLeaderElection(epoch = 5) {
   return {
-    get epoch() { return epoch; },
+    get epoch() {
+      return epoch;
+    },
     getIsLeader: jest.fn(() => true),
     updateSeenEpoch: jest.fn(),
   };
 }
 
-function createServer(opts: {
-  isMaster?: boolean;
-  epoch?: number;
-  isRebuilding?: boolean;
-} = {}) {
+function createServer(
+  opts: {
+    isMaster?: boolean;
+    epoch?: number;
+    isRebuilding?: boolean;
+  } = {},
+) {
   const router = createMockRouter();
   const workerManager = createMockWorkerManager();
   const masterCoordinator = createMockMasterCoordinator(

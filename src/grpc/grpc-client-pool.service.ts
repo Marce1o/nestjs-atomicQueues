@@ -44,7 +44,11 @@ interface ProtoLoaderModule {
 }
 
 /** Minimal shape of a proto-loaded service constructor. */
-type GrpcServiceConstructor = new (address: string, credentials: unknown, options?: Record<string, unknown>) => GrpcClientInstance;
+type GrpcServiceConstructor = new (
+  address: string,
+  credentials: unknown,
+  options?: Record<string, unknown>,
+) => GrpcClientInstance;
 
 /** Minimal shape of the loaded proto descriptor used in this pool. */
 interface ProtoDescriptor {
@@ -202,7 +206,11 @@ export class GrpcClientPool implements OnModuleInit, OnApplicationShutdown {
       'grpc.keepalive_timeout_ms': this.config.grpc?.keepaliveTimeoutMs ?? 5000,
       'grpc.keepalive_permit_without_calls': 1,
     };
-    const client = new ServiceClass(address, this.grpcModule!.credentials.createInsecure(), channelOptions);
+    const client = new ServiceClass(
+      address,
+      this.grpcModule!.credentials.createInsecure(),
+      channelOptions,
+    );
 
     this.clients.set(serverId, { address, client });
     this.logger.log(`Connected to peer ${serverId} at ${address}`);
@@ -241,20 +249,24 @@ export class GrpcClientPool implements OnModuleInit, OnApplicationShutdown {
 
     const deadline = new Date(Date.now() + (this.config.grpc?.deadlines?.forwardMs ?? 1500));
     return new Promise<IMessageRef>((resolve, reject) => {
-      client.forward(envelope, { deadline }, (err: Error | null, response: Record<string, unknown>) => {
-        if (err) {
-          reject(new Error(`gRPC forward to ${serverId} failed: ${err.message}`));
-          return;
-        }
-        if (!response.accepted) {
-          reject(new Error(`Forward rejected by ${serverId}: ${response.rejectReason}`));
-          return;
-        }
-        resolve({
-          id: message.id,
-          entityKey: `${message.entityType}:${message.entityId}`,
-        });
-      });
+      client.forward(
+        envelope,
+        { deadline },
+        (err: Error | null, response: Record<string, unknown>) => {
+          if (err) {
+            reject(new Error(`gRPC forward to ${serverId} failed: ${err.message}`));
+            return;
+          }
+          if (!response.accepted) {
+            reject(new Error(`Forward rejected by ${serverId}: ${response.rejectReason}`));
+            return;
+          }
+          resolve({
+            id: message.id,
+            entityKey: `${message.entityType}:${message.entityId}`,
+          });
+        },
+      );
     });
   }
 

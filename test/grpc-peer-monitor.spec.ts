@@ -24,9 +24,11 @@ function createMockChannel(initialState = ConnectivityState.IDLE): MockChannel {
 
   const channel: MockChannel = {
     getConnectivityState: jest.fn((_tryToConnect: boolean) => currentState),
-    watchConnectivityState: jest.fn((_state: number, _deadline: Date, cb: (err?: Error) => void) => {
-      pendingCallbacks.push(cb);
-    }),
+    watchConnectivityState: jest.fn(
+      (_state: number, _deadline: Date, cb: (err?: Error) => void) => {
+        pendingCallbacks.push(cb);
+      },
+    ),
     _pendingCallbacks: pendingCallbacks,
     _simulateStateChange(newState: number) {
       currentState = newState;

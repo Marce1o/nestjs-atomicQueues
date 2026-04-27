@@ -91,7 +91,7 @@ export function getConstructorParamNames(target: Function): string[] {
   if (names.length > 1 && names.every((n) => n.length <= 2)) {
     throw new Error(
       `Constructor parameter names for ${target.name} appear minified (${names.join(', ')}). ` +
-      `Ensure constructor parameter names are not minified.`,
+        `Ensure constructor parameter names are not minified.`,
     );
   }
 

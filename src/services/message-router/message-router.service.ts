@@ -20,7 +20,10 @@ export class MessageRouter implements OnModuleInit {
 
   private nodeCache: { nodes: ClusterNode[]; expiresAt: number } | null = null;
   private masterCache: { address: string | null; expiresAt: number } | null = null;
-  private readonly assignmentCache = new Map<string, { replicaId: string; replicaAddress: string; epoch: number; cachedAt: number }>();
+  private readonly assignmentCache = new Map<
+    string,
+    { replicaId: string; replicaAddress: string; epoch: number; cachedAt: number }
+  >();
   private unsubscribePeerMonitor: (() => void) | null = null;
 
   constructor(
@@ -158,7 +161,12 @@ export class MessageRouter implements OnModuleInit {
       const cached = this.getAssignmentFromCache(entityKey);
       if (cached) {
         try {
-          return await this.dispatchViaCachedAssignmentAndWait<R>(entityKey, message, timeout, cached);
+          return await this.dispatchViaCachedAssignmentAndWait<R>(
+            entityKey,
+            message,
+            timeout,
+            cached,
+          );
         } catch {
           this.assignmentCache.delete(entityKey);
         }
@@ -229,7 +237,11 @@ export class MessageRouter implements OnModuleInit {
         const deadline = new Date(Date.now() + (this.config.grpc?.deadlines?.forwardMs ?? 1500));
         await new Promise<void>((resolve, reject) => {
           (client as unknown as Record<string, Function>).petition(
-            { entityKey, message: this.serializeEnvelope(message), masterEpoch: this.leaderElection?.epoch ?? 0 },
+            {
+              entityKey,
+              message: this.serializeEnvelope(message),
+              masterEpoch: this.leaderElection?.epoch ?? 0,
+            },
             { deadline },
             (err: Error | null, response: Record<string, unknown>) => {
               if (err) return reject(err);
@@ -441,9 +453,7 @@ export class MessageRouter implements OnModuleInit {
   private async forwardToForeignService(message: ISerializedMessage): Promise<void> {
     const serviceGroup = await this.clusterDiscovery?.resolveServiceGroup(message.entityType);
     if (!serviceGroup) {
-      throw new Error(
-        `No service group found for foreign entity type '${message.entityType}'`,
-      );
+      throw new Error(`No service group found for foreign entity type '${message.entityType}'`);
     }
 
     const foreignAddress = await this.leaderElection?.getForeignMasterAddress(serviceGroup);
@@ -470,9 +480,7 @@ export class MessageRouter implements OnModuleInit {
   ): Promise<R> {
     const serviceGroup = await this.clusterDiscovery?.resolveServiceGroup(message.entityType);
     if (!serviceGroup) {
-      throw new Error(
-        `No service group found for foreign entity type '${message.entityType}'`,
-      );
+      throw new Error(`No service group found for foreign entity type '${message.entityType}'`);
     }
 
     const foreignAddress = await this.leaderElection?.getForeignMasterAddress(serviceGroup);

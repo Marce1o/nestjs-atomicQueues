@@ -51,9 +51,9 @@ describe('EntityWorkerManager — global admission control', () => {
       await manager.enqueue('test:e1', createMessage({ entityId: 'e1' }));
       await manager.enqueue('test:e2', createMessage({ entityId: 'e2' }));
 
-      await expect(
-        manager.enqueue('test:e3', createMessage({ entityId: 'e3' })),
-      ).rejects.toThrow('WORKER_LIMIT_EXCEEDED');
+      await expect(manager.enqueue('test:e3', createMessage({ entityId: 'e3' }))).rejects.toThrow(
+        'WORKER_LIMIT_EXCEEDED',
+      );
     });
 
     it('should allow enqueue to existing entity even at worker limit', async () => {

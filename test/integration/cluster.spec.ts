@@ -20,7 +20,13 @@
 import 'reflect-metadata';
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, Module, Injectable, Logger } from '@nestjs/common';
-import { CommandHandler, ICommandHandler, QueryHandler, IQueryHandler, CqrsModule } from '@nestjs/cqrs';
+import {
+  CommandHandler,
+  ICommandHandler,
+  QueryHandler,
+  IQueryHandler,
+  CqrsModule,
+} from '@nestjs/cqrs';
 import Redis from 'ioredis';
 
 import {
@@ -244,9 +250,7 @@ describe('Scenario 1: Multi-replica single service — 100 concurrent enqueues',
     for (let i = 0; i < TOTAL; i++) {
       const entityId = ENTITY_IDS[i % ENTITY_IDS.length];
       const node = nodes[i % nodes.length];
-      promises.push(
-        node.queueBus.enqueue(new IncrementCommand(entityId, 1)),
-      );
+      promises.push(node.queueBus.enqueue(new IncrementCommand(entityId, 1)));
     }
 
     await Promise.all(promises);
@@ -327,9 +331,10 @@ describe('Scenario 2: Cross-service forwarding — gRPC Forward RPC', () => {
     }
 
     // Wait for both service groups to elect masters
-    await waitFor(() =>
-      svcA.some((n) => n.leaderElection.getIsLeader()) &&
-      svcB.some((n) => n.leaderElection.getIsLeader()),
+    await waitFor(
+      () =>
+        svcA.some((n) => n.leaderElection.getIsLeader()) &&
+        svcB.some((n) => n.leaderElection.getIsLeader()),
     );
 
     // Give entity registry time to propagate (heartbeat=400ms)
@@ -414,7 +419,9 @@ describe('Scenario 2: Cross-service forwarding — gRPC Forward RPC', () => {
     await waitFor(() => (counters.get('bi-dir') ?? 0) >= TOTAL);
 
     expect(counters.get('bi-dir')).toBe(TOTAL);
-    console.log(`  Bidirectional cross-service: ${counters.get('bi-dir')} increments from svc-beta to svc-alpha`);
+    console.log(
+      `  Bidirectional cross-service: ${counters.get('bi-dir')} increments from svc-beta to svc-alpha`,
+    );
   }, 30000);
 });
 
@@ -477,11 +484,7 @@ describe('Scenario 3: Master failover — kill master, re-elect, continue proces
 
     // Wait for a new master (lock TTL=2s, poll=400ms → worst case ~3s)
     const survivors = nodes.filter((_, i) => i !== masterIdx);
-    await waitFor(
-      () => survivors.some((n) => n.leaderElection.getIsLeader()),
-      5000,
-      200,
-    );
+    await waitFor(() => survivors.some((n) => n.leaderElection.getIsLeader()), 5000, 200);
 
     const newMaster = survivors.find((n) => n.leaderElection.getIsLeader())!;
     expect(newMaster).toBeDefined();
@@ -496,12 +499,12 @@ describe('Scenario 3: Master failover — kill master, re-elect, continue proces
     }
     await Promise.all(promises2);
 
-    await waitFor(
-      () => (counters.get('failover-cnt') ?? 0) >= PHASE1 + PHASE2,
-    );
+    await waitFor(() => (counters.get('failover-cnt') ?? 0) >= PHASE1 + PHASE2);
 
     expect(counters.get('failover-cnt')).toBe(PHASE1 + PHASE2);
-    console.log(`  Phase 2: ${counters.get('failover-cnt')} total increments (${PHASE1} + ${PHASE2})`);
+    console.log(
+      `  Phase 2: ${counters.get('failover-cnt')} total increments (${PHASE1} + ${PHASE2})`,
+    );
     console.log(`  No lost messages after failover`);
   }, 60000);
 });

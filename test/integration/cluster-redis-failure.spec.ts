@@ -29,8 +29,8 @@ let WORKER_PATH: string;
 try {
   execSync(
     `npx tsc ${WORKER_TS} --outDir ${BUILD_DIR} --rootDir ${path.join(__dirname, '..', '..')} ` +
-    '--esModuleInterop --module commonjs --target es2022 --moduleResolution node ' +
-    '--experimentalDecorators --emitDecoratorMetadata --skipLibCheck --declaration false',
+      '--esModuleInterop --module commonjs --target es2022 --moduleResolution node ' +
+      '--experimentalDecorators --emitDecoratorMetadata --skipLibCheck --declaration false',
     { cwd: path.join(__dirname, '..', '..'), stdio: 'pipe' },
   );
   WORKER_PATH = path.join(BUILD_DIR, 'test', 'integration', 'cluster-worker.js');
@@ -78,7 +78,9 @@ function spawnWorker(config: {
   proc.stderr?.resume();
 
   let alive = true;
-  proc.on('exit', () => { alive = false; });
+  proc.on('exit', () => {
+    alive = false;
+  });
 
   const pendingRpcs: Array<{
     expectType: string;
@@ -97,10 +99,7 @@ function spawnWorker(config: {
   });
 
   const readyPromise = new Promise<any>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`Boot timeout for ${config.serverId}`)),
-      45000,
-    );
+    const timer = setTimeout(() => reject(new Error(`Boot timeout for ${config.serverId}`)), 45000);
     pendingRpcs.push({ expectType: 'ready', resolve, reject, timer });
   });
 
@@ -117,12 +116,15 @@ function spawnWorker(config: {
     proc,
     serverId: config.serverId,
     grpcPort: config.grpcPort,
-    get alive() { return alive; },
+    get alive() {
+      return alive;
+    },
 
     rpc(msg, expectType, timeoutMs = 30000) {
       return new Promise((resolve, reject) => {
         const timer = setTimeout(
-          () => reject(new Error(`RPC timeout waiting for '${expectType}' from ${config.serverId}`)),
+          () =>
+            reject(new Error(`RPC timeout waiting for '${expectType}' from ${config.serverId}`)),
           timeoutMs,
         );
         pendingRpcs.push({ expectType, resolve, reject, timer });
@@ -144,7 +146,9 @@ function spawnWorker(config: {
       try {
         await handle.rpc({ type: 'shutdown' }, 'closed', 10000);
       } catch {
-        try { proc.kill('SIGKILL'); } catch {}
+        try {
+          proc.kill('SIGKILL');
+        } catch {}
       }
     },
 
@@ -184,18 +188,20 @@ async function getLeader(workers: WorkerHandle[]): Promise<WorkerHandle | null> 
     try {
       const resp = await w.rpc({ type: 'get-leader' }, 'leader', 5000);
       if (resp.isLeader) return w;
-    } catch { /* process might be dead or disconnected */ }
+    } catch {
+      /* process might be dead or disconnected */
+    }
   }
   return null;
 }
 
-async function getHealth(w: WorkerHandle): Promise<{ isLeader: boolean; isClusterHealthy: boolean }> {
+async function getHealth(
+  w: WorkerHandle,
+): Promise<{ isLeader: boolean; isClusterHealthy: boolean }> {
   return w.rpc({ type: 'get-health' }, 'health', 5000);
 }
 
-async function getAggregateCounters(
-  workers: WorkerHandle[],
-): Promise<Record<string, number>> {
+async function getAggregateCounters(workers: WorkerHandle[]): Promise<Record<string, number>> {
   const counters: Record<string, number> = {};
   for (const w of workers) {
     if (!w.alive) continue;
@@ -204,7 +210,9 @@ async function getAggregateCounters(
       for (const [k, v] of Object.entries(resp.counters as Record<string, number>)) {
         counters[k] = (counters[k] ?? 0) + v;
       }
-    } catch { /* skip dead workers */ }
+    } catch {
+      /* skip dead workers */
+    }
   }
   return counters;
 }
@@ -222,8 +230,12 @@ describe('Cluster — Redis failure and recovery', () => {
 
   afterAll(async () => {
     for (const w of workers) {
-      try { await w.shutdown(); } catch {}
-      try { w.kill(); } catch {}
+      try {
+        await w.shutdown();
+      } catch {}
+      try {
+        w.kill();
+      } catch {}
     }
     await cleanRedis(redis);
     await redis.quit();
@@ -234,9 +246,27 @@ describe('Cluster — Redis failure and recovery', () => {
     const entities = { counter: { retry: { maxAttempts: 1 } } };
 
     workers = [
-      spawnWorker({ serverId: 'rf-a', grpcPort: BASE_GRPC_PORT, serviceGroup: 'rf-group', entities, handlers: 'counter' }),
-      spawnWorker({ serverId: 'rf-b', grpcPort: BASE_GRPC_PORT + 1, serviceGroup: 'rf-group', entities, handlers: 'counter' }),
-      spawnWorker({ serverId: 'rf-c', grpcPort: BASE_GRPC_PORT + 2, serviceGroup: 'rf-group', entities, handlers: 'counter' }),
+      spawnWorker({
+        serverId: 'rf-a',
+        grpcPort: BASE_GRPC_PORT,
+        serviceGroup: 'rf-group',
+        entities,
+        handlers: 'counter',
+      }),
+      spawnWorker({
+        serverId: 'rf-b',
+        grpcPort: BASE_GRPC_PORT + 1,
+        serviceGroup: 'rf-group',
+        entities,
+        handlers: 'counter',
+      }),
+      spawnWorker({
+        serverId: 'rf-c',
+        grpcPort: BASE_GRPC_PORT + 2,
+        serviceGroup: 'rf-group',
+        entities,
+        handlers: 'counter',
+      }),
     ];
 
     await Promise.all(workers.map((w) => w.readyPromise));

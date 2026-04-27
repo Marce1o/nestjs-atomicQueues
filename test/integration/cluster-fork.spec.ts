@@ -33,8 +33,8 @@ let WORKER_PATH: string;
 try {
   execSync(
     `npx tsc ${WORKER_TS} --outDir ${BUILD_DIR} --rootDir ${path.join(__dirname, '..', '..')} ` +
-    '--esModuleInterop --module commonjs --target es2022 --moduleResolution node ' +
-    '--experimentalDecorators --emitDecoratorMetadata --skipLibCheck --declaration false',
+      '--esModuleInterop --module commonjs --target es2022 --moduleResolution node ' +
+      '--experimentalDecorators --emitDecoratorMetadata --skipLibCheck --declaration false',
     { cwd: path.join(__dirname, '..', '..'), stdio: 'pipe' },
   );
   WORKER_PATH = path.join(BUILD_DIR, 'test', 'integration', 'cluster-worker.js');
@@ -94,7 +94,9 @@ function spawnWorker(config: {
   proc.stderr?.resume();
 
   let alive = true;
-  proc.on('exit', () => { alive = false; });
+  proc.on('exit', () => {
+    alive = false;
+  });
 
   const pendingRpcs: Array<{
     expectType: string;
@@ -114,10 +116,7 @@ function spawnWorker(config: {
 
   // Register a 'ready' listener BEFORE sending boot, so we catch it
   const readyPromise = new Promise<any>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`Boot timeout for ${config.serverId}`)),
-      45000,
-    );
+    const timer = setTimeout(() => reject(new Error(`Boot timeout for ${config.serverId}`)), 45000);
     pendingRpcs.push({ expectType: 'ready', resolve, reject, timer });
   });
 
@@ -136,12 +135,15 @@ function spawnWorker(config: {
     serverId: config.serverId,
     grpcPort: config.grpcPort,
     serviceGroup: config.serviceGroup,
-    get alive() { return alive; },
+    get alive() {
+      return alive;
+    },
 
     rpc(msg, expectType, timeoutMs = 30000) {
       return new Promise((resolve, reject) => {
         const timer = setTimeout(
-          () => reject(new Error(`RPC timeout waiting for '${expectType}' from ${config.serverId}`)),
+          () =>
+            reject(new Error(`RPC timeout waiting for '${expectType}' from ${config.serverId}`)),
           timeoutMs,
         );
         pendingRpcs.push({ expectType, resolve, reject, timer });
@@ -163,7 +165,9 @@ function spawnWorker(config: {
       try {
         await handle.rpc({ type: 'shutdown' }, 'closed', 10000);
       } catch {
-        try { proc.kill('SIGKILL'); } catch {}
+        try {
+          proc.kill('SIGKILL');
+        } catch {}
       }
     },
 
@@ -206,7 +210,9 @@ async function getLeader(workers: WorkerHandle[]): Promise<WorkerHandle | null> 
     try {
       const resp = await w.rpc({ type: 'get-leader' }, 'leader', 5000);
       if (resp.isLeader) return w;
-    } catch { /* process might be dead */ }
+    } catch {
+      /* process might be dead */
+    }
   }
   return null;
 }
@@ -226,7 +232,9 @@ async function getAggregateState(
       for (const [k, v] of Object.entries(resp.remoteWork as Record<string, number>)) {
         remoteWork[k] = (remoteWork[k] ?? 0) + v;
       }
-    } catch { /* process might be dead */ }
+    } catch {
+      /* process might be dead */
+    }
   }
 
   return { counters, remoteWork };
@@ -234,7 +242,11 @@ async function getAggregateState(
 
 function killAll(workers: WorkerHandle[]): void {
   for (const w of workers) {
-    try { w.proc.kill('SIGKILL'); } catch { /* already dead */ }
+    try {
+      w.proc.kill('SIGKILL');
+    } catch {
+      /* already dead */
+    }
   }
 }
 
@@ -269,11 +281,18 @@ describe('Fork: Multi-replica — 100 concurrent enqueues across 3 processes', (
   }, 60000);
 
   afterAll(async () => {
-    const exits = workers.map((w) => new Promise<void>((r) => {
-      if (!w.proc.connected && !w.alive) return r();
-      w.proc.once('exit', () => r());
-      w.shutdown().catch(() => { try { w.kill(); } catch {} });
-    }));
+    const exits = workers.map(
+      (w) =>
+        new Promise<void>((r) => {
+          if (!w.proc.connected && !w.alive) return r();
+          w.proc.once('exit', () => r());
+          w.shutdown().catch(() => {
+            try {
+              w.kill();
+            } catch {}
+          });
+        }),
+    );
     await Promise.all(exits);
     await cleanRedis(redis);
     await redis.quit();
@@ -343,7 +362,10 @@ describe('Fork: Multi-replica — 100 concurrent enqueues across 3 processes', (
     console.log(`  Per-worker state (proves process isolation):`);
     for (const w of workers) {
       const resp = await w.rpc({ type: 'get-state' }, 'state');
-      const workerTotal = Object.values(resp.counters as Record<string, number>).reduce((a: number, b: number) => a + b, 0);
+      const workerTotal = Object.values(resp.counters as Record<string, number>).reduce(
+        (a: number, b: number) => a + b,
+        0,
+      );
       console.log(`    ${w.serverId}: ${workerTotal} increments locally`);
     }
   }, 45000);
@@ -389,8 +411,8 @@ describe('Fork: Cross-service — gRPC Forward across separate processes', () =>
     await Promise.all([...svcA, ...svcB].map((w) => waitForReady(w)));
 
     // Wait for both service groups to elect masters
-    await waitFor(async () =>
-      (await getLeader(svcA)) !== null && (await getLeader(svcB)) !== null,
+    await waitFor(
+      async () => (await getLeader(svcA)) !== null && (await getLeader(svcB)) !== null,
       5000,
     );
 
@@ -400,11 +422,18 @@ describe('Fork: Cross-service — gRPC Forward across separate processes', () =>
 
   afterAll(async () => {
     const all = [...svcA, ...svcB];
-    const exits = all.map((w) => new Promise<void>((r) => {
-      if (!w.proc.connected && !w.alive) return r();
-      w.proc.once('exit', () => r());
-      w.shutdown().catch(() => { try { w.kill(); } catch {} });
-    }));
+    const exits = all.map(
+      (w) =>
+        new Promise<void>((r) => {
+          if (!w.proc.connected && !w.alive) return r();
+          w.proc.once('exit', () => r());
+          w.shutdown().catch(() => {
+            try {
+              w.kill();
+            } catch {}
+          });
+        }),
+    );
     await Promise.all(exits);
     await cleanRedis(redis);
     await redis.quit();
@@ -428,9 +457,7 @@ describe('Fork: Cross-service — gRPC Forward across separate processes', () =>
           data: { itemId, payload: `work-${i}` },
         });
       }
-      batchPromises.push(
-        svcA[wi].rpc({ type: 'enqueue-batch', messages: batch }, 'batch-result'),
-      );
+      batchPromises.push(svcA[wi].rpc({ type: 'enqueue-batch', messages: batch }, 'batch-result'));
     }
 
     const batchResults = await Promise.all(batchPromises);
@@ -547,11 +574,7 @@ describe('Fork: Failover — SIGKILL master process, re-elect, continue', () => 
     // Wait for a new master among survivors
     const survivors = workers.filter((w) => w !== master);
     // Leader lock TTL=2s, acquisition poll=400ms. Worst case: ~3s.
-    await waitFor(
-      async () => (await getLeader(survivors)) !== null,
-      5000,
-      200,
-    );
+    await waitFor(async () => (await getLeader(survivors)) !== null, 5000, 200);
 
     const newMaster = await getLeader(survivors);
     expect(newMaster).not.toBeNull();
@@ -579,10 +602,14 @@ describe('Fork: Failover — SIGKILL master process, re-elect, continue', () => 
     await Promise.all(p2Promises);
 
     // Wait for phase 2 processing. 5s hard ceiling — handlers are in-memory.
-    await waitFor(async () => {
-      const { counters } = await getAggregateState(survivors);
-      return (counters['failover-cnt'] ?? 0) >= PHASE2;
-    }, 5000, 200);
+    await waitFor(
+      async () => {
+        const { counters } = await getAggregateState(survivors);
+        return (counters['failover-cnt'] ?? 0) >= PHASE2;
+      },
+      5000,
+      200,
+    );
 
     const { counters: post } = await getAggregateState(survivors);
     console.log(`  Survivors total: ${post['failover-cnt']}`);

@@ -14,7 +14,11 @@ interface PeerEntry {
 }
 
 interface GrpcModule {
-  Client: new (address: string, credentials: unknown, options?: Record<string, unknown>) => GrpcMonitorClient;
+  Client: new (
+    address: string,
+    credentials: unknown,
+    options?: Record<string, unknown>,
+  ) => GrpcMonitorClient;
   credentials: { createInsecure(): unknown };
   connectivityState: Record<string, number>;
 }
@@ -26,7 +30,11 @@ interface GrpcMonitorClient {
 
 interface GrpcChannel {
   getConnectivityState(tryToConnect: boolean): number;
-  watchConnectivityState(currentState: number, deadline: Date, callback: (err?: Error) => void): void;
+  watchConnectivityState(
+    currentState: number,
+    deadline: Date,
+    callback: (err?: Error) => void,
+  ): void;
 }
 
 @Injectable()
@@ -40,11 +48,11 @@ export class GrpcPeerMonitor implements OnModuleInit, OnApplicationShutdown {
 
   private grpcModule: GrpcModule | null = null;
   private readonly peers = new Map<string, PeerEntry>();
-  private readonly stateChangeListeners: Array<(serverId: string, state: PeerLivenessState) => void> = [];
+  private readonly stateChangeListeners: Array<
+    (serverId: string, state: PeerLivenessState) => void
+  > = [];
 
-  constructor(
-    @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
-  ) {
+  constructor(@Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig) {
     this.enabled = (config.grpc?.enabled ?? false) && (config.grpc?.peerMonitorEnabled ?? true);
     this.debounceMs = config.grpc?.peerSuspectDebounceMs ?? 500;
     this.keepaliveTimeMs = config.grpc?.keepaliveTimeMs ?? 10000;
@@ -188,7 +196,9 @@ export class GrpcPeerMonitor implements OnModuleInit, OnApplicationShutdown {
           entry.suspectTimer = null;
           if (entry.state !== 'suspected-dead') {
             entry.state = 'suspected-dead';
-            this.logger.warn(`Peer ${entry.serverId} suspected dead (gRPC ${grpcState === SHUTDOWN ? 'SHUTDOWN' : 'TRANSIENT_FAILURE'})`);
+            this.logger.warn(
+              `Peer ${entry.serverId} suspected dead (gRPC ${grpcState === SHUTDOWN ? 'SHUTDOWN' : 'TRANSIENT_FAILURE'})`,
+            );
             this.notifyListeners(entry.serverId, 'suspected-dead');
           }
         }, this.debounceMs);

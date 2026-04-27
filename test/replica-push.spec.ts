@@ -5,7 +5,9 @@ function createMockLeaderElection(isLeader = true, epoch = 1) {
   const callbacks: Array<(isLeader: boolean) => void> = [];
   return {
     getIsLeader: jest.fn(() => isLeader),
-    get epoch() { return epoch; },
+    get epoch() {
+      return epoch;
+    },
     onLeaderChange: jest.fn((cb: (isLeader: boolean) => void) => {
       callbacks.push(cb);
     }),
@@ -23,7 +25,9 @@ function createMockDiscovery() {
 
 function createMockServerRing() {
   return {
-    get size() { return 0; },
+    get size() {
+      return 0;
+    },
     getOwner: jest.fn(() => null),
   };
 }

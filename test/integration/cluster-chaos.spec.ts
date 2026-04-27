@@ -39,8 +39,8 @@ let WORKER_JS: string;
 try {
   execSync(
     `npx tsc ${WORKER_TS} --outDir ${BUILD_DIR} --rootDir ${path.join(__dirname, '..', '..')} ` +
-    '--esModuleInterop --module commonjs --target es2022 --moduleResolution node ' +
-    '--experimentalDecorators --emitDecoratorMetadata --skipLibCheck --declaration false',
+      '--esModuleInterop --module commonjs --target es2022 --moduleResolution node ' +
+      '--experimentalDecorators --emitDecoratorMetadata --skipLibCheck --declaration false',
     { cwd: path.join(__dirname, '..', '..'), stdio: 'pipe' },
   );
   WORKER_JS = path.join(BUILD_DIR, 'test', 'integration', 'cluster-worker.js');
@@ -89,7 +89,9 @@ function spawnWorker(config: {
   }> = [];
 
   let alive = true;
-  proc.on('exit', () => { alive = false; });
+  proc.on('exit', () => {
+    alive = false;
+  });
 
   proc.on('message', (msg: any) => {
     const idx = pendingRpcs.findIndex((r) => r.expectType === msg.type);
@@ -115,8 +117,12 @@ function spawnWorker(config: {
     serverId: config.serverId,
     grpcPort: config.grpcPort,
     serviceGroup: config.serviceGroup,
-    get alive() { return alive; },
-    set alive(v) { alive = v; },
+    get alive() {
+      return alive;
+    },
+    set alive(v) {
+      alive = v;
+    },
     readyPromise,
 
     rpc(msg, expectType, timeoutMs = 15000) {
@@ -131,8 +137,13 @@ function spawnWorker(config: {
         else reject(new Error(`${config.serverId} disconnected`));
       });
     },
-    send(msg) { if (proc.connected) proc.send(msg); },
-    kill() { alive = false; proc.kill('SIGKILL'); },
+    send(msg) {
+      if (proc.connected) proc.send(msg);
+    },
+    kill() {
+      alive = false;
+      proc.kill('SIGKILL');
+    },
   };
 
   return handle;
@@ -238,7 +249,9 @@ function pickRandom<T>(arr: T[]): T {
 
 function killAll(workers: WorkerHandle[]): void {
   for (const w of workers) {
-    try { w.proc.kill('SIGKILL'); } catch {}
+    try {
+      w.proc.kill('SIGKILL');
+    } catch {}
   }
 }
 
@@ -249,7 +262,7 @@ function killAll(workers: WorkerHandle[]): void {
 describe('Chaos: Multi-replica-set cluster with random kills during operation', () => {
   let redis: Redis;
   const alpha: WorkerHandle[] = []; // 3 replicas, owns 'counter'
-  const beta: WorkerHandle[] = [];  // 3 replicas, owns 'remote'
+  const beta: WorkerHandle[] = []; // 3 replicas, owns 'remote'
   const allWorkers = () => [...alpha, ...beta];
 
   const log = (msg: string) => console.log(`  ${msg}`);
@@ -260,32 +273,36 @@ describe('Chaos: Multi-replica-set cluster with random kills during operation', 
 
     // Boot 3 alpha replicas
     for (let i = 0; i < 3; i++) {
-      alpha.push(spawnWorker({
-        serverId: `alpha-${i}`,
-        grpcPort: BASE_PORT + i,
-        serviceGroup: 'chaos-alpha',
-        entities: { counter: { defaultEntityId: 'counterId', retry: { maxAttempts: 2 } } },
-        handlers: 'counter',
-      }));
+      alpha.push(
+        spawnWorker({
+          serverId: `alpha-${i}`,
+          grpcPort: BASE_PORT + i,
+          serviceGroup: 'chaos-alpha',
+          entities: { counter: { defaultEntityId: 'counterId', retry: { maxAttempts: 2 } } },
+          handlers: 'counter',
+        }),
+      );
     }
 
     // Boot 3 beta replicas
     for (let i = 0; i < 3; i++) {
-      beta.push(spawnWorker({
-        serverId: `beta-${i}`,
-        grpcPort: BASE_PORT + 10 + i,
-        serviceGroup: 'chaos-beta',
-        entities: { remote: { defaultEntityId: 'itemId', retry: { maxAttempts: 2 } } },
-        handlers: 'remote',
-      }));
+      beta.push(
+        spawnWorker({
+          serverId: `beta-${i}`,
+          grpcPort: BASE_PORT + 10 + i,
+          serviceGroup: 'chaos-beta',
+          entities: { remote: { defaultEntityId: 'itemId', retry: { maxAttempts: 2 } } },
+          handlers: 'remote',
+        }),
+      );
     }
 
     // Wait for all to boot
     await Promise.all(allWorkers().map((w) => w.readyPromise));
 
     // Wait for both service groups to elect masters (TTL=2s, poll=400ms)
-    await waitFor(async () =>
-      (await findLeader(alpha)) !== null && (await findLeader(beta)) !== null,
+    await waitFor(
+      async () => (await findLeader(alpha)) !== null && (await findLeader(beta)) !== null,
       5000,
     );
 
@@ -302,11 +319,14 @@ describe('Chaos: Multi-replica-set cluster with random kills during operation', 
     // Kill all and WAIT for each process to fully exit before cleaning Redis.
     // Without this, dying processes may still write heartbeats/leader keys
     // that leak into the next test suite's Redis keyspace.
-    const exitPromises = allWorkers().map((w) => new Promise<void>((resolve) => {
-      if (!w.alive) return resolve();
-      w.proc.once('exit', () => resolve());
-      w.kill();
-    }));
+    const exitPromises = allWorkers().map(
+      (w) =>
+        new Promise<void>((resolve) => {
+          if (!w.alive) return resolve();
+          w.proc.once('exit', () => resolve());
+          w.kill();
+        }),
+    );
     await Promise.all(exitPromises);
 
     // Double-clean: dying processes may have written keys after our first clean
@@ -377,7 +397,9 @@ describe('Chaos: Multi-replica-set cluster with random kills during operation', 
 
       const result = await fireBatch(alpha, batch);
       totalEnqueued += result.succeeded;
-      log(`Wave ${wave + 1}: enqueued ${result.succeeded}/${MSGS_PER_WAVE} (failed: ${result.failed})`);
+      log(
+        `Wave ${wave + 1}: enqueued ${result.succeeded}/${MSGS_PER_WAVE} (failed: ${result.failed})`,
+      );
 
       // ── Pick a random live node to kill ──
       // Alternate between killing from alpha and beta service groups
@@ -387,7 +409,7 @@ describe('Chaos: Multi-replica-set cluster with random kills during operation', 
       // Keep at least 1 alive per group so the cluster can recover
       if (killCandidates.length > 1) {
         const victim = pickRandom(killCandidates);
-        const isLeader = await findLeader(targetGroup) === victim;
+        const isLeader = (await findLeader(targetGroup)) === victim;
         const role = isLeader ? 'MASTER' : 'sub-node';
 
         log(`  Kill: ${victim.serverId} (${role}) via SIGKILL`);
@@ -397,11 +419,7 @@ describe('Chaos: Multi-replica-set cluster with random kills during operation', 
 
         // Wait for re-election if we killed a master (TTL=2s, poll=400ms)
         if (isLeader) {
-          await waitFor(
-            async () => (await findLeader(targetGroup)) !== null,
-            5000,
-            200,
-          );
+          await waitFor(async () => (await findLeader(targetGroup)) !== null, 5000, 200);
           const newLeader = await findLeader(targetGroup);
           log(`  Re-elected: ${newLeader?.serverId}`);
         }
@@ -483,14 +501,20 @@ describe('Chaos: Multi-replica-set cluster with random kills during operation', 
     }));
 
     const result = await fireBatch(alpha, batch);
-    log(`Post-chaos local enqueue: ${result.succeeded}/${LOCAL_BATCH} (errors: ${(result as any).errors?.join('; ') ?? 'none'})`);
+    log(
+      `Post-chaos local enqueue: ${result.succeeded}/${LOCAL_BATCH} (errors: ${(result as any).errors?.join('; ') ?? 'none'})`,
+    );
     expect(result.succeeded).toBe(LOCAL_BATCH);
 
     // Processing must complete within 5s (messages are in-memory, no I/O)
-    await waitFor(async () => {
-      const { counters } = await getAggregateState(alpha);
-      return (counters['post-chaos'] ?? 0) >= LOCAL_BATCH;
-    }, 5000, 200);
+    await waitFor(
+      async () => {
+        const { counters } = await getAggregateState(alpha);
+        return (counters['post-chaos'] ?? 0) >= LOCAL_BATCH;
+      },
+      5000,
+      200,
+    );
 
     const { counters } = await getAggregateState(alpha);
     expect(counters['post-chaos']).toBe(LOCAL_BATCH);
@@ -506,13 +530,19 @@ describe('Chaos: Multi-replica-set cluster with random kills during operation', 
     }));
 
     const crossResult = await fireBatch(alpha, crossBatch);
-    log(`Post-chaos cross-service enqueue: ${crossResult.succeeded}/${CROSS_BATCH} (errors: ${(crossResult as any).errors?.join('; ') ?? 'none'})`);
+    log(
+      `Post-chaos cross-service enqueue: ${crossResult.succeeded}/${CROSS_BATCH} (errors: ${(crossResult as any).errors?.join('; ') ?? 'none'})`,
+    );
     expect(crossResult.succeeded).toBe(CROSS_BATCH);
 
-    await waitFor(async () => {
-      const { remoteWork } = await getAggregateState(beta);
-      return (remoteWork['post-chaos-cross'] ?? 0) >= CROSS_BATCH;
-    }, 5000, 200);
+    await waitFor(
+      async () => {
+        const { remoteWork } = await getAggregateState(beta);
+        return (remoteWork['post-chaos-cross'] ?? 0) >= CROSS_BATCH;
+      },
+      5000,
+      200,
+    );
 
     const { remoteWork } = await getAggregateState(beta);
     expect(remoteWork['post-chaos-cross']).toBe(CROSS_BATCH);
@@ -520,7 +550,15 @@ describe('Chaos: Multi-replica-set cluster with random kills during operation', 
 
     // ── Final state ──
     log(`\nFinal cluster:`);
-    log(`  Alpha: ${aliveWorkers(alpha).map((w) => w.serverId).join(', ')} (master: ${am!.serverId})`);
-    log(`  Beta:  ${aliveWorkers(beta).map((w) => w.serverId).join(', ')} (master: ${bm!.serverId})`);
+    log(
+      `  Alpha: ${aliveWorkers(alpha)
+        .map((w) => w.serverId)
+        .join(', ')} (master: ${am!.serverId})`,
+    );
+    log(
+      `  Beta:  ${aliveWorkers(beta)
+        .map((w) => w.serverId)
+        .join(', ')} (master: ${bm!.serverId})`,
+    );
   }, 30000);
 });

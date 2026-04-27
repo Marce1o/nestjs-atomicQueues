@@ -227,7 +227,10 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
       const message = this.deserializeEnvelope(envelope);
 
       const result = await this.workerManager.enqueueAndWait(
-        entityKey, message, this.resolveAndWaitTimeout(message.entityType), abortController.signal,
+        entityKey,
+        message,
+        this.resolveAndWaitTimeout(message.entityType),
+        abortController.signal,
       );
 
       if (!call.cancelled) {
@@ -357,7 +360,11 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
       const message = this.deserializeEnvelope(envelope);
 
       const result = await Promise.race([
-        this.router.dispatchAsMasterAndWait(entityKey, message, this.resolveAndWaitTimeout(message.entityType)),
+        this.router.dispatchAsMasterAndWait(
+          entityKey,
+          message,
+          this.resolveAndWaitTimeout(message.entityType),
+        ),
         cancelPromise,
       ]);
 
@@ -437,7 +444,9 @@ export class GrpcServerService implements OnModuleInit, OnApplicationShutdown {
       const envelope = call.request;
       const senderEpoch = envelope.senderEpoch as number;
       if (senderEpoch > 0) {
-        this.logger.debug(`ForwardAndWait from origin=${envelope.originServer} epoch=${senderEpoch}`);
+        this.logger.debug(
+          `ForwardAndWait from origin=${envelope.originServer} epoch=${senderEpoch}`,
+        );
       }
       const data = JSON.parse(Buffer.from(envelope.payload as Buffer).toString('utf-8'));
 

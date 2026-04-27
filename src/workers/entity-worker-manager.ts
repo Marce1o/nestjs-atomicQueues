@@ -1,4 +1,11 @@
-import { Injectable, Logger, Inject, Optional, OnModuleInit, OnApplicationShutdown } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  Inject,
+  Optional,
+  OnModuleInit,
+  OnApplicationShutdown,
+} from '@nestjs/common';
 import { IAtomicQueuesModuleConfig, ISerializedMessage } from '../domain';
 import { ATOMIC_QUEUES_CONFIG } from '../services/constants';
 import { HandlerExecutor } from '../services/handler-executor';
@@ -91,7 +98,11 @@ export class EntityWorkerManager implements OnModuleInit, OnApplicationShutdown 
   }
 
   async enqueue(entityKey: string, message: ISerializedMessage): Promise<void> {
-    if (this.maxTotalWorkers > 0 && !this.workers.has(entityKey) && this.workers.size >= this.maxTotalWorkers) {
+    if (
+      this.maxTotalWorkers > 0 &&
+      !this.workers.has(entityKey) &&
+      this.workers.size >= this.maxTotalWorkers
+    ) {
       throw new Error('WORKER_LIMIT_EXCEEDED');
     }
     if (this.maxTotalQueueDepth > 0 && this.totalQueueDepth() >= this.maxTotalQueueDepth) {
@@ -141,12 +152,16 @@ export class EntityWorkerManager implements OnModuleInit, OnApplicationShutdown 
           reject(new Error('Stream cancelled by client'));
           return;
         }
-        signal.addEventListener('abort', () => {
-          if (this.pendingResults.has(correlationId)) {
-            cleanup();
-            reject(new Error('Stream cancelled by client'));
-          }
-        }, { once: true });
+        signal.addEventListener(
+          'abort',
+          () => {
+            if (this.pendingResults.has(correlationId)) {
+              cleanup();
+              reject(new Error('Stream cancelled by client'));
+            }
+          },
+          { once: true },
+        );
       }
 
       this.enqueue(entityKey, taggedMessage).catch((err) => {
@@ -219,9 +234,9 @@ export class EntityWorkerManager implements OnModuleInit, OnApplicationShutdown 
       },
       (message, error) => {
         if (this.walEnabled) {
-          this.walService!
-            .markFailed(entityKey, message.id, error.message, error.stack)
-            .catch(() => {});
+          this.walService!.markFailed(entityKey, message.id, error.message, error.stack).catch(
+            () => {},
+          );
         }
         this.rejectResult(message, error);
       },

@@ -320,11 +320,15 @@ async function dlqList(redis: Redis, keyPrefix: string, args: string[]): Promise
       return;
     }
 
-    console.log(`\n  Dead-letter queue: ${entityType}  (${total} total, showing ${entries.length})\n`);
+    console.log(
+      `\n  Dead-letter queue: ${entityType}  (${total} total, showing ${entries.length})\n`,
+    );
     for (const raw of entries) {
       const entry = JSON.parse(raw);
       const ts = new Date(entry.deadLetteredAt).toISOString();
-      console.log(`  [${ts}]  ${entry.name}  entity=${entry.entityType}:${entry.entityId}  reason=${entry.deadLetterReason}`);
+      console.log(
+        `  [${ts}]  ${entry.name}  entity=${entry.entityType}:${entry.entityId}  reason=${entry.deadLetterReason}`,
+      );
     }
     console.log('');
     return;
@@ -366,7 +370,9 @@ async function dlqPurge(redis: Redis, keyPrefix: string, args: string[]): Promis
         purged++;
       }
     }
-    console.log(`Purged ${purged} entries from ${entityType} DLQ (before ${new Date(beforeTs).toISOString()}).`);
+    console.log(
+      `Purged ${purged} entries from ${entityType} DLQ (before ${new Date(beforeTs).toISOString()}).`,
+    );
   } else {
     const count = await redis.llen(deadKey);
     await redis.del(deadKey);

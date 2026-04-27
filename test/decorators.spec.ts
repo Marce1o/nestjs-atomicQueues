@@ -201,7 +201,10 @@ describe('Minification detection', () => {
     expect(() => {
       @JobCommand()
       class MinifiedCmd {
-        constructor(public readonly a: string, public readonly b: number) {}
+        constructor(
+          public readonly a: string,
+          public readonly b: number,
+        ) {}
       }
       return MinifiedCmd;
     }).toThrow(/appear minified/);
@@ -221,7 +224,10 @@ describe('Minification detection', () => {
     expect(() => {
       @JobCommand()
       class MixedCmd {
-        constructor(public readonly id: string, public readonly name: string) {}
+        constructor(
+          public readonly id: string,
+          public readonly name: string,
+        ) {}
       }
       return MixedCmd;
     }).not.toThrow();
