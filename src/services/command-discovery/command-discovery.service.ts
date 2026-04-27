@@ -42,7 +42,7 @@ export class CommandDiscoveryService implements OnModuleInit {
   async onModuleInit(): Promise<void> {
     if (!this.discoveryService) {
       this.logger.warn(
-        'DiscoveryService not available. @JobCommand/@JobQuery auto-routing disabled.',
+        'DiscoveryService not available. @JobCommand/@JobQuery (deprecated) auto-routing disabled.',
       );
       return;
     }
@@ -52,7 +52,7 @@ export class CommandDiscoveryService implements OnModuleInit {
 
     if (this.commandMap.size > 0 || this.queryMap.size > 0) {
       this.logger.log(
-        `Discovered ${this.commandMap.size} @JobCommand and ${this.queryMap.size} @JobQuery classes`,
+        `Discovered ${this.commandMap.size} @JobCommand and ${this.queryMap.size} @JobQuery classes (deprecated — migrate to @EntityType + @CommandHandler/@QueryHandler)`,
       );
     }
   }

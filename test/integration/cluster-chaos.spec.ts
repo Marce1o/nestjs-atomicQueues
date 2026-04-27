@@ -264,7 +264,7 @@ describe('Chaos: Multi-replica-set cluster with random kills during operation', 
         serverId: `alpha-${i}`,
         grpcPort: BASE_PORT + i,
         serviceGroup: 'chaos-alpha',
-        entities: { counter: { retry: { maxAttempts: 2 } } },
+        entities: { counter: { defaultEntityId: 'counterId', retry: { maxAttempts: 2 } } },
         handlers: 'counter',
       }));
     }
@@ -275,7 +275,7 @@ describe('Chaos: Multi-replica-set cluster with random kills during operation', 
         serverId: `beta-${i}`,
         grpcPort: BASE_PORT + 10 + i,
         serviceGroup: 'chaos-beta',
-        entities: { remote: { retry: { maxAttempts: 2 } } },
+        entities: { remote: { defaultEntityId: 'itemId', retry: { maxAttempts: 2 } } },
         handlers: 'remote',
       }));
     }

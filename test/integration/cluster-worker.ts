@@ -15,11 +15,13 @@ import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { Module, Injectable } from '@nestjs/common';
 import { CommandHandler, ICommandHandler, CqrsModule } from '@nestjs/cqrs';
-import { AtomicQueuesModule, QueueBus, QueueEntity, LeaderElectionService } from '../../src';
+import Redis from 'ioredis';
+import { AtomicQueuesModule, QueueBus, EntityType, LeaderElectionService, ClusterDiscoveryService } from '../../src';
+import { ATOMIC_QUEUES_REDIS } from '../../src/services/constants';
 
 // ─── Messages ────────────────────────────────────────────────────────────────
 
-@QueueEntity('counter', 'counterId')
+@EntityType('counter')
 class IncrementCommand {
   constructor(
     public readonly counterId: string,
@@ -27,7 +29,7 @@ class IncrementCommand {
   ) {}
 }
 
-@QueueEntity('remote', 'itemId')
+@EntityType('remote')
 class RemoteWorkCommand {
   constructor(
     public readonly itemId: string,
@@ -89,7 +91,7 @@ interface BootMessage {
     serverId: string;
     grpcPort: number;
     serviceGroup: string;
-    entities: Record<string, { retry?: { maxAttempts: number } }>;
+    entities: Record<string, { defaultEntityId?: string; retry?: { maxAttempts: number } }>;
     handlers: 'counter' | 'remote' | 'all';
     redisUrl: string;
     keyPrefix: string;
@@ -117,6 +119,9 @@ interface EnqueueBatchMessage {
 interface GetStateMessage { type: 'get-state'; }
 interface GetLeaderMessage { type: 'get-leader'; }
 interface ShutdownMessage { type: 'shutdown'; }
+interface PauseRedisMessage { type: 'pause-redis'; }
+interface ResumeRedisMessage { type: 'resume-redis'; }
+interface GetHealthMessage { type: 'get-health'; }
 
 type WorkerMessage =
   | BootMessage
@@ -124,12 +129,17 @@ type WorkerMessage =
   | EnqueueBatchMessage
   | GetStateMessage
   | GetLeaderMessage
-  | ShutdownMessage;
+  | ShutdownMessage
+  | PauseRedisMessage
+  | ResumeRedisMessage
+  | GetHealthMessage;
 
 // ─── Worker lifecycle ────────────────────────────────────────────────────────
 
 let queueBus: QueueBus;
 let leaderElection: LeaderElectionService;
+let clusterDiscovery: ClusterDiscoveryService;
+let redisInstance: Redis;
 let app: any;
 
 function send(msg: Record<string, unknown>): void {
@@ -167,6 +177,8 @@ async function boot(config: BootMessage['config']): Promise<void> {
 
   queueBus = app.get(QueueBus);
   leaderElection = app.get(LeaderElectionService);
+  clusterDiscovery = app.get(ClusterDiscoveryService);
+  redisInstance = app.get(ATOMIC_QUEUES_REDIS);
 
   send({ type: 'ready', serverId: config.serverId });
 }
@@ -223,16 +235,45 @@ async function handleShutdown(): Promise<void> {
   process.exit(0);
 }
 
+async function handlePauseRedis(): Promise<void> {
+  try {
+    redisInstance.disconnect();
+    send({ type: 'redis-paused' });
+  } catch (e: any) {
+    send({ type: 'error', error: e.message });
+  }
+}
+
+async function handleResumeRedis(): Promise<void> {
+  try {
+    await redisInstance.connect();
+    send({ type: 'redis-resumed' });
+  } catch (e: any) {
+    send({ type: 'error', error: e.message });
+  }
+}
+
+function handleGetHealth(): void {
+  send({
+    type: 'health',
+    isLeader: leaderElection?.getIsLeader() ?? false,
+    isClusterHealthy: clusterDiscovery?.isClusterHealthy() ?? true,
+  });
+}
+
 // ─── Message router ──────────────────────────────────────────────────────────
 
 process.on('message', async (msg: WorkerMessage) => {
   switch (msg.type) {
-    case 'boot':       return boot(msg.config).catch((e) => { send({ type: 'error', error: e.message }); process.exit(1); });
-    case 'enqueue':    return handleEnqueue(msg);
+    case 'boot':         return boot(msg.config).catch((e) => { send({ type: 'error', error: e.message }); process.exit(1); });
+    case 'enqueue':      return handleEnqueue(msg);
     case 'enqueue-batch': return handleEnqueueBatch(msg);
-    case 'get-state':  return handleGetState();
-    case 'get-leader': return handleGetLeader();
-    case 'shutdown':   return handleShutdown();
+    case 'get-state':    return handleGetState();
+    case 'get-leader':   return handleGetLeader();
+    case 'shutdown':     return handleShutdown();
+    case 'pause-redis':  return handlePauseRedis();
+    case 'resume-redis': return handleResumeRedis();
+    case 'get-health':   return handleGetHealth();
   }
 });
 

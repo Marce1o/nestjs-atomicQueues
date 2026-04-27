@@ -26,7 +26,7 @@ import Redis from 'ioredis';
 import {
   AtomicQueuesModule,
   QueueBus,
-  QueueEntity,
+  EntityType,
   LeaderElectionService,
   MasterCoordinator,
 } from '../../src';
@@ -40,7 +40,7 @@ const BASE_GRPC_PORT = 50200; // use high ports to avoid conflicts
 // ─── Test commands / queries ─────────────────────────────────────────────────
 
 /** Simple counter command — tracks total calls per entityId in shared state. */
-@QueueEntity('counter', 'counterId')
+@EntityType('counter')
 class IncrementCommand {
   constructor(
     public readonly counterId: string,
@@ -49,13 +49,13 @@ class IncrementCommand {
 }
 
 /** Query to read the counter. */
-@QueueEntity('counter', 'counterId')
+@EntityType('counter')
 class GetCounterQuery {
   constructor(public readonly counterId: string) {}
 }
 
 /** Cross-service command handled by a different service group. */
-@QueueEntity('remote', 'itemId')
+@EntityType('remote')
 class RemoteWorkCommand {
   constructor(
     public readonly itemId: string,
@@ -158,7 +158,7 @@ async function createNode(opts: {
   serverId: string;
   grpcPort: number;
   serviceGroup: string;
-  entities: Record<string, { retry?: { maxAttempts: number } }>;
+  entities: Record<string, { defaultEntityId?: string; retry?: { maxAttempts: number } }>;
   handlerModules: any[];
 }): Promise<ClusterNode> {
   const mod = await Test.createTestingModule({
@@ -213,7 +213,7 @@ describe('Scenario 1: Multi-replica single service — 100 concurrent enqueues',
         serverId: `counter-node-${i}`,
         grpcPort: BASE_GRPC_PORT + i,
         serviceGroup: 'counter-service',
-        entities: { counter: { retry: { maxAttempts: 2 } } },
+        entities: { counter: { defaultEntityId: 'counterId', retry: { maxAttempts: 2 } } },
         handlerModules: [CounterHandlerModule],
       });
       nodes.push(node);
@@ -308,7 +308,7 @@ describe('Scenario 2: Cross-service forwarding — gRPC Forward RPC', () => {
         serverId: `svc-a-node-${i}`,
         grpcPort: BASE_GRPC_PORT + 10 + i,
         serviceGroup: 'svc-alpha',
-        entities: { counter: { retry: { maxAttempts: 2 } } },
+        entities: { counter: { defaultEntityId: 'counterId', retry: { maxAttempts: 2 } } },
         handlerModules: [CounterHandlerModule],
       });
       svcA.push(node);
@@ -320,7 +320,7 @@ describe('Scenario 2: Cross-service forwarding — gRPC Forward RPC', () => {
         serverId: `svc-b-node-${i}`,
         grpcPort: BASE_GRPC_PORT + 20 + i,
         serviceGroup: 'svc-beta',
-        entities: { remote: { retry: { maxAttempts: 2 } } },
+        entities: { remote: { defaultEntityId: 'itemId', retry: { maxAttempts: 2 } } },
         handlerModules: [RemoteHandlerModule],
       });
       svcB.push(node);
@@ -437,7 +437,7 @@ describe('Scenario 3: Master failover — kill master, re-elect, continue proces
         serverId: `failover-node-${i}`,
         grpcPort: BASE_GRPC_PORT + 30 + i,
         serviceGroup: 'failover-service',
-        entities: { counter: { retry: { maxAttempts: 2 } } },
+        entities: { counter: { defaultEntityId: 'counterId', retry: { maxAttempts: 2 } } },
         handlerModules: [CounterHandlerModule],
       });
       nodes.push(node);

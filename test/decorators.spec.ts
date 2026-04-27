@@ -140,6 +140,20 @@ describe('@JobCommand', () => {
     const meta = getJobCommandMetadata(ProcessPaymentCommand);
     expect(meta!.paramNames).toEqual(['accountId', 'amount', 'currency']);
   });
+
+  it('should use explicit params when provided', () => {
+    @JobCommand({ params: ['orderId', 'quantity', 'notes'] })
+    class MinifiedCommand {
+      constructor(
+        public readonly a: string,
+        public readonly b: number,
+        public readonly c: string,
+      ) {}
+    }
+
+    const meta = getJobCommandMetadata(MinifiedCommand);
+    expect(meta!.paramNames).toEqual(['orderId', 'quantity', 'notes']);
+  });
 });
 
 // ─── @JobQuery ──────────────────────────────────────────────────────────────
@@ -164,5 +178,52 @@ describe('@JobQuery', () => {
 
     const meta = getJobQueryMetadata(FetchInventoryQuery);
     expect(meta!.jobName).toBe('fetch-inventory');
+  });
+
+  it('should use explicit params when provided', () => {
+    @JobQuery({ params: ['warehouseId', 'sku'] })
+    class MinifiedQuery {
+      constructor(
+        public readonly a: string,
+        public readonly b: string,
+      ) {}
+    }
+
+    const meta = getJobQueryMetadata(MinifiedQuery);
+    expect(meta!.paramNames).toEqual(['warehouseId', 'sku']);
+  });
+});
+
+// ─── Minification detection ────────────────────────────────────────────────
+
+describe('Minification detection', () => {
+  it('should throw when all param names are <= 2 chars and count > 1', () => {
+    expect(() => {
+      @JobCommand()
+      class MinifiedCmd {
+        constructor(public readonly a: string, public readonly b: number) {}
+      }
+      return MinifiedCmd;
+    }).toThrow(/appear minified/);
+  });
+
+  it('should not throw for a single short param', () => {
+    expect(() => {
+      @JobCommand()
+      class SingleParamCmd {
+        constructor(public readonly x: string) {}
+      }
+      return SingleParamCmd;
+    }).not.toThrow();
+  });
+
+  it('should not throw when at least one param name is > 2 chars', () => {
+    expect(() => {
+      @JobCommand()
+      class MixedCmd {
+        constructor(public readonly id: string, public readonly name: string) {}
+      }
+      return MixedCmd;
+    }).not.toThrow();
   });
 });

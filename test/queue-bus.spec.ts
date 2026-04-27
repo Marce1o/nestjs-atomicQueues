@@ -1,15 +1,19 @@
 import 'reflect-metadata';
 import { QueueBus } from '../src/services/queue-bus/queue-bus.service';
-import { EntityType, QueueEntityId, QueueEntity } from '../src/decorators';
+import { EntityType, QueueEntityId } from '../src/decorators';
 
 // ─── Test classes ───────────────────────────────────────────────────────────
 
-@QueueEntity('order', 'orderId')
+@EntityType('order')
 class PlaceOrderCommand {
-  constructor(
-    public readonly orderId: string,
-    public readonly quantity: number,
-  ) {}
+  @QueueEntityId()
+  public readonly orderId: string;
+  public readonly quantity: number;
+
+  constructor(orderId: string, quantity: number) {
+    this.orderId = orderId;
+    this.quantity = quantity;
+  }
 }
 
 @EntityType('account')
