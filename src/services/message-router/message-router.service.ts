@@ -1,4 +1,4 @@
-import { Injectable, Logger, Inject, Optional, forwardRef } from '@nestjs/common';
+import { Injectable, Logger, Inject, Optional, forwardRef, OnModuleInit } from '@nestjs/common';
 import { IAtomicQueuesModuleConfig, ISerializedMessage, IMessageRef } from '../../domain';
 import { fastId, retry } from '../../utils';
 import { EntityWorkerManager } from '../../workers';
@@ -8,16 +8,20 @@ import {
   ClusterNode,
   LeaderElectionService,
 } from '../../cluster';
+import { GrpcPeerMonitor } from '../../cluster/grpc-peer-monitor.service';
+import { RedisHealthMonitor } from '../../cluster/redis-health-monitor.service';
 import { GrpcClientPool } from '../../grpc';
 import { ATOMIC_QUEUES_CONFIG } from '../constants';
 
 @Injectable()
-export class MessageRouter {
+export class MessageRouter implements OnModuleInit {
   private readonly logger = new Logger(MessageRouter.name);
   private readonly isClusterMode: boolean;
 
   private nodeCache: { nodes: ClusterNode[]; expiresAt: number } | null = null;
   private masterCache: { address: string | null; expiresAt: number } | null = null;
+  private readonly assignmentCache = new Map<string, { replicaId: string; replicaAddress: string; epoch: number; cachedAt: number }>();
+  private unsubscribePeerMonitor: (() => void) | null = null;
 
   constructor(
     @Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig,
@@ -27,13 +31,29 @@ export class MessageRouter {
     @Optional() private readonly grpcClientPool?: GrpcClientPool,
     @Optional() private readonly clusterDiscovery?: ClusterDiscoveryService,
     @Optional() private readonly leaderElection?: LeaderElectionService,
+    @Optional() private readonly peerMonitor?: GrpcPeerMonitor,
+    @Optional() private readonly redisHealthMonitor?: RedisHealthMonitor,
   ) {
     this.isClusterMode = config.grpc?.enabled ?? false;
+  }
+
+  async onModuleInit(): Promise<void> {
+    if (this.peerMonitor) {
+      this.unsubscribePeerMonitor = this.peerMonitor.onPeerStateChange((serverId, state) => {
+        if (state === 'suspected-dead') {
+          this.invalidateTopologyCache();
+          this.grpcClientPool?.openCircuit(serverId);
+        } else if (state === 'alive') {
+          this.grpcClientPool?.closeCircuit(serverId);
+        }
+      });
+    }
   }
 
   invalidateTopologyCache(): void {
     this.nodeCache = null;
     this.masterCache = null;
+    this.assignmentCache.clear();
   }
 
   async enqueue(
@@ -104,7 +124,20 @@ export class MessageRouter {
   // =========================================================================
 
   private async clusterDispatch(entityKey: string, message: ISerializedMessage): Promise<void> {
+    if (this.redisHealthMonitor?.isDegraded) {
+      throw new Error('Cluster degraded: Redis unreachable');
+    }
+
     if (!this.masterCoordinator.isMaster()) {
+      const cached = this.getAssignmentFromCache(entityKey);
+      if (cached) {
+        try {
+          await this.dispatchViaCachedAssignment(entityKey, message, cached);
+          return;
+        } catch {
+          this.assignmentCache.delete(entityKey);
+        }
+      }
       await this.petitionMaster(entityKey, message);
       return;
     }
@@ -117,7 +150,19 @@ export class MessageRouter {
     message: ISerializedMessage,
     timeout: number,
   ): Promise<R> {
+    if (this.redisHealthMonitor?.isDegraded) {
+      throw new Error('Cluster degraded: Redis unreachable');
+    }
+
     if (!this.masterCoordinator.isMaster()) {
+      const cached = this.getAssignmentFromCache(entityKey);
+      if (cached) {
+        try {
+          return await this.dispatchViaCachedAssignmentAndWait<R>(entityKey, message, timeout, cached);
+        } catch {
+          this.assignmentCache.delete(entityKey);
+        }
+      }
       return this.petitionMasterAndWait<R>(entityKey, message, timeout);
     }
 
@@ -181,14 +226,23 @@ export class MessageRouter {
 
         this.masterCache = null;
         const client = await this.grpcClientPool!.getClient('master', masterAddress);
-        const deadline = new Date(Date.now() + 1500);
+        const deadline = new Date(Date.now() + (this.config.grpc?.deadlines?.forwardMs ?? 1500));
         await new Promise<void>((resolve, reject) => {
           (client as unknown as Record<string, Function>).petition(
-            { entityKey, message: this.serializeEnvelope(message) },
+            { entityKey, message: this.serializeEnvelope(message), masterEpoch: this.leaderElection?.epoch ?? 0 },
             { deadline },
             (err: Error | null, response: Record<string, unknown>) => {
               if (err) return reject(err);
               if (!response.accepted) return reject(new Error(response.rejectReason as string));
+              const assignedReplicaId = response.assignedReplicaId as string;
+              if (assignedReplicaId) {
+                this.assignmentCache.set(entityKey, {
+                  replicaId: assignedReplicaId,
+                  replicaAddress: (response.assignedReplicaAddr as string) ?? '',
+                  epoch: this.leaderElection?.epoch ?? 0,
+                  cachedAt: Date.now(),
+                });
+              }
               resolve();
             },
           );
@@ -233,6 +287,7 @@ export class MessageRouter {
           const stream = (client as unknown as Record<string, Function>).petitionAndWait({
             entityKey,
             message: this.serializeEnvelope(message),
+            masterEpoch: this.leaderElection?.epoch ?? 0,
           });
 
           stream.on('data', (response: Record<string, unknown>) => {
@@ -270,6 +325,14 @@ export class MessageRouter {
     entityKey: string,
     message: ISerializedMessage,
   ): Promise<void> {
+    // Skip gRPC call if peer is already suspected dead
+    if (this.peerMonitor?.getPeerState(replicaId) === 'suspected-dead') {
+      this.masterCoordinator.release(entityKey);
+      this.nodeCache = null;
+      await this.dispatchAsMaster(entityKey, message);
+      return;
+    }
+
     const replicaAddress = await this.getReplicaAddress(replicaId);
     if (!replicaAddress) {
       this.masterCoordinator.release(entityKey);
@@ -280,7 +343,7 @@ export class MessageRouter {
 
     try {
       const client = await this.grpcClientPool!.getClient(replicaId, replicaAddress);
-      const deadline = new Date(Date.now() + 1500);
+      const deadline = new Date(Date.now() + (this.config.grpc?.deadlines?.forwardMs ?? 1500));
       await new Promise<void>((resolve, reject) => {
         (client as unknown as Record<string, Function>).enqueueToWorker(
           {
@@ -296,10 +359,13 @@ export class MessageRouter {
           },
         );
       });
+      this.grpcClientPool!.recordSuccess(replicaId);
     } catch (err) {
-      this.logger.warn(
-        `Forward to ${replicaId} failed: ${(err as Error).message} — reassigning`,
-      );
+      const msg = (err as Error).message;
+      if (msg !== 'PEER_CIRCUIT_OPEN') {
+        this.logger.warn(`Forward to ${replicaId} failed: ${msg} — reassigning`);
+        this.grpcClientPool!.recordFailure(replicaId);
+      }
       this.masterCoordinator.release(entityKey);
       this.grpcClientPool!.removeClient(replicaId);
       this.nodeCache = null;
@@ -313,6 +379,12 @@ export class MessageRouter {
     message: ISerializedMessage,
     timeout: number,
   ): Promise<R> {
+    if (this.peerMonitor?.getPeerState(replicaId) === 'suspected-dead') {
+      this.masterCoordinator.release(entityKey);
+      this.nodeCache = null;
+      return this.dispatchAsMasterAndWait<R>(entityKey, message, timeout);
+    }
+
     const replicaAddress = await this.getReplicaAddress(replicaId);
     if (!replicaAddress) {
       this.masterCoordinator.release(entityKey);
@@ -322,7 +394,7 @@ export class MessageRouter {
 
     try {
       const client = await this.grpcClientPool!.getClient(replicaId, replicaAddress);
-      return await new Promise<R>((resolve, reject) => {
+      const result = await new Promise<R>((resolve, reject) => {
         const timer = setTimeout(
           () => reject(new Error(`Forward timeout after ${timeout}ms`)),
           timeout,
@@ -347,10 +419,14 @@ export class MessageRouter {
           reject(err);
         });
       });
+      this.grpcClientPool!.recordSuccess(replicaId);
+      return result;
     } catch (err) {
-      this.logger.warn(
-        `ForwardAndWait to ${replicaId} failed: ${(err as Error).message} — reassigning`,
-      );
+      const msg = (err as Error).message;
+      if (msg !== 'PEER_CIRCUIT_OPEN') {
+        this.logger.warn(`ForwardAndWait to ${replicaId} failed: ${msg} — reassigning`);
+        this.grpcClientPool!.recordFailure(replicaId);
+      }
       this.masterCoordinator.release(entityKey);
       this.grpcClientPool!.removeClient(replicaId);
       this.nodeCache = null;
@@ -365,18 +441,16 @@ export class MessageRouter {
   private async forwardToForeignService(message: ISerializedMessage): Promise<void> {
     const serviceGroup = await this.clusterDiscovery?.resolveServiceGroup(message.entityType);
     if (!serviceGroup) {
-      this.logger.warn(
-        `No service group found for foreign entity type '${message.entityType}' — dropping`,
+      throw new Error(
+        `No service group found for foreign entity type '${message.entityType}'`,
       );
-      return;
     }
 
     const foreignAddress = await this.leaderElection?.getForeignMasterAddress(serviceGroup);
     if (!foreignAddress) {
-      this.logger.warn(
-        `Foreign master for group '${serviceGroup}' not found — dropping`,
+      throw new Error(
+        `Foreign master for group '${serviceGroup}' not found for entity type '${message.entityType}'`,
       );
-      return;
     }
 
     const serverId = this.config.grpc?.serverId ?? 'local';
@@ -386,6 +460,7 @@ export class MessageRouter {
       message,
       serverId,
       0,
+      this.leaderElection?.epoch ?? 0,
     );
   }
 
@@ -413,7 +488,88 @@ export class MessageRouter {
       serverId,
       0,
       timeout,
+      this.leaderElection?.epoch ?? 0,
     );
+  }
+
+  // =========================================================================
+  // HELPERS — cached assignment routing (bypass master on repeat dispatch)
+  // =========================================================================
+
+  private getAssignmentFromCache(
+    entityKey: string,
+  ): { replicaId: string; replicaAddress: string; epoch: number } | null {
+    const entry = this.assignmentCache.get(entityKey);
+    if (!entry) return null;
+    if (Date.now() - entry.cachedAt > 5000) {
+      this.assignmentCache.delete(entityKey);
+      return null;
+    }
+    return entry;
+  }
+
+  private async dispatchViaCachedAssignment(
+    entityKey: string,
+    message: ISerializedMessage,
+    cached: { replicaId: string; replicaAddress: string; epoch: number },
+  ): Promise<void> {
+    const localServerId = this.config.grpc?.serverId ?? 'local';
+    if (cached.replicaId === localServerId) {
+      await this.workerManager.enqueue(entityKey, message);
+      return;
+    }
+    const client = await this.grpcClientPool!.getClient(cached.replicaId, cached.replicaAddress);
+    const deadline = new Date(Date.now() + (this.config.grpc?.deadlines?.forwardMs ?? 1500));
+    await new Promise<void>((resolve, reject) => {
+      (client as unknown as Record<string, Function>).enqueueToWorker(
+        {
+          entityKey,
+          message: this.serializeEnvelope(message),
+          masterEpoch: cached.epoch,
+        },
+        { deadline },
+        (err: Error | null, response: Record<string, unknown>) => {
+          if (err) return reject(err);
+          if (!response.accepted) return reject(new Error(response.rejectReason as string));
+          resolve();
+        },
+      );
+    });
+  }
+
+  private async dispatchViaCachedAssignmentAndWait<R>(
+    entityKey: string,
+    message: ISerializedMessage,
+    timeout: number,
+    cached: { replicaId: string; replicaAddress: string; epoch: number },
+  ): Promise<R> {
+    const localServerId = this.config.grpc?.serverId ?? 'local';
+    if (cached.replicaId === localServerId) {
+      return this.workerManager.enqueueAndWait<R>(entityKey, message, timeout);
+    }
+    const client = await this.grpcClientPool!.getClient(cached.replicaId, cached.replicaAddress);
+    return new Promise<R>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`Cached forward timeout after ${timeout}ms`)),
+        timeout,
+      );
+      const stream = (client as unknown as Record<string, Function>).enqueueToWorkerAndWait({
+        entityKey,
+        message: this.serializeEnvelope(message),
+        masterEpoch: cached.epoch,
+      });
+      stream.on('data', (response: Record<string, unknown>) => {
+        clearTimeout(timer);
+        if (response.error) reject(new Error(response.error as string));
+        else if (response.result) {
+          resolve(JSON.parse(Buffer.from(response.result as Buffer).toString()) as R);
+        }
+      });
+      stream.on('error', (err: Error) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+    });
   }
 
   // =========================================================================
@@ -457,6 +613,7 @@ export class MessageRouter {
       maxAttempts: message.maxAttempts,
       originServer: this.config.grpc?.serverId ?? 'local',
       hops: 0,
+      senderEpoch: this.leaderElection?.epoch ?? 0,
     };
   }
 
