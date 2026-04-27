@@ -18,6 +18,7 @@ export class WalService {
   private readonly entryTTL: number;
   private readonly cleanupInterval: number;
   private cleanupTimer: NodeJS.Timeout | null = null;
+  private readonly deadLetterCallbacks: Array<(entityType: string, message: ISerializedMessage, reason: string) => void> = [];
 
   constructor(
     private readonly redis: Redis,
@@ -246,6 +247,10 @@ export class WalService {
   // DEAD LETTER
   // =========================================================================
 
+  onDeadLetter(callback: (entityType: string, message: ISerializedMessage, reason: string) => void): void {
+    this.deadLetterCallbacks.push(callback);
+  }
+
   async deadLetter(entityType: string, message: ISerializedMessage, reason: string): Promise<void> {
     const deadKey = this.deadLetterKey(entityType);
     await this.redis.lpush(
@@ -259,6 +264,9 @@ export class WalService {
     this.logger.warn(
       `Dead-lettered ${message.name} for ${entityType}:${message.entityId}: ${reason}`,
     );
+    for (const cb of this.deadLetterCallbacks) {
+      try { cb(entityType, message, reason); } catch { /* subscriber errors don't propagate */ }
+    }
   }
 
   async getDeadLetters(entityType: string, limit = 100): Promise<ISerializedMessage[]> {
