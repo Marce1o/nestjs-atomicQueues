@@ -66,7 +66,7 @@ Row locks, optimistic locking, Redlock — they all trade throughput for correct
 
 ## The Insight
 
-Don't lock the database. Don't lock the resource. **Route all operations for a given entity through a single worker.** That worker processes messages sequentially. Different entities have their own workers running concurrently.
+Don't lock the database. Don't lock the resource. **Route all operations for a given entity through a single worker.** That worker processes messages sequentially. Different entities have their own workers running concurrently and in parallel.
 
 ```
   account:a-1  ──► [Worker] ──► handler1 → handler2 → handler3  (sequential)
