@@ -1,9 +1,10 @@
-import { Injectable, Logger, Inject, OnModuleInit, OnApplicationShutdown } from '@nestjs/common';
+import { Injectable, Logger, Inject, Optional, OnModuleInit, OnApplicationShutdown } from '@nestjs/common';
 import Redis from 'ioredis';
 import { IAtomicQueuesModuleConfig } from '../domain';
 import { resolveKeyPrefix } from '../utils';
 import { ATOMIC_QUEUES_REDIS, ATOMIC_QUEUES_CONFIG } from '../services/constants';
 import { ClusterDiscoveryService, ClusterNode } from './cluster-discovery.service';
+import { RedisHealthMonitor } from './redis-health-monitor.service';
 
 @Injectable()
 export class LeaderElectionService implements OnModuleInit, OnApplicationShutdown {
@@ -12,10 +13,15 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
   private readonly enabled: boolean;
   private readonly serverId: string;
   private readonly serviceGroup: string;
+  private readonly debounceMs: number;
 
   private isLeader = false;
   private leaderEpoch = 0;
   private unsubscribeRingChange: (() => void) | null = null;
+  private unsubscribeRedisHealth: (() => void) | null = null;
+  private recomputeTimer: NodeJS.Timeout | null = null;
+  private lastRecomputeAt = 0;
+  private pendingNodes: ClusterNode[] | null = null;
 
   private readonly leaderChangeListeners: Array<(isLeader: boolean) => void> = [];
 
@@ -23,11 +29,13 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
     @Inject(ATOMIC_QUEUES_REDIS) private readonly redis: Redis,
     @Inject(ATOMIC_QUEUES_CONFIG) config: IAtomicQueuesModuleConfig,
     private readonly clusterDiscovery: ClusterDiscoveryService,
+    @Optional() private readonly redisHealthMonitor?: RedisHealthMonitor,
   ) {
     this.keyPrefix = resolveKeyPrefix(config);
     this.enabled = config.grpc?.enabled ?? false;
     this.serverId = config.grpc?.serverId ?? 'unknown';
     this.serviceGroup = config.grpc?.serviceGroup ?? 'default';
+    this.debounceMs = config.grpc?.leaderDebounceMs ?? 800;
   }
 
   async onModuleInit(): Promise<void> {
@@ -40,16 +48,26 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
     await this.recomputeLeader(nodes);
 
     this.unsubscribeRingChange = this.clusterDiscovery.onRingChange((updatedNodes) => {
-      this.recomputeLeader(updatedNodes).catch((err) => {
-        this.logger.error(`Leader recomputation failed: ${(err as Error).message}`);
-      });
+      this.scheduleRecompute(updatedNodes);
     });
+
+    if (this.redisHealthMonitor) {
+      this.unsubscribeRedisHealth = this.redisHealthMonitor.onHealthChange((healthy) => {
+        if (!healthy && this.isLeader) {
+          this.isLeader = false;
+          this.logger.warn(
+            `Voluntarily resigning leadership for group '${this.serviceGroup}' — Redis unreachable`,
+          );
+          this.notifyListeners(false);
+        }
+      });
+    }
   }
 
   async onApplicationShutdown(): Promise<void> {
-    if (this.unsubscribeRingChange) {
-      this.unsubscribeRingChange();
-    }
+    if (this.unsubscribeRingChange) this.unsubscribeRingChange();
+    if (this.unsubscribeRedisHealth) this.unsubscribeRedisHealth();
+    if (this.recomputeTimer) clearTimeout(this.recomputeTimer);
     this.isLeader = false;
   }
 
@@ -100,6 +118,38 @@ export class LeaderElectionService implements OnModuleInit, OnApplicationShutdow
   // =========================================================================
   // INTERNAL
   // =========================================================================
+
+  private scheduleRecompute(nodes: ClusterNode[]): void {
+    this.pendingNodes = nodes;
+
+    if (this.lastRecomputeAt === 0) {
+      this.executeRecompute();
+      return;
+    }
+
+    if (this.recomputeTimer) return;
+
+    const elapsed = Date.now() - this.lastRecomputeAt;
+    const remaining = Math.max(0, this.debounceMs - elapsed);
+
+    if (remaining === 0) {
+      this.executeRecompute();
+    } else {
+      this.recomputeTimer = setTimeout(() => this.executeRecompute(), remaining);
+    }
+  }
+
+  private executeRecompute(): void {
+    this.recomputeTimer = null;
+    this.lastRecomputeAt = Date.now();
+    const nodes = this.pendingNodes;
+    this.pendingNodes = null;
+    if (nodes) {
+      this.recomputeLeader(nodes).catch((err) => {
+        this.logger.error(`Leader recomputation failed: ${(err as Error).message}`);
+      });
+    }
+  }
 
   private async recomputeLeader(nodes: ClusterNode[]): Promise<void> {
     const sameGroup = nodes

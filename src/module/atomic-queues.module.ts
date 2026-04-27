@@ -22,6 +22,8 @@ import {
   ServerRingService,
   LeaderElectionService,
   MasterCoordinator,
+  GrpcPeerMonitor,
+  RedisHealthMonitor,
 } from '../cluster';
 
 export const ATOMIC_QUEUES_SERVER_ID = 'ATOMIC_QUEUES_SERVER_ID';
@@ -36,6 +38,8 @@ const CORE_SERVICES: Provider[] = [
   EntityWorkerManager,
   GrpcServerService,
   GrpcClientPool,
+  RedisHealthMonitor,
+  GrpcPeerMonitor,
   ClusterDiscoveryService,
   ServerRingService,
   LeaderElectionService,
