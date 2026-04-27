@@ -110,50 +110,37 @@ export function QueueEntityId(): PropertyDecorator & ParameterDecorator {
  */
 export const EntityId = QueueEntityId;
 
-// =============================================================================
-// NEW COMBINED DECORATOR - Less Invasive
-// =============================================================================
-
 /**
  * @QueueEntity decorator
  *
- * Single decorator that combines @EntityType and @QueueEntityId into one.
- * This is the recommended way to mark commands/queries for queue routing.
+ * Sets the entity type for queue routing. Use with `@QueueEntityId()` on the
+ * constructor parameter that holds the entity ID.
  *
  * @param entityType - The entity type for routing (e.g., 'order', 'account')
- * @param entityIdProperty - Optional property name containing the entity ID.
- *                           If omitted, uses module-level defaultEntityId from entities config.
  *
  * @example
- * // With explicit property name:
- * @QueueEntity('order', 'orderId')
+ * ```typescript
+ * @QueueEntity('order')
  * export class PlaceOrderCommand {
  *   constructor(
- *     public readonly orderId: string,  // <- unchanged!
+ *     @QueueEntityId() public readonly orderId: string,
  *     public readonly quantity: number,
  *   ) {}
  * }
  *
- * @example
- * // Using module default (entities config has defaultEntityId: 'orderId'):
- * @QueueEntity('order')
- * export class ShipOrderCommand {
- *   constructor(
- *     public readonly orderId: string,
- *     public readonly carrier: string,
- *   ) {}
- * }
- *
- * @example
- * // Then just enqueue directly:
  * await queueBus.enqueue(new PlaceOrderCommand(orderId, 100));
+ * ```
  */
+export function QueueEntity(entityType: string): ClassDecorator;
+/**
+ * @deprecated The two-argument form `@QueueEntity('type', 'idProp')` is deprecated.
+ * Use `@QueueEntity('type')` + `@QueueEntityId()` on the parameter instead.
+ */
+export function QueueEntity(entityType: string, entityIdProperty: string): ClassDecorator;
 export function QueueEntity(entityType: string, entityIdProperty?: string): ClassDecorator {
   return (target: Function) => {
-    // Always set entity type
     Reflect.defineMetadata(ENTITY_TYPE_METADATA, entityType, target);
 
-    // Set entity ID property if provided (otherwise falls back to module config)
     if (entityIdProperty) {
       Reflect.defineMetadata(ENTITY_ID_METADATA, entityIdProperty, target);
     }

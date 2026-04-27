@@ -255,7 +255,7 @@ describe('Fork: Multi-replica — 100 concurrent enqueues across 3 processes', (
         serverId: `fork-counter-${i}`,
         grpcPort: BASE_GRPC_PORT + i,
         serviceGroup: 'fork-counter-svc',
-        entities: { counter: { retry: { maxAttempts: 2 } } },
+        entities: { counter: { defaultEntityId: 'counterId', retry: { maxAttempts: 2 } } },
         handlers: 'counter',
       });
       workers.push(w);
@@ -368,7 +368,7 @@ describe('Fork: Cross-service — gRPC Forward across separate processes', () =>
         serverId: `fork-svc-a-${i}`,
         grpcPort: BASE_GRPC_PORT + 10 + i,
         serviceGroup: 'fork-svc-alpha',
-        entities: { counter: { retry: { maxAttempts: 2 } } },
+        entities: { counter: { defaultEntityId: 'counterId', retry: { maxAttempts: 2 } } },
         handlers: 'counter',
       });
       svcA.push(w);
@@ -380,7 +380,7 @@ describe('Fork: Cross-service — gRPC Forward across separate processes', () =>
         serverId: `fork-svc-b-${i}`,
         grpcPort: BASE_GRPC_PORT + 20 + i,
         serviceGroup: 'fork-svc-beta',
-        entities: { remote: { retry: { maxAttempts: 2 } } },
+        entities: { remote: { defaultEntityId: 'itemId', retry: { maxAttempts: 2 } } },
         handlers: 'remote',
       });
       svcB.push(w);
@@ -481,7 +481,7 @@ describe('Fork: Failover — SIGKILL master process, re-elect, continue', () => 
         serverId: `fork-failover-${i}`,
         grpcPort: BASE_GRPC_PORT + 30 + i,
         serviceGroup: 'fork-failover-svc',
-        entities: { counter: { retry: { maxAttempts: 2 } } },
+        entities: { counter: { defaultEntityId: 'counterId', retry: { maxAttempts: 2 } } },
         handlers: 'counter',
       });
       workers.push(w);

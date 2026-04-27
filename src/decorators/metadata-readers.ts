@@ -16,10 +16,12 @@ export function getEntityIdProperty(target: Function): string | undefined {
   return Reflect.getMetadata(ENTITY_ID_METADATA, target);
 }
 
+/** @deprecated Part of the deprecated `@JobCommand` API. */
 export function getJobCommandMetadata(target: Function): JobCommandMetadata | undefined {
   return Reflect.getMetadata(JOB_COMMAND_METADATA, target);
 }
 
+/** @deprecated Part of the deprecated `@JobQuery` API. */
 export function getJobQueryMetadata(target: Function): JobQueryMetadata | undefined {
   return Reflect.getMetadata(JOB_QUERY_METADATA, target);
 }

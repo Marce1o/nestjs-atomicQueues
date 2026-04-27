@@ -1,5 +1,5 @@
 /**
- * Options for @JobCommand decorator
+ * @deprecated `@JobCommand` is deprecated. Use `@EntityType` + `@QueueEntityId` with `@CommandHandler`.
  */
 export interface JobCommandOptions {
   /** Job name (defaults to kebab-case of class name without 'Command' suffix) */
@@ -8,10 +8,12 @@ export interface JobCommandOptions {
   entityType?: string;
   /** Which constructor parameter is the entityId (default: 0 = first param) */
   entityIdParam?: number | string;
+  /** Explicit parameter names — use when builds minify constructor argument names */
+  params?: string[];
 }
 
 /**
- * Options for @JobQuery decorator
+ * @deprecated `@JobQuery` is deprecated. Use `@EntityType` + `@QueueEntityId` with `@QueryHandler`.
  */
 export interface JobQueryOptions {
   /** Job name (defaults to kebab-case of class name without 'Query' suffix) */
@@ -20,11 +22,11 @@ export interface JobQueryOptions {
   entityType?: string;
   /** Which constructor parameter is the entityId (default: 0 = first param) */
   entityIdParam?: number | string;
+  /** Explicit parameter names — use when builds minify constructor argument names */
+  params?: string[];
 }
 
-/**
- * Stored job command metadata
- */
+/** @deprecated Part of the deprecated `@JobCommand` API. */
 export interface JobCommandMetadata {
   jobName: string;
   entityType?: string;
@@ -33,9 +35,7 @@ export interface JobCommandMetadata {
   paramNames: string[];
 }
 
-/**
- * Stored job query metadata
- */
+/** @deprecated Part of the deprecated `@JobQuery` API. */
 export interface JobQueryMetadata {
   jobName: string;
   entityType?: string;
