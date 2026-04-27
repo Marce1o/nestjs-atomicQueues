@@ -43,6 +43,22 @@ export interface IEntityConfig {
 }
 
 /**
+ * gRPC RPC deadline configuration (all values in milliseconds)
+ */
+export interface IGrpcDeadlines {
+  /** Deadline for fire-and-forget RPCs: forward(), petition(), enqueueToWorker() (default: 1500) */
+  forwardMs?: number;
+  /** Deadline for ping() RPC (default: 1000) */
+  pingMs?: number;
+  /** Default deadline for AndWait server-side handlers when no per-entity replyTimeout is set (default: 60000) */
+  andWaitMs?: number;
+  /** Deadline for listWorkers() during master table rebuild (default: 1000) */
+  syncMs?: number;
+  /** Deadline for peer connectivity watch loop re-arm (default: 30000) */
+  connectivityWatchMs?: number;
+}
+
+/**
  * gRPC inter-server communication configuration
  */
 export interface IGrpcConfig {
@@ -70,6 +86,30 @@ export interface IGrpcConfig {
   leaderRenewalMs?: number;
   /** Leader acquisition poll interval in ms (default: 400) */
   leaderAcquisitionMs?: number;
+  /** gRPC keepalive ping interval in ms (default: 10000, minimum enforced by grpc-js) */
+  keepaliveTimeMs?: number;
+  /** gRPC keepalive timeout in ms — connection dead if no response (default: 5000) */
+  keepaliveTimeoutMs?: number;
+  /** Enable gRPC peer connectivity monitoring for fast failure detection (default: true when grpc.enabled) */
+  peerMonitorEnabled?: boolean;
+  /** Debounce window in ms before declaring a peer suspected-dead (default: 500) */
+  peerSuspectDebounceMs?: number;
+  /** Redis PING health check interval in ms (default: 500) */
+  redisHealthCheckMs?: number;
+  /** Consecutive Redis PING failures before declaring degraded mode (default: 3) */
+  redisHealthFailureThreshold?: number;
+  /** Reconciliation interval in ms — how often to SCAN Redis for node changes (default: 2000) */
+  reconcileIntervalMs?: number;
+  /** Max concurrent petitions the master will process (default: 50, 0 = unbounded) */
+  maxConcurrentPetitions?: number;
+  /** Debounce window in ms for leader recomputation after ring changes (default: 800) */
+  leaderDebounceMs?: number;
+  /** RPC deadline overrides */
+  deadlines?: IGrpcDeadlines;
+  /** Circuit breaker: consecutive failures before opening circuit (default: 3) */
+  circuitBreakerFailureThreshold?: number;
+  /** Circuit breaker: cooldown in ms before half-open probe (default: 2000) */
+  circuitBreakerCooldownMs?: number;
 }
 
 /**
@@ -105,6 +145,12 @@ export interface IAtomicQueuesModuleConfig {
 
   /** Prefix for all Redis keys (default: 'aq') */
   keyPrefix?: string;
+
+  /** Maximum total active workers across all entity types (default: 10000, 0 = unbounded) */
+  maxTotalWorkers?: number;
+
+  /** Maximum total queued messages across all workers (default: 100000, 0 = unbounded) */
+  maxTotalQueueDepth?: number;
 
   /** Enable verbose logging */
   verbose?: boolean;
