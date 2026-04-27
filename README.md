@@ -88,10 +88,6 @@ One worker per entity. Spawned when a message arrives. Destroyed when idle. The 
   imports: [
     AtomicQueuesModule.forRoot({
       redis: { host: 'localhost', port: 6379 },
-      entities: {
-        account: {},
-        order: { onInterrupt: 'dead-letter' },
-      },
     }),
   ],
 })
