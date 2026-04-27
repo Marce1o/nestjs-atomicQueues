@@ -14,6 +14,8 @@ export class EntityWorkerManager implements OnModuleInit, OnApplicationShutdown 
   private readonly workers = new Map<string, EntityWorker>();
   private readonly isClusterMode: boolean;
   private readonly serverId: string;
+  private readonly maxTotalWorkers: number;
+  private readonly maxTotalQueueDepth: number;
 
   private readonly pendingResults = new Map<
     string,
@@ -29,6 +31,8 @@ export class EntityWorkerManager implements OnModuleInit, OnApplicationShutdown 
   ) {
     this.isClusterMode = config.grpc?.enabled ?? false;
     this.serverId = config.grpc?.serverId ?? 'local';
+    this.maxTotalWorkers = config.maxTotalWorkers ?? 10000;
+    this.maxTotalQueueDepth = config.maxTotalQueueDepth ?? 100000;
   }
 
   async onModuleInit(): Promise<void> {
@@ -87,6 +91,13 @@ export class EntityWorkerManager implements OnModuleInit, OnApplicationShutdown 
   }
 
   async enqueue(entityKey: string, message: ISerializedMessage): Promise<void> {
+    if (this.maxTotalWorkers > 0 && !this.workers.has(entityKey) && this.workers.size >= this.maxTotalWorkers) {
+      throw new Error('WORKER_LIMIT_EXCEEDED');
+    }
+    if (this.maxTotalQueueDepth > 0 && this.totalQueueDepth() >= this.maxTotalQueueDepth) {
+      throw new Error('QUEUE_DEPTH_EXCEEDED');
+    }
+
     if (this.walEnabled) {
       await this.walService!.write(entityKey, message);
     }
@@ -102,10 +113,16 @@ export class EntityWorkerManager implements OnModuleInit, OnApplicationShutdown 
     entityKey: string,
     message: ISerializedMessage,
     timeout: number,
+    signal?: AbortSignal,
   ): Promise<R> {
     return new Promise<R>((resolve, reject) => {
       const correlationId = fastId();
       const taggedMessage = { ...message, correlationId };
+
+      const cleanup = () => {
+        this.pendingResults.delete(correlationId);
+        clearTimeout(timer);
+      };
 
       const timer = setTimeout(() => {
         this.pendingResults.delete(correlationId);
@@ -117,6 +134,20 @@ export class EntityWorkerManager implements OnModuleInit, OnApplicationShutdown 
         reject,
         timer,
       });
+
+      if (signal) {
+        if (signal.aborted) {
+          cleanup();
+          reject(new Error('Stream cancelled by client'));
+          return;
+        }
+        signal.addEventListener('abort', () => {
+          if (this.pendingResults.has(correlationId)) {
+            cleanup();
+            reject(new Error('Stream cancelled by client'));
+          }
+        }, { once: true });
+      }
 
       this.enqueue(entityKey, taggedMessage).catch((err) => {
         this.pendingResults.delete(correlationId);

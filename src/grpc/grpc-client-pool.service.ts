@@ -1,4 +1,4 @@
-import { Injectable, Logger, Inject, OnApplicationShutdown } from '@nestjs/common';
+import { Injectable, Logger, Inject, OnModuleInit, OnApplicationShutdown } from '@nestjs/common';
 import * as path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { IAtomicQueuesModuleConfig, ISerializedMessage, IMessageRef } from '../domain';
@@ -44,7 +44,7 @@ interface ProtoLoaderModule {
 }
 
 /** Minimal shape of a proto-loaded service constructor. */
-type GrpcServiceConstructor = new (address: string, credentials: unknown) => GrpcClientInstance;
+type GrpcServiceConstructor = new (address: string, credentials: unknown, options?: Record<string, unknown>) => GrpcClientInstance;
 
 /** Minimal shape of the loaded proto descriptor used in this pool. */
 interface ProtoDescriptor {
@@ -60,6 +60,13 @@ interface GrpcClient {
   client: GrpcClientInstance;
 }
 
+interface CircuitBreakerState {
+  state: 'closed' | 'open' | 'half-open';
+  consecutiveFailures: number;
+  lastFailureAt: number;
+  openedAt: number;
+}
+
 /**
  * gRPC Client Pool — maintains connections to peer servers.
  *
@@ -67,13 +74,25 @@ interface GrpcClient {
  * MessageRouter calls when an entity is owned by a remote server.
  */
 @Injectable()
-export class GrpcClientPool implements OnApplicationShutdown {
+export class GrpcClientPool implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(GrpcClientPool.name);
   private readonly clients = new Map<string, GrpcClient>();
+  private readonly circuitBreakers = new Map<string, CircuitBreakerState>();
+  private readonly failureThreshold: number;
+  private readonly cooldownMs: number;
   private grpcModule: GrpcModule | null = null;
   private protoDescriptor: ProtoDescriptor | null = null;
 
-  constructor(@Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig) {}
+  constructor(@Inject(ATOMIC_QUEUES_CONFIG) private readonly config: IAtomicQueuesModuleConfig) {
+    this.failureThreshold = config.grpc?.circuitBreakerFailureThreshold ?? 3;
+    this.cooldownMs = config.grpc?.circuitBreakerCooldownMs ?? 2000;
+  }
+
+  async onModuleInit(): Promise<void> {
+    if (this.config.grpc?.enabled) {
+      await this.ensureLoaded();
+    }
+  }
 
   async onApplicationShutdown(): Promise<void> {
     for (const [, { client }] of this.clients) {
@@ -84,6 +103,7 @@ export class GrpcClientPool implements OnApplicationShutdown {
       }
     }
     this.clients.clear();
+    this.circuitBreakers.clear();
   }
 
   /**
@@ -113,7 +133,62 @@ export class GrpcClientPool implements OnApplicationShutdown {
   /**
    * Get or create a client connection to a peer server.
    */
+  private checkCircuit(serverId: string): void {
+    const cb = this.circuitBreakers.get(serverId);
+    if (!cb || cb.state === 'closed') return;
+
+    if (cb.state === 'open') {
+      if (Date.now() - cb.openedAt >= this.cooldownMs) {
+        cb.state = 'half-open';
+        return;
+      }
+      throw new Error('PEER_CIRCUIT_OPEN');
+    }
+  }
+
+  recordSuccess(serverId: string): void {
+    const cb = this.circuitBreakers.get(serverId);
+    if (cb) {
+      cb.state = 'closed';
+      cb.consecutiveFailures = 0;
+    }
+  }
+
+  recordFailure(serverId: string): void {
+    let cb = this.circuitBreakers.get(serverId);
+    if (!cb) {
+      cb = { state: 'closed', consecutiveFailures: 0, lastFailureAt: 0, openedAt: 0 };
+      this.circuitBreakers.set(serverId, cb);
+    }
+    cb.consecutiveFailures++;
+    cb.lastFailureAt = Date.now();
+    if (cb.consecutiveFailures >= this.failureThreshold) {
+      cb.state = 'open';
+      cb.openedAt = Date.now();
+    }
+  }
+
+  openCircuit(serverId: string): void {
+    let cb = this.circuitBreakers.get(serverId);
+    if (!cb) {
+      cb = { state: 'closed', consecutiveFailures: 0, lastFailureAt: 0, openedAt: 0 };
+      this.circuitBreakers.set(serverId, cb);
+    }
+    cb.state = 'open';
+    cb.openedAt = Date.now();
+  }
+
+  closeCircuit(serverId: string): void {
+    const cb = this.circuitBreakers.get(serverId);
+    if (cb) {
+      cb.state = 'closed';
+      cb.consecutiveFailures = 0;
+    }
+  }
+
   async getClient(serverId: string, address: string): Promise<GrpcClientInstance> {
+    this.checkCircuit(serverId);
+
     const existing = this.clients.get(serverId);
     if (existing && existing.address === address) {
       return existing.client;
@@ -122,7 +197,12 @@ export class GrpcClientPool implements OnApplicationShutdown {
     await this.ensureLoaded();
 
     const ServiceClass = this.protoDescriptor!.atomicqueues.v1.AtomicQueuesNode;
-    const client = new ServiceClass(address, this.grpcModule!.credentials.createInsecure());
+    const channelOptions: Record<string, unknown> = {
+      'grpc.keepalive_time_ms': this.config.grpc?.keepaliveTimeMs ?? 10000,
+      'grpc.keepalive_timeout_ms': this.config.grpc?.keepaliveTimeoutMs ?? 5000,
+      'grpc.keepalive_permit_without_calls': 1,
+    };
+    const client = new ServiceClass(address, this.grpcModule!.credentials.createInsecure(), channelOptions);
 
     this.clients.set(serverId, { address, client });
     this.logger.log(`Connected to peer ${serverId} at ${address}`);
@@ -139,6 +219,7 @@ export class GrpcClientPool implements OnApplicationShutdown {
     message: ISerializedMessage,
     originServerId: string,
     hops: number,
+    senderEpoch = 0,
   ): Promise<IMessageRef> {
     const client = await this.getClient(serverId, address);
 
@@ -155,9 +236,10 @@ export class GrpcClientPool implements OnApplicationShutdown {
       maxAttempts: message.maxAttempts,
       originServer: originServerId,
       hops: hops + 1,
+      senderEpoch,
     };
 
-    const deadline = new Date(Date.now() + 1500);
+    const deadline = new Date(Date.now() + (this.config.grpc?.deadlines?.forwardMs ?? 1500));
     return new Promise<IMessageRef>((resolve, reject) => {
       client.forward(envelope, { deadline }, (err: Error | null, response: Record<string, unknown>) => {
         if (err) {
@@ -186,6 +268,7 @@ export class GrpcClientPool implements OnApplicationShutdown {
     originServerId: string,
     hops: number,
     timeout: number,
+    senderEpoch = 0,
   ): Promise<R> {
     const client = await this.getClient(serverId, address);
 
@@ -202,6 +285,7 @@ export class GrpcClientPool implements OnApplicationShutdown {
       maxAttempts: message.maxAttempts,
       originServer: originServerId,
       hops: hops + 1,
+      senderEpoch,
     };
 
     return new Promise<R>((resolve, reject) => {
@@ -243,7 +327,7 @@ export class GrpcClientPool implements OnApplicationShutdown {
     const client = await this.getClient(serverId, address);
     const myServerId = this.config.grpc?.serverId ?? 'unknown';
 
-    const deadline = new Date(Date.now() + 1000);
+    const deadline = new Date(Date.now() + (this.config.grpc?.deadlines?.pingMs ?? 1000));
     return new Promise((resolve, _reject) => {
       client.ping(
         { senderId: myServerId },
@@ -275,5 +359,6 @@ export class GrpcClientPool implements OnApplicationShutdown {
       }
       this.clients.delete(serverId);
     }
+    this.circuitBreakers.delete(serverId);
   }
 }
