@@ -13,19 +13,23 @@ function createMockRedis() {
     }),
     hgetall: jest.fn(async (key: string) => store[key] ?? {}),
     pexpire: jest.fn(async () => 1),
-    del: jest.fn(async (key: string) => {
-      delete store[key];
-      return 1;
+    del: jest.fn(async (...keys: string[]) => {
+      for (const key of keys) delete store[key];
+      return keys.length;
     }),
     set: jest.fn(async () => 'OK'),
     get: jest.fn(async () => null),
     incr: jest.fn(async () => 1),
+    sadd: jest.fn(async () => 1),
+    srem: jest.fn(async () => 1),
+    smembers: jest.fn(async () => []),
     publish: jest.fn(async () => 1),
     scan: jest.fn(async () => ['0', [] as string[]]),
     eval: jest.fn(async () => '0'),
     pipeline: jest.fn(() => ({
       eval: jest.fn().mockReturnThis(),
       pexpire: jest.fn().mockReturnThis(),
+      srem: jest.fn().mockReturnThis(),
       exec: jest.fn(async () => []),
     })),
     duplicate: jest.fn(() => ({
@@ -130,8 +134,9 @@ describe('ClusterDiscoveryService — hybrid liveness', () => {
       const redis = createMockRedis();
       const peerMonitor = createMockPeerMonitor();
 
-      // Pre-populate a peer node in Redis
-      redis.scan.mockResolvedValue(['0', ['aq:cluster:nodes:server-2']]);
+      // Pre-populate a peer node in Redis — return server-2 only for reconcile scans, not stale cleanup
+      // smembers returns the index for getNodes()
+      (redis.smembers as jest.Mock).mockResolvedValue(['server-2']);
       redis.hgetall.mockImplementation(async (key: string): Promise<Record<string, string>> => {
         if (key === 'aq:cluster:nodes:server-2') {
           return {
